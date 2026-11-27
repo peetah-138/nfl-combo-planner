@@ -47,8 +47,17 @@ function scoreWatch(gs){/* who scored since the last paint: your side, or theirs
   if(o&&(o[0]!==sc.me||o[1]!==sc.opp)){const good=sc.me>o[0];S.gscore[k]=good?'good':'bad';any=any||S.gscore[k];}});
  if(any&&S.view==='games')hap(any==='good'?'success':'warning');
  clearTimeout(S.gscT);S.gscT=setTimeout(()=>{S.gscore={};document.querySelectorAll('.gc.scored').forEach(e=>e.classList.remove('scored','good','bad'));},1700);}
+/* Display order (Pete: sorted by next game): playing now first, then upcoming by start time (soonest first; no start time = after the
+   timed ones), then finished (most recent first). Ties break on the ticker, then the name, so cards never shuffle between refreshes.
+   Order only: nothing here prices, buys or sells. */
+const gStart=g=>{const t=Number(g.start_ts);return g.start_ts!=null&&isFinite(t)&&t>0?t:null;};
+const gDone=g=>g.phase==='over'||g.state==='over'||g.phase==='probably_over';
+const gBucket=g=>GLIVE(g)?0:gDone(g)?2:1;
+function gameOrder(a,b){const ba=gBucket(a),bb=gBucket(b);if(ba!==bb)return ba-bb;
+ const sa=gStart(a),sb=gStart(b);if(sa!==sb){if(sa==null)return 1;if(sb==null)return -1;return ba===2?sb-sa:sa-sb;}
+ const ka=String(a.ticker||a.name||''),kb=String(b.ticker||b.name||'');return ka<kb?-1:ka>kb?1:0;}
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
- const gs=d.games||[];if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
+ const gs=(d.games||[]).slice().sort(gameOrder);if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
  scoreWatch(gs);setTimeout(warmShown,400);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
  m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')

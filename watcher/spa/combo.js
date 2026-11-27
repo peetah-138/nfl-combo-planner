@@ -16,11 +16,11 @@ async function openCombo(t){S.gameOpen=null;S.ideaOpen=null;S.comboOpen=t;pushOp
 
 // ---------------- a bet that has closed (sold, settled or expired): read-only detail from what the Mac stored
 function closedWhen(a){return esc(a.when||'')}
-async function openClosed(t){S.gameOpen=null;S.ideaOpen=null;S.comboOpen=t;pushOpen('Bet');await pushWait();if(S.comboOpen!==t)return;await closedFill(t,'Bet');}
-async function closedFill(t,title){const r=await api('/app/api/closed?t='+encodeURIComponent(t)).catch(()=>null);if(S.comboOpen!==t)return;
+async function openClosed(t){S.gameOpen=null;S.ideaOpen=null;S.comboOpen=t;pushOpen('Bet');await pushWait();if(S.comboOpen!==t)return false;return await closedFill(t,'Bet');}   // true only once the closed bet's own page has loaded (#571: callers toast after that, never over an error or 'can't find that bet' page)
+async function closedFill(t,title){const r=await api('/app/api/closed?t='+encodeURIComponent(t)).catch(()=>null);if(S.comboOpen!==t)return false;
  /* (#406) no answer at all (the phone couldn't reach the Mac, or it sent something unreadable) is not "no record": say so and offer a retry */
- if(!r||typeof r!=='object'||r.found===undefined){pushFill(`<h3>Couldn't load that bet</h3><p>Your phone couldn't reach the Mac just now. The bet is fine; this is only the page.</p><div class="row"><button type="button" class="btn acc" data-t="${esc(t)}" data-title="${esc(title)}" onclick="this.disabled=true;this.textContent='Trying…';closedFill(this.dataset.t,this.dataset.title)">Try again</button></div>`,title);return;}
- if(!r.found){pushFill('<h3>We can\'t find that bet</h3><p>It isn\'t live and the Mac has no record of it.</p>',title);return;}
+ if(!r||typeof r!=='object'||r.found===undefined){pushFill(`<h3>Couldn't load that bet</h3><p>Your phone couldn't reach the Mac just now. The bet is fine; this is only the page.</p><div class="row"><button type="button" class="btn acc" data-t="${esc(t)}" data-title="${esc(title)}" onclick="this.disabled=true;this.textContent='Trying…';closedFill(this.dataset.t,this.dataset.title)">Try again</button></div>`,title);return false;}
+ if(!r.found){pushFill('<h3>We can\'t find that bet</h3><p>It isn\'t live and the Mac has no record of it.</p>',title);return false;}
  const pl=r.pl,win=pl!=null&&pl>0,tag=pl==null?'':win?'good':pl<0?'bad':'';
  const picks=(r.picks||[]).map(p=>`<div class="lg"><div><b>${esc(p.name||'')}</b></div><span class="mark ${p.res==='yes'?'yes':p.res==='no'?'no':''}">${p.res==='yes'?'won':p.res==='no'?'lost':''}</span></div>`).join('');
  const at=(r.attempts||[]).map(a=>`<div class="srow"><div class="l"><b>${esc(a.when||'')} · ${esc(a.result||'')}${a.why?' · '+esc(a.why):''}</b>${a.note?`<small>${esc(a.note)}</small>`:''}${(a.tries||[]).map((x,i)=>`<small>Try ${i+1}: ${x.offer!=null?money(x.offer):''} ${esc(x.quote||'')}${x.error?' ('+esc(x.error)+')':''}</small>`).join('')}</div></div>`).join('');
@@ -34,4 +34,4 @@ async function closedFill(t,title){const r=await api('/app/api/closed?t='+encode
   <p style="margin:10px 0 14px">${esc(r.why||'')}</p>
   ${r.chart&&(r.chart.offers||[]).length>1?`<div class="chartbox">${valueChart(r.chart.offers,r.cost,r.pays)}</div>`:''}
   ${picks?`<h2 style="margin:4px 0 6px">Picks <span class="n">${(r.picks||[]).length}</span></h2><div class="dlegs">${picks}</div>`:''}
-  ${at?`<h2 style="margin:14px 0 6px">What the auto-sell did <span class="n">${(r.attempts||[]).length}</span></h2>${at}`:''}`,title);}
+  ${at?`<h2 style="margin:14px 0 6px">What the auto-sell did <span class="n">${(r.attempts||[]).length}</span></h2>${at}`:''}`,title);return true;}

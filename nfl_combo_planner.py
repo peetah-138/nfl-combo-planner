@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.26.142"
+VERSION = "2026.11.26.143"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -14530,6 +14530,21 @@ def save_combo(i, new):
         save_json(HISTORY, hist)
 
 
+def flip_ev(legs, stake):
+    """(#204) Expected profit in dollars of a combo with these legs at `stake`, after the entry fee, on the chance
+    corrected by your own record (`calib_fair`, as the panel and Best bets use) and Kalshi's leg prices. None when a
+    leg has no price or chance. A guide for the flip note only: nothing here buys or sizes; the combo fee is the
+    standard taker fee on the combo's price (Kalshi's real combo fee is not verified), so it is a close estimate."""
+    try:
+        q = math.prod(calib_fair(ticker_sport(l["ticker"]) or LEAGUE["code"], l["fair"], l.get("ticker")) for l in legs)
+        pp = math.prod(l["p"] for l in legs)
+        if not (0 < q < 1 and 0 < pp < 1 and stake > 0):
+            return None
+        return stake / pp * (q - pp - single_fee(pp))
+    except Exception:
+        return None
+
+
 def flip_pick(i, ticker):
     """Switch one pick in combo i to the other team and explain what changed.
     Returns (ok, html note)."""
@@ -14565,6 +14580,11 @@ def flip_pick(i, ticker):
              "slightly worse value" if v_new <= v_old - 0.01 else "about the same value")
     good = p_new > p_old * 1.05 and v_new >= v_old - 0.01
     bad = p_new < p_old * 0.95 and v_new <= v_old + 0.01
+    ev_old, ev_new = flip_ev(old["legs"], stake), flip_ev(legs, stake)
+    if ev_old is not None and ev_new is not None:     # (#204) in dollars: "good" only if expected dollars do not fall
+        fell = ev_new < ev_old - 0.01
+        good = good and not fell
+        bad = bad or (fell and not p_new > p_old * 1.05)
     head = ("<span class='verdict ok'>Good flip</span>" if good else
             "<span class='verdict no'>Worse bet</span>" if bad else
             "<span class='verdict ok' style='background:var(--badbg);color:var(--bad)'>Trade-off</span>")
@@ -14576,9 +14596,13 @@ def flip_pick(i, ticker):
         extra.append(f"Kalshi charges extra for {e(other['pick'])} ({round(edge * 100)}¢).")
     if other.get("live"):
         extra.append("Live pick: its price moves fast, so get an offer soon.")
+    dollars = ""
+    if ev_old is not None and ev_new is not None:
+        dollars = (f"Expected profit at {money(stake)}, after fees and on your own record: "
+                   f"{'-' if ev_old < 0 else ''}{money(abs(ev_old))} → {'-' if ev_new < 0 else ''}{money(abs(ev_new))}. ")
     note = (f"<div class='min'>{head} Flipped <b>{e(leg['pick'])}</b> → <b>{e(other['pick'])}</b>: "
             f"{likely} ({p_old:.1%} → {p_new:.1%}), fair payout {money(old['fair'])} → {money(new['fair'])}, "
-            f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + " ".join(extra) +
+            f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + dollars + " ".join(extra) +
             " Tap Flip again to undo. New price shows whether Kalshi's offer is good.</div>")
     CTX["combos"][i - 1] = new
     CTX["offers"].pop(i, None)
@@ -23692,7 +23716,7 @@ def panel_exec(alert=None, log=print, paused=False, may_trade=True):
             if f is None:
                 alt = _replacement(c, p)
                 if alt:
-                    alt = dict(alt, stake=_swap_stake(alt, c, p), state="scheduled", swapped_for=picks)
+                    alt = dict(alt, stake=_swap_stake(alt, c, p), state="scheduled", swapped_for=picks, swap_of=c["id"])
                     _set_items(day, mode, {c["id"]: {"state": "swapped"}, alt["id"]: dict(alt, _new=True)})
                     ask_buy()                             # buy the swapped-in bet on a pass right after this one
                     if mode == "real":
@@ -23915,6 +23939,277 @@ def panel_record():
     pp["ready"] = (pp["bets"] >= 50 and pp["pl"] > 0 and pp["days_up"] >= 0.55 * max(pp["days"], 1)
                    and (pp["clv"] is None or pp["clv"] >= 0))
     return out
+
+
+# ---------------------------------------------------------------- full auto: the real master switch (issue #7)
+# Pete's rule: nothing buys on its own until he flips this, and it starts OFF. Full auto is NOT a second buyer. It only
+# does what Pete's two taps do: Approve on a fresh draft panel, and Add on the "New since you approved" extras, inside
+# its own limits. Every order still goes through panel_exec (_buy_panel_bet: buy_single / accept_offer with the held
+# and opposite-side checks, the price check, Pause, can_trade, the unread-balance hold). Exits are the existing smart
+# sell and loss cut, untouched. The switch and its numbers live in their OWN file (never in the settings, the shared
+# keys or anything the Pi or the phone copies), so a stray settings post can't turn it on. A missing or unreadable
+# file means OFF. Turning it on needs the paper gate passed, or Pete's explicit "override the paper gate" (recorded).
+FA = {"bank": 300.0, "cap": 30.0, "max_open": 15, "streak": 4, "day_loss": 20.0}
+FA_LIMITS = {"bank": (50, 1000), "cap": (2, 100), "max_open": (1, 30), "streak": (2, 10), "day_loss": (2, 100)}
+FA_WHY = {"bank": "bankroll", "cap": "daily spend cap", "max_open": "open bets", "streak": "losses in a row",
+          "day_loss": "daily loss limit"}
+
+
+def _fa_path():
+    return os.path.join(HERE, "combo_fullauto.json")
+
+
+def fa_state():
+    """The saved switch and limits. Anything unreadable or odd: OFF with the default limits (fail closed)."""
+    st = load_json(_fa_path(), {})
+    st = st if isinstance(st, dict) else {}
+    out = dict(st)
+    out["on"] = st.get("on") is True
+    for k, (lo, hi) in FA_LIMITS.items():
+        try:
+            v = float(st.get(k, FA[k]))
+        except (TypeError, ValueError):
+            v = FA[k]
+        out[k] = int(min(hi, max(lo, v))) if k in ("max_open", "streak") else round(min(hi, max(lo, v)), 2)
+    if not isinstance(out.get("bets"), dict):
+        out["bets"] = {}
+    return out
+
+
+def _fa_save(st):
+    with file_lock(_fa_path()):
+        save_json(_fa_path(), st, strict=True)
+
+
+def _fa_update(fn):
+    """Read-change-write the file under its lock; fn(state) edits it in place."""
+    with file_lock(_fa_path()):
+        st = fa_state()
+        fn(st)
+        save_json(_fa_path(), st, strict=True)
+        return st
+
+
+def _fa_note(st, ev, now=None, **kw):
+    h = st.setdefault("history", [])
+    h.append(dict({"at": round(now or time.time()), "ev": ev}, **kw))
+    del h[:-20]
+
+
+def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
+    """Pete's switch. (ok, message, extra). Off is always allowed. On needs this Mac able to trade (never the Pi), and
+    the paper gate passed or override=True (the 'override the paper gate' confirmation); which one is recorded."""
+    now = now or time.time()
+    clean = {}
+    for k, v in (limits or {}).items():
+        if k in FA_LIMITS:
+            try:
+                lo, hi = FA_LIMITS[k]
+                clean[k] = float(v)
+                if not lo <= clean[k] <= hi:
+                    return False, f"The {FA_WHY[k]} must be between {lo} and {hi}.", {}
+            except (TypeError, ValueError):
+                return False, f"The {FA_WHY[k]} isn't a number.", {}
+    if on and not can_trade():
+        return False, "This computer can't place orders (it isn't the Mac that trades), so full auto stays off.", {}
+    gate = None
+    snap = None
+    if on and fa_state()["on"]:                     # already on (a limit or reset tap): the first choice stands
+        gate, snap = fa_state().get("gate"), fa_state().get("paper") or {}
+    elif on:
+        try:
+            snap = panel_record()["paper"]
+        except Exception as err:
+            print("full auto: couldn't read the paper record:", type(err).__name__, err)
+            snap = {"ready": False}
+        if snap.get("ready"):
+            gate = "passed"
+        elif override is True:
+            gate = "overridden"
+        else:
+            return False, ("The paper gate hasn't passed yet, so full auto stays off. To turn it on anyway, confirm "
+                           "'override the paper gate'."), {"needs_override": True}
+
+    def fn(st):
+        st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
+        if on:
+            was = st.get("on") is True
+            st["on"], st["gate"] = True, gate
+            if not was:
+                st["on_at"] = round(now)
+            st["paper"] = {k: snap.get(k) for k in ("bets", "pl", "days", "days_up", "clv", "ready")}
+            if not was:
+                _fa_note(st, "on", now, gate=gate)
+            if reset_brake:
+                st["brake"], st["reset_at"] = None, round(now)
+        else:
+            if st.get("on") is True:
+                _fa_note(st, "off", now)
+            st["on"] = False
+            if reset_brake:
+                st["brake"], st["reset_at"] = None, round(now)
+    _fa_update(fn)
+    if on:
+        return True, ("Full auto is ON" + (" (paper gate overridden)." if gate == "overridden" else ".")), {}
+    return True, "Full auto is OFF. Bets already approved still go; nothing new is approved.", {}
+
+
+def _fa_rows(now, days=10):
+    """[(day, item)] for every real panel bet of the last `days` panel days (restarted panels included)."""
+    if not STORE["db"]:
+        return []
+    _panel_table()
+    first = _panel_day(now - days * 86400)
+    rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
+    return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
+
+
+def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=False):
+    """Everything about today's full-auto state, read-only: the numbers, the brake and what is blocking it (plain English
+    in `blockers`; empty means it may act). read_positions: also read the account's positions now (what the pass does;
+    an unreadable read is a blocker, never a guess)."""
+    now = now or time.time()
+    st = st if st is not None else fa_state()
+    day = _panel_day(now)
+    rows = _fa_rows(now)
+    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE]
+    spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
+    open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
+    mine = {}
+    for _ in range(3):                                    # a bet swapped in for one of ours (new id) is ours too, chains included
+        for d, c in rows:
+            k = f"{d}|{c.get('id')}"
+            if k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine):
+                mine[k] = (d, c)
+    settled = sorted((x for x in mine.values() if x[1].get("result")),    # a loss is what it really made (panel_pl), exits included
+                     key=lambda x: (x[0], x[1].get("bought_at") or x[1].get("at") or 0))
+    pl = round(sum(panel_pl(c) or 0 for d, c in settled), 2)
+    risk = round(sum(float(c.get("stake") or 0) for d, c in mine.values()
+                     if c.get("state") in PANEL_LIVE and not c.get("result")), 2)
+    free = round(st["bank"] + pl - risk, 2)
+    after = [x for x in settled if (x[1].get("bought_at") or x[1].get("at") or 0) > (st.get("reset_at") or 0)]
+    run = 0
+    for d, c in reversed(after):
+        if (panel_pl(c) or 0) >= 0:
+            break
+        run += 1
+    loss_today = round(sum(panel_pl(c) or 0 for d, c in settled if d == day), 2)
+    brake = st.get("brake") if isinstance(st.get("brake"), dict) else None
+    if brake and brake.get("kind") == "day" and brake.get("day") != day:
+        brake = None                                      # a daily-loss pause ends with the panel day
+    if not brake and run >= st["streak"]:
+        brake = {"kind": "streak", "why": f"{run} losing bets in a row (the limit is {st['streak']}). Reset it when you're ready."}
+    elif not brake and loss_today <= -st["day_loss"]:
+        brake = {"kind": "day", "day": day, "why": f"down {money(-loss_today)} today (the limit is {money(st['day_loss'])}). It starts again tomorrow."}
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": st["cap"], "open": open_n,
+           "max_open": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
+           "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
+           "room": round(max(0.0, st["cap"] - spent), 2), "slots": max(0, st["max_open"] - open_n)}
+    b = []
+    if paused or (TRADING_PAUSED and TRADING_PAUSED()):
+        b.append("Pause is on. Nothing new is approved or bought until you turn Pause off.")
+    if not may_trade or not can_trade():
+        b.append("This computer can't place orders, so nothing is approved here.")
+    if brake:
+        b.append("Paused itself: " + brake["why"])
+    if out["room"] < PANEL_OWN_MIN:
+        b.append(f"Today's {money(st['cap'])} spending cap is used up ({money(spent)} spent).")
+    if out["slots"] <= 0:
+        b.append(f"{open_n} bets are open, the most it allows is {st['max_open']}.")
+    if free < PANEL_OWN_MIN:
+        b.append(f"The {money(st['bank'])} bankroll is all riding or lost ({money(max(free, 0))} free).")
+    if read_positions and not b:
+        try:
+            _held_all()
+        except Exception as err:
+            b.append("Couldn't read your Kalshi positions, so it buys nothing (" + type(err).__name__ + ").")
+    out["blockers"] = b
+    return out
+
+
+def full_auto_view(paused=False, may_trade=True):
+    """What the Settings and Results cards show. Never raises."""
+    try:
+        st = fa_state()
+        v = fa_check(st, paused=paused, may_trade=may_trade)
+        real = panel_get("real")
+        if st["on"] and not v["blockers"] and not real:
+            v["blockers"].append("Waiting for today's panel to be built.")
+        if st["on"] and real and real.get("status") == "cancelled":
+            v["blockers"].append("Today's panel was cancelled, so it waits for the next one.")
+        v.update({"limits": {k: st[k] for k in FA_LIMITS}, "history": (st.get("history") or [])[-3:],
+                  "paper": st.get("paper"), "on_at": st.get("on_at"), "ok": True})
+        try:
+            v["gate_ready"] = bool(panel_record()["paper"].get("ready"))
+        except Exception:
+            v["gate_ready"] = False
+        return v
+    except Exception as err:
+        return {"ok": False, "on": False, "blockers": ["Full auto couldn't read its state, so it stays off (" + type(err).__name__ + ")."]}
+
+
+def _fa_overlap_ok(c):
+    """True when no game this extra touches is already over the overlap line. Unreadable: not ok (never a guess)."""
+    try:
+        over = overlap_games(allow=overlap_allow([]))
+        legs = c.get("legs") or []
+        return not overlap_of(over, [l.get("event") or "" for l in legs], [l.get("ticker") or "" for l in legs])
+    except Exception:
+        return False
+
+
+_FA_LOCK = threading.Lock()
+
+
+def full_auto_pass(paused=False, may_trade=True, now=None, log=print):
+    """Serialised: two passes at once can't both read the same room and overspend the cap."""
+    with _FA_LOCK:
+        return _full_auto_pass(paused, may_trade, now, log)
+
+
+def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
+    """One look, every minute from the watcher, just before panel_exec: when full auto is ON and nothing blocks it,
+    approve the fresh draft (what fits the cap, the open-bet limit and the bankroll) or add extras to the approved
+    panel, through the same panel_approve / panel_add Pete's taps use. Returns what it did, or None. Never buys itself."""
+    st = fa_state()
+    if not st["on"]:
+        return None
+    now = now or time.time()
+    v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
+    if v["brake"] and not (st.get("brake") or {}).get("kind"):
+        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"])))
+        log("full auto paused itself:", v["brake"]["why"])
+    if v["blockers"]:
+        return None
+    real = panel_get("real")
+    if not real:
+        return None
+    room, slots, free = v["room"], v["slots"], v["free"]
+    status, ids = real.get("status"), []
+    if status == "draft":
+        items = [c for c in real.get("items", []) if c.get("state") in (None, "draft", "")]
+    elif status == "approved":
+        x = panel_extras(real)
+        items = [c for c in ((x or {}).get("items") or []) if _fa_overlap_ok(c)]
+    else:
+        return None
+    for c in items:
+        s = float(c.get("stake") or 0)
+        if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01 or len(ids) >= slots:
+            continue
+        ids.append(c["id"])
+        room, free = room - s, free - s
+    if not ids:
+        return None
+    day = _panel_day(real.get("at"))
+    book = {c["id"]: float(c.get("stake") or 0) for c in items if c["id"] in ids}
+    _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
+    if status == "draft":
+        ok, msg = panel_approve(ids, "all", at=real.get("at"))
+    else:
+        ok, msg = panel_add(ids, "extra")
+    log(f"full auto {'approved' if status == 'draft' else 'added'} {len(ids)}: {msg}")
+    return {"ok": ok, "ids": ids, "msg": msg}
 
 
 # ---------------------------------------------------------------- the combo lab and the analytics
@@ -25041,8 +25336,8 @@ def smart_table():
 def smart_params(tickers, single=False):
     """smart_params_walk plus the cautious default loss cut: a COMBO whose league has no record of its own gets
     `loss` = LOSS_CUT_DEFAULT (12.5%) and `loss_src` "default" while the `loss_cut_default` switch is on. A league's own
-    record replaces it: its own value, or an explicit "stop cutting" the tuner chose (a stored None that nothing chose,
-    like the one an untouched league's file entry carries, is not that); singles never get it (the evidence was
+    record replaces it: its own value, or an explicit "stop cutting" the tuner chose (a stored None under 30 results that nothing chose,
+    like the one an untouched league's file entry carries, is not that; 30+ results with None is a pre-marker "never cut"); singles never get it (the evidence was
     combos only). While self-tuning's brake holds the league there is no default either (no cut is the strictest)."""
     out = _smart_params_walk(tickers)
     if out.get("loss") is None and not single and CFG.get("loss_cut_default", True) \
@@ -25051,17 +25346,29 @@ def smart_params(tickers, single=False):
     return out
 
 
+def _entry_loss_off(e):
+    """True when a smart-table entry records a "never cut" choice: the explicit `loss_off` marker, or (entries written
+    before the marker existed, no `loss_off` key at all) a league with 30+ results whose loss is None, which only the
+    tuner could have left there. An entry with fewer results, or with `loss_off` False, is not a choice. Read-only, so
+    repeating it changes nothing."""
+    e = e or {}
+    if "loss_off" in e:
+        return bool(e["loss_off"])
+    return e.get("loss") is None and (e.get("n") or 0) >= SMART_MIN_N
+
+
 def _loss_cut_chosen_off(key):
-    """True only when this league's own tuning explicitly chose no loss cut (smart_tune marked `loss_off`, or
-    self-tuning recorded smart_loss as off for it). A missing or merely-None value is not a choice."""
+    """True only when this league's own tuning explicitly chose no loss cut (smart_tune marked `loss_off` or, for a
+    pre-marker league, 30+ results with no loss cut; or self-tuning recorded smart_loss as off for it). Fails closed:
+    if the settings cannot be read, assume the league is off so the default cut is not applied on a guess."""
     try:
-        if (smart_table().get(key) or {}).get("loss_off"):
+        if _entry_loss_off(smart_table().get(key)):
             return True
         if knob_switch_on():
             lv = (((knob_state_cached() or {}).get("groups") or {}).get(key) or {}).get("lv") or {}
             return "smart_loss" in lv and lv["smart_loss"] is None
     except Exception:
-        pass
+        return True
     return False
 
 
@@ -25396,7 +25703,7 @@ def smart_tune(force=False):
         cur = {**SMART_DEFAULT, **{x: (d.get(key) or {}).get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}}
         stored_loss = (d.get(key) or {}).get("loss")      # what the file really holds: the default is never written to it
         from_default = False
-        if cur["loss"] is None and CFG.get("loss_cut_default", True) and not (d.get(key) or {}).get("loss_off"):
+        if cur["loss"] is None and CFG.get("loss_cut_default", True) and not _entry_loss_off(d.get(key)):
             cur["loss"] = LOSS_CUT_DEFAULT                # judged from the default in memory only; saved only if it moves
             from_default = True
         n = len(rows)
@@ -25447,6 +25754,8 @@ def smart_tune(force=False):
             moved.append(f"{league_label(key)}: {why}")
         else:
             e.update({x: cur[x] for x in SMART_DEFAULT if x != "loss"}, loss=stored_loss)
+            if from_default:
+                e["loss_off"] = False                    # judged from the default and kept it: an explicit "not off", so 30+ results with no stored loss are not read as a pre-marker "never cut"
         d[key] = e
     for key, rows in sl_groups.items():                  # the stop-loss switch's guards, same league-by-league way
         e = dict(d.get(key) or {})
@@ -25470,7 +25779,7 @@ def smart_summary():
         out.append({"key": k, "name": league_label(k), "floor": e.get("floor", 1.5), "lam": e.get("lam", 1.0),
                     "loss": e.get("loss"), "n": e.get("n", 0), "ret": e.get("ret"), "why": e.get("why", ""),
                     "loss_default": (LOSS_CUT_DEFAULT if e.get("loss") is None and CFG.get("loss_cut_default", True)
-                                     and not e.get("loss_off") else None),   # display only: the cut a combo here starts on
+                                     and not _entry_loss_off(e) else None),   # display only: the cut a combo here starts on
                     "at": e.get("at"), "own": e.get("n", 0) >= SMART_MIN_N,
                     "sl_prog": e.get("sl_prog", SL_DEFAULT["prog"]), "sl_drop": e.get("sl_drop", SL_DEFAULT["drop"]),
                     "sl_n": e.get("sl_n", 0), "sl_own": e.get("sl_n", 0) >= SL_MIN_N, "sl_why": e.get("sl_why", "")})
@@ -31425,6 +31734,41 @@ def _best_exposure(legs):
     return {"n": len(on), "of": len(hold), "team": team, "label": label}
 
 
+def _best_calibrate(c):
+    """(#243) One Best-bets candidate on the chance corrected by your own record (`calib_fair`, the same nudge the panel
+    uses), or None when the corrected edge is gone. The books' raw chance used to decide which candidates were looked at
+    (the top BEST_LOOK by raw edge) and what they were sized and simulated on. Now the legs' fair, the chance, the
+    return used to rank, the stake (`_size`) and the exit simulation all read the corrected chance; the raw one is kept
+    as `chance_book`. A leg `calib_fair` cannot correct keeps the books' chance, and an empty record changes nothing.
+    Display and ranking only: nothing here buys or sells, and it can only reorder or drop a row. Spreads/totals are not
+    touched (their chance is already `calib_line`'s)."""
+    try:
+        code = c.get("code") or ""
+        legs = []
+        for l in c["legs"]:
+            f = l.get("fair")
+            legs.append(dict(l, fair=round(calib_fair(code, f, l.get("ticker")), 4) if f else f))
+        book = c["chance"]
+        if c["kind"] == "combo":
+            if not all(l.get("fair") for l in legs):
+                return c
+            q = math.prod(l["fair"] for l in legs)
+            ret = (c.get("pct") or 0) * q / book - 1 if book else 0
+        else:
+            q = legs[0]["fair"]
+            p = c["price"]
+            ret = (q - p - single_fee(p)) / p
+            if q - p - single_fee(p) < SINGLE_MIN_EDGE or ret < 0.04:   # single_candidates' own bar, on the corrected chance
+                return None
+        if ret <= 0:
+            return None
+        return dict(c, legs=legs, chance=round(q, 4), ret=round(ret, 4), edge=round(ret if c["kind"] == "combo" else ret * c["price"], 4),
+                    chance_book=book)
+    except Exception as err:
+        console_note(f"best bets calibrate: {type(err).__name__}: {err}")
+        return c
+
+
 def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
     """{'items': [...], 'why': text or None, 'looked': {...}} for Build. games = the board's {event: [sides]}, lines =
     line_recommend's vetted rows (BUILD["lines"]), combos = [(index, combo dict, predicted share of fair or None)]. Never
@@ -31464,6 +31808,7 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
         cands = hide_contradicting(cands, lambda c: c.get("legs"))    # a combo against a single he holds is never listed
         for c in cands:
             looked[c["kind"]] += 1
+        cands = [c for c in (_best_calibrate(c) for c in cands) if c is not None]   # (#243) rank on YOUR record's chance
         cands.sort(key=lambda c: -(c.get("ret") or 0))
         out = []
         # Spreads and totals arrive ALREADY VETTED by line_recommend (issue #117): the league's learned edge bar after the
@@ -31517,7 +31862,7 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
                             "legs": [{"pick": l.get("pick"), "game": l.get("game"), "ticker": l.get("ticker")} for l in c["legs"]],
                             "ticker": c["legs"][0]["ticker"], "i": c.get("i"), "kick": c.get("kick"),
                             "price": c.get("price"), "fair": c["legs"][0]["fair"] if c["kind"] != "combo" else None,
-                            "chance": c["chance"], "edge": c["edge"], "stake": stake, "ev": ev,
+                            "chance": c["chance"], "chance_book": c.get("chance_book"), "edge": c["edge"], "stake": stake, "ev": ev,
                             "route": sim["route"], "p_exit": sim["p_exit"], "win": sim["win"],
                             "exit_mins": sim.get("exit_mins"), "exposure": _best_exposure(c["legs"])})
             except Exception as err:

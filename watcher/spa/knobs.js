@@ -2,19 +2,23 @@
    guards, auto-hedge and Smart Buy decide with: its value now (per league where it already learns by league), where
    it starts, the widest it may ever go, and the things that never move by themselves. Read-only: the only controls
    are the fold and the league chips, which change what is shown, never a setting. */
-function knobCard(kv){if(!kv||!kv.knobs||!kv.knobs.length)return '';const o=!!S.knOpen;const ks=kv.knobs;
+function knobCard(kv){if(kv&&!kv.knobs&&Object.keys(kv).length===0)return `<div class="m knerr" style="margin-top:14px;font-size:12.5px">Couldn't read the numbers right now.</div>`;if(!kv||!kv.knobs||!kv.knobs.length)return '';const o=!!S.knOpen;const ks=kv.knobs;
  const tun=ks.filter(k=>k.cls==='tunable'||k.cls==='setting'),inv=ks.filter(k=>k.cls==='invariant'),ev=ks.filter(k=>k.cls==='evidence');
  const lgs=kv.leagues||[{key:'all',name:'Everything'}];const lg=lgs.some(l=>l.key===S.knLg)?S.knLg:'all';
  const nl=tun.filter(k=>k.values).length;
- const head=`<button class="knh" aria-expanded="${o}" onclick="knTog()" style="all:unset;position:relative;box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;cursor:pointer"><span class="chev" aria-hidden="true">▾</span><b style="font-size:15px">🎛️ The numbers smart sell and Smart Buy run on</b><span class="m" style="margin-left:auto;font-size:12.5px">${tun.length} numbers · ${inv.length} never move</span></button>`;
+ const head=`<button type="button" class="fh knh${S.fhJust==='kn'?' fhjust':''}" aria-expanded="${o}" onclick="knTog()"><span class="chev" aria-hidden="true">▾</span><b style="font-size:15px">🎛️ The numbers smart sell and Smart Buy run on</b><span class="m" style="margin-left:auto;font-size:12.5px">${tun.length} numbers · ${inv.length} never move</span></button>`;
  if(!o)return `<div class="knp" style="margin-top:14px;border-top:1px solid var(--line);padding-top:4px">${head}</div>`;
  const val=k=>k.values?(k.values[lg]||k.values.all||{}):(k.value||{});
  const rng=k=>k.min_say==null&&k.max_say==null?'':` · range ${esc(k.min_say==null?'—':k.min_say)} to ${esc(k.max_say==null?'no limit':k.max_say)}`;
  const row=k=>{const v=val(k);const moved=k.values&&v.from&&v.from!=='starting point'&&!/^off until/.test(v.from);
-  return `<div class="knr" data-k="${esc(k.name)}" style="padding:9px 0;border-top:1px solid var(--line)"><div style="display:flex;gap:10px;align-items:baseline"><b style="font-size:13.5px;min-width:0;overflow-wrap:anywhere">${esc(k.label)}</b><b class="knv" style="margin-left:auto;font-size:14px;white-space:nowrap">${esc(v.say||'—')}</b></div>
+  return `<div class="knr" data-k="${esc(k.name)}" style="padding:9px 0;border-top:1px solid var(--line)"><div style="display:flex;gap:10px;align-items:baseline"><b style="font-size:13.5px;min-width:0;overflow-wrap:anywhere">${esc(k.label)}${k.values&&lg!=='all'?' <span class="tag" style="font-size:10.5px;font-weight:600">by league</span>':''}</b><b class="knv" style="margin-left:auto;font-size:14px;white-space:nowrap">${esc(v.say||'—')}</b></div>
   ${k.what?`<div class="m" style="font-size:12px;margin-top:2px;line-height:1.4">${esc(k.what)}</div>`:''}
   <div class="m knf" style="font-size:11.5px;margin-top:3px">${k.unit==='rule'?'Starts '+esc(k.start_say):'Starts at '+esc(k.start_say)}${rng(k)} · <span class="${moved?'tag good':''}" style="${moved?'font-size:11px':''}">${esc(v.from||'')}</span>${k.learned_say?` · learns ${esc(k.learned_say)}`:''}${k.shared_with?` · also used for ${esc(String(k.shared_with).replace(/\s*\([^)]*\)/g,''))}`:''}</div></div>`;};
- const groups=(kv.groups||[]).map(g=>{const rs=tun.filter(k=>k.group===g.key);return rs.length?`<h3 style="margin:16px 0 2px;font-size:14.5px">${esc(g.name)}</h3>${rs.map(row).join('')}`:'';}).join('');
+ const dup={smart_floor:1,smart_lam:1,smart_loss:1};   // (#261) the same three numbers sit in "Smart sell, tuned by league" just above
+ const groups=(kv.groups||[]).map(g=>{const rs=tun.filter(k=>k.group===g.key);if(!rs.length)return '';const go=!!(S.knGrp||{})[g.key];
+  const nm=rs.filter(k=>{const v=val(k);return k.values&&v.from&&v.from!=='starting point'&&!/^off until/.test(v.from);}).length;
+  const meta=`${rs.length} number${rs.length>1?'s':''}${nm?` · ${nm} learned`:''}`;
+  return `<button type="button" class="fh kgh${S.fhJust==='g:'+g.key?' fhjust':''}" aria-expanded="${go}" data-k="${esc(g.key)}" onclick="knGrp(this.dataset.k)" style="margin-top:6px;border-top:1px solid var(--line)"><span class="chev" aria-hidden="true">▾</span><b style="font-size:14.5px">${esc(g.name)}</b><span class="m" style="margin-left:auto;font-size:12.5px;text-align:right">${meta}</span></button>${go?`<div class="kgb">${rs.some(k=>dup[k.name])?`<div class="m" style="font-size:12px;padding:2px 0 6px;line-height:1.4">Profit floor, Risk weight and Cut losses also show league by league in the table above.</div>`:''}${rs.map(row).join('')}</div>`:''}`;}).join('');
  const chips=lgs.length>1?`<div class="knlg" role="group" aria-label="League" style="display:flex;flex-wrap:wrap;gap:6px;margin:6px 0 2px">${lgs.map(l=>`<button class="chip${l.key===lg?' on':''}" aria-pressed="${l.key===lg}" data-k="${esc(l.key)}" onclick="knLg(this.dataset.k)" style="min-height:44px">${esc(l.name)}</button>`).join('')}</div>`:'';
  const N=(x,d)=>{const n=Number(x);return isFinite(n)?n:d;};const e0=kv.evidence||{},b0=kv.brake||{};
  const e={band_n:N(e0.band_n,10),gain:N(e0.gain,0.02),se:N(e0.se,2)},b={losses:N(b0.losses,4),month_share:N(b0.month_share,0.05),days:N(b0.days,14)};
@@ -23,7 +27,10 @@ function knobCard(kv){if(!kv||!kv.knobs||!kv.knobs.length)return '';const o=!!S.
   ${chips}${groups}
   <h3 style="margin:18px 0 2px;font-size:14.5px">The bar a change must clear</h3>${ev.map(k=>`<div class="knr" data-k="${esc(k.name)}" style="display:flex;gap:10px;align-items:baseline;padding:7px 0;border-top:1px solid var(--line)"><span style="font-size:13px;min-width:0">${esc(k.label)}</span><b style="margin-left:auto;font-size:13.5px;white-space:nowrap">${esc((k.value||{}).say||k.start_say)}</b></div>`).join('')}
   <h3 style="margin:18px 0 2px;font-size:14.5px">Never moves by itself</h3><div class="m" style="font-size:12.5px;margin-bottom:4px">Safety rules. No record, however good, changes these.</div>${inv.map(k=>`<div class="knr kni" data-k="${esc(k.name)}" style="padding:7px 0;border-top:1px solid var(--line)"><div style="display:flex;gap:10px;align-items:baseline"><b style="font-size:13px;min-width:0">${esc(k.label)}</b>${k.unit==='rule'?'':`<b style="margin-left:auto;font-size:13.5px;white-space:nowrap">${esc((k.value||{}).say||k.start_say)}</b>`}</div><div class="m" style="font-size:12px;margin-top:2px">${esc(k.why||'')}</div></div>`).join('')}</div>`;}
-function knTog(){S.knOpen=!S.knOpen;renderResults();}
+/* (#261) redraw with the chevron turn, then give a keyboard user their focus back (the redraw replaces the button) */
+function fhRender(sel){renderResults();S.fhJust=null;const b=document.querySelector('.an '+sel);if(b)b.focus({preventScroll:true});}
+function knTog(){S.knOpen=!S.knOpen;S.fhJust='kn';fhRender('.knh');}
+function knGrp(k){S.knGrp=S.knGrp||{};S.knGrp[k]=!S.knGrp[k];S.fhJust='g:'+k;fhRender('.kgh[data-k="'+k+'"]');}
 function knLg(k){if(S.knLg===k)return;S.knLg=k;renderResults();}
 /* Self-tuning (issue #228). PR2: a test run (once a week the Mac replays each league's settled bets with one number
    one step away and writes the step down only if it clears Pete's bar; the brake watches the app's own sales).
@@ -34,7 +41,7 @@ function knobShadow(v){if(!v||!v.mode)return '';const o=!!S.ksOpen;const live=v.
  const nStep=ls.reduce((s,l)=>s+(l.steps||[]).length,0),nBrk=ls.filter(l=>l.brake).length;
  const nChg=ls.reduce((s,l)=>s+(l.changes||[]).filter(c=>c&&!c.brake).length,0);
  const ran=!!v.at||nBrk>0;const meta=!ran?'first run within a week':live?(nChg?`${nChg} change${nChg>1?'s':''}`:nBrk?'braked':'nothing changed yet'):nStep?`${nStep} would change`:'nothing yet';
- const head=`<button class="ksh" aria-expanded="${o}" onclick="ksTog()" style="background:none;border:0;color:inherit;font:inherit;text-align:left;position:relative;box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;min-height:44px;padding:0;cursor:pointer"><span class="chev" aria-hidden="true" style="display:inline-block;transition:transform .2s;transform:rotate(${o?0:-90}deg)">▾</span><b style="font-size:15px">${live?'🎛️ What self-tuning changed':'🧪 What self-tuning would change'}</b><span class="m" style="margin-left:auto;font-size:12.5px;text-align:right">${esc(meta)}${nBrk?` · ${nBrk} brake${nBrk>1?'s':''}`:''}</span></button>`;
+ const head=`<button type="button" class="fh ksh${S.fhJust==='ks'?' fhjust':''}" aria-expanded="${o}" onclick="ksTog()"><span class="chev" aria-hidden="true">▾</span><b style="font-size:15px">${live?'🎛️ What self-tuning changed':'🧪 What self-tuning would change'}</b><span class="m" style="margin-left:auto;font-size:12.5px;text-align:right">${esc(meta)}${nBrk?` · ${nBrk} brake${nBrk>1?'s':''}`:''}</span></button>`;
  if(!o)return `<div class="ksp" style="margin-top:14px;border-top:1px solid var(--line);padding-top:4px">${head}</div>`;
  const day=t=>{const n=Number(t);return isFinite(n)&&n>0?new Date(n*1000).toLocaleDateString([], {month:'short',day:'numeric'}):'';};
  const lg=ls.some(l=>l.key===S.ksLg)?S.ksLg:(ls[0]||{}).key;const L=ls.find(l=>l.key===lg);
@@ -64,5 +71,5 @@ function knobShadow(v){if(!v||!v.mode)return '';const o=!!S.ksOpen;const live=v.
   ${v.why?`<div class="m kswhy" style="font-size:12px;margin:0 0 6px">${esc(v.why)}</div>`:''}${chips}${body}
   <div class="m" style="font-size:11.5px;margin-top:12px;line-height:1.45">${foot}${(Number(v.waits)||0)+(v.shared||[]).length} more numbers wait for their own test.</div></div>`;}
 /* (#283) "New" marks a change made since the last time this card was opened (a visit = opening it; the first ever open marks nothing) */
-function ksTog(){S.ksOpen=!S.ksOpen;if(S.ksOpen){try{const t=parseFloat(localStorage.getItem('cw_ks_seen'));S.ksSeen=isFinite(t)?t:null;localStorage.setItem('cw_ks_seen',String(Date.now()/1000));}catch(e){S.ksSeen=null;}}renderResults();}
+function ksTog(){S.ksOpen=!S.ksOpen;S.fhJust='ks';if(S.ksOpen){try{const t=parseFloat(localStorage.getItem('cw_ks_seen'));S.ksSeen=isFinite(t)?t:null;localStorage.setItem('cw_ks_seen',String(Date.now()/1000));}catch(e){S.ksSeen=null;}}fhRender('.ksh');}
 function ksLg(k){if(S.ksLg===k)return;S.ksLg=k;renderResults();}

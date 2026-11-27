@@ -22,7 +22,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.26.142"
+WATCHER_VERSION = "2026.11.26.143"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "loss_cut_default", "learned_guards", "mkt_hold",
@@ -1864,6 +1864,10 @@ def panel_loop(odds, conf, every=60):
             with odds.lock:
                 H = odds.engine()
                 H.buy_asked()                             # this pass covers anything asked for so far
+                try:                                      # full auto (OFF unless Pete turned it on): approves/adds like his taps do
+                    H.full_auto_pass(paused=bool(conf.get("paused")), may_trade=H.can_trade(), log=log)
+                except Exception as err:                  # never lets it hold back bets he already approved
+                    log("full auto:", type(err).__name__, err)
                 out = H.panel_exec(log=log, paused=bool(conf.get("paused")), may_trade=H.can_trade())
                 if time.time() - settled >= 5 * 60:       # results, exits and game-time prices: every 5 minutes
                     settled = time.time()
@@ -2325,12 +2329,12 @@ def promote_report(q, cfg=None, fee=None, now=None):
                     row.update(ready=False, status="Looking good, not proven yet", streak=0,
                                reason="Some combos are missing their games; waiting")
                 elif key in told:      # the one real "go": the stricter bar was cleared on 3 batches of new games and you were told
-                    row.update(ready=True, status="Ready: say go",
-                               reason=f"It cleared the strict bar on {PROMOTE_STREAK} batches of new games, and you were told. Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games.")
+                    row.update(ready=True, status="Ready to turn on",
+                               reason=f"It passed {PROMOTE_STREAK} checks in a row, each on games it had not seen before. To turn it on, tell Claude \"go\". Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games.")
                 else:
                     row.update(ready=False, status="Looking good, not proven yet",
                                reason=f"Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games, and it holds up so far. "
-                                      f"Streak {row['streak']} of {PROMOTE_STREAK}: it has to keep holding on new games before you are told it is ready.")
+                                      f"It has passed {row['streak']} of {PROMOTE_STREAK} checks on new games so far. It needs to keep passing before it is ready to turn on.")
         except Exception as err:
             log("promote:", key, type(err).__name__, err)
             row.update(state="wait", status="Not enough data", reason="Could not be read just now.", n=0)
@@ -2341,7 +2345,7 @@ def promote_report(q, cfg=None, fee=None, now=None):
     return {"at": int(now or time.time()), "signals": rows,
             "bar": "A signal passes after at least 20 settled bets that made money after fees, held up in the latest "
                    "games and in both halves of the time, and stay ahead even when the order lands 30 to 60 seconds late (a signal that cannot be checked that way cannot pass). "
-                   "It needs at least 40 games (15 in the latest stretch). You are told only after it clears a stricter bar on three successive batches of newly settled games. Nothing here turns anything on."}
+                   "It needs at least 40 games (15 in the latest stretch). You are told only after it passes a stricter check on three batches of newly settled games in a row. Nothing here turns anything on by itself; to switch one on, tell Claude \"go\"."}
 
 
 def promote_refresh(q, cfg=None, fee=None):
@@ -2386,7 +2390,7 @@ def promote_streak_step(old, s):
 
 def promote_push_check(report, conf, notify, now=None):
     """One push per signal, once it has been Passing on PROMOTE_STREAK refreshes in a row (the streak is saved, so a restart
-    keeps it; any refresh that is not Passing resets it): "<name> passed the bar, say go". Goes through the notifier
+    keeps it; any refresh that is not Passing resets it): "<name> passed its paper test ... Tell Claude go to turn it on". Goes through the notifier
     as a normal (non-urgent) update, so quiet hours and the digest apply. The 'already told' list is saved after the
     message is queued, so a restart does not repeat it. Never turns anything on. Returns the messages queued."""
     if not (conf or {}).get("promote_push", True) or not report:
@@ -2417,7 +2421,7 @@ def promote_push_check(report, conf, notify, now=None):
         for s in report.get("signals", []):
             if s.get("state") != "pass" or s["key"] in told or not s.get("push_ok") or s.get("missing") or streak[s["key"]]["n"] < PROMOTE_STREAK:
                 continue
-            msg = f"{s['name']} passed the bar, say go"
+            msg = f"{s['name']} passed its paper test {PROMOTE_STREAK} times in a row. Tell Claude \"go\" to turn it on."
             notify(msg, kind="promote")
             told[s["key"]] = time.strftime("%Y-%m-%d", time.localtime(now or time.time()))
             PROMOTE["pushed"][s["key"]] = told[s["key"]]
@@ -3741,7 +3745,8 @@ def webapp_main():
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "cover": A.cover_summary() if A.STORE.get("db") else None,
                              "mkt": paper_part("mkt_fair_summary"), "carry": paper_part("carry_summary"),
-                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
+                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board(),
+                             "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
 
     CLOSED_WHY = {"smart": "smart sell took the profit", "take profit": "took the profit", "lock in": "locked in a profit",
                   "checkpoint": "checkpoint sale", "cut loss": "cut the loss", "stop loss": "stop-loss"}
@@ -4090,10 +4095,22 @@ def webapp_main():
                         "league": x.get("league")})
         for g in out:                                    # the chance line: what the Mac recorded for this pick lately
             tk = g.get("ticker")
+            g["start_ts"] = None                         # when the game starts (epoch seconds), for the display order only
+            try:
+                st = A.start_dt(A.game_event(str(tk or "").rsplit("-", 1)[0]), tk) if tk else None
+                g["start_ts"] = round(st.timestamp()) if st else None
+            except Exception:
+                pass
             hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
                                 (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
             g["spark"] = [[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]
-        out.sort(key=lambda g: (g.get("state") != "live", -(g.get("combos") or 0) - len(g.get("singles") or [])))
+        def shown_order(g):                              # live first, upcoming soonest first (no start = last), finished newest first
+            ts = g.get("start_ts")
+            done = g.get("phase") == "over" or g.get("state") == "over" or g.get("phase") == "probably_over"
+            live = g.get("state") == "live" and not done and g.get("phase") != "waiting"
+            b = 0 if live else 2 if done else 1
+            return (b, ts is None, (-ts if b == 2 else ts) if ts is not None else 0, str(g.get("ticker") or g.get("name") or ""))
+        out.sort(key=shown_order)
         return jsonable({"games": out, "at": d.get("at"), "fresh": freshness()})
 
     SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
@@ -4190,6 +4207,7 @@ def webapp_main():
             return jsonable({"ok": True, "lg": A.LEAGUE["code"], "name": A.LG()["name"], "mode": mode,
                              "full": bool(A.LG().get("full")), "synced": synced,
                              "values": {k: A.CFG.get(k) for k in SET_KEYS if k in A.CFG},
+                             "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade()),
                              "keys": {"kalshi": bool(A.CFG.get("kalshi_key_id")) or bool(A.hub_conf()),
                                       "odds": bool(A.CFG.get("odds_key"))},
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
@@ -4691,6 +4709,12 @@ def webapp_main():
                     return {"ok": False, "msg": "That move isn't open any more."}
                 log("pot move cleared from Settings")
                 return {"ok": True, "msg": "Cleared. Moves between pots can go again; the unclear one is never resent."}
+            if a == "full_auto_set":                # the real full-auto switch (own file; never a setting): on needs the paper gate or an explicit override
+                on = d.get("on") is True
+                ok, msg, extra = A.fa_set(on, override=d.get("override") is True, reset_brake=d.get("reset_brake") is True,
+                                          limits=d.get("limits") if isinstance(d.get("limits"), dict) else None)
+                log("full auto", "ON" if on and ok else "OFF" if ok else "refused", "from the app", ("(override)" if d.get("override") is True and ok and on else ""))
+                return jsonable(dict(extra, ok=ok, msg=msg, full_auto=A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())))
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}

@@ -62,10 +62,16 @@ with sync_playwright() as pw:
         if r != [True, False]: bad(f"{scheme}: tappable toast should tick, plain should not: {r}")
         pg.evaluate("toastHide()")
         # #c= to a bet that is no longer live: opens its page and says so calmly
-        pg.evaluate("""window.__t=[];window.__o=[];const rt=toast;window.toast=(m)=>{__t.push(m);};window.comboOk=()=>true;window.load=async()=>{};window.openClosed=(t)=>{__o.push(t)};
+        pg.evaluate("""window.__t=[];window.__o=[];const rt=toast;window.toast=(m)=>{__t.push(m);};window.comboOk=()=>true;window.load=async()=>{};window.openClosed=async(t)=>{__o.push(t);return true};
          S.live={combos:[]};S.liveNet=true;S.view='live';location.hash='#c=KXGONE-1';comboFromHash(true);""")
         if not wait(pg, "__o.length>0", 6): bad(f"{scheme}: #c= to a settled bet did not open it")
         if not pg.evaluate("(__t[0]||'').includes('no longer live')"): bad(f"{scheme}: no calm toast for a settled #c= link: {pg.evaluate('__t')}")
+        # #571: when the closed bet's page could not load ("can't find that bet"), no "no longer live" toast is shown over it
+        pg.evaluate("""window.__t=[];window.__o=[];window.openClosed=async(t)=>{__o.push(t);return false};
+         S.live={combos:[]};S.liveNet=true;S.view='live';location.hash='#c=KXGONE-2';comboFromHash(true);""")
+        if not wait(pg, "__o.length>0", 6): bad(f"{scheme}: #c= to an unknown bet did not try to open it")
+        time.sleep(.4)
+        if pg.evaluate("__t.length") != 0: bad(f"{scheme}: a toast showed over the 'can't find that bet' page: {pg.evaluate('__t')}")
         pg.evaluate("window.toast=toast;")
         # the sell sheet wording, made-up numbers
         pg.reload(); wait(pg, "typeof ssPaint==='function'&&document.querySelector('#main')", 40); time.sleep(.6)

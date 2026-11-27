@@ -65,7 +65,21 @@ with sync_playwright() as pw:
             P.append(tag + ": the knob card isn't folded by default")
         if bb["height"] < 44: P.append(tag + ": the knob card's header is under 44pt: %r" % bb)
         if "never move" not in hd.inner_text(): P.append(tag + ": header has no counts: " + hd.inner_text())
-        hd.click(); wait(pg, "document.querySelectorAll('.an .knp .knr').length>20", 5)
+        hd.click(); wait(pg, "document.querySelectorAll('.an .knp .kgh').length>=4", 5)
+        # (#261) each group is its own fold, shut by default, with a count summary ("12 numbers · 2 learned")
+        if pg.locator(".an .knp .knr:not(.kni)").count() and pg.locator(".an .knp .kgh[aria-expanded=true]").count():
+            P.append(tag + ": the groups should start shut")
+        gh = pg.locator(".an .knp .kgh")
+        if gh.count() < 4 or "numbers" not in gh.first.inner_text(): P.append(tag + ": group headers/counts missing: " + gh.first.inner_text())
+        if gh.first.bounding_box()["height"] < 44: P.append(tag + ": a group header is under 44pt")
+        if "fh" not in (pg.locator(".an .knp .knh").get_attribute("class") or "").split() or pg.evaluate("getComputedStyle(document.querySelector('.an .knp .knh')).getPropertyValue('all')")=="unset":
+            P.append(tag + ": the card header isn't on the shared fold class")
+        pg.locator(".an .knp").screenshot(path=os.path.join(os.environ.get("SHOT_DIR", "."), "knobs_folded_%s.png" % tag))
+        gh.first.click(); wait(pg, "document.querySelectorAll('.an .knp .kgb .knr').length>0", 5)
+        if gh.first.get_attribute("aria-expanded") != "true": P.append(tag + ": a group didn't open")
+        for i in range(1, gh.count()):
+            if gh.nth(i).get_attribute("aria-expanded") != "true": gh.nth(i).click()
+        wait(pg, "document.querySelectorAll('.an .knp .knr').length>20", 5)
         txt = pg.locator(".an .knp").inner_text()
         for want in ("Taking a profit", "Selling at a loss", "Hedging", "Smart Buy", "The bar a change must clear",
                      "Never moves by itself", "Profit floor", "Least chance to take a profit", "Pause stops every order",
@@ -98,7 +112,9 @@ with sync_playwright() as pw:
         hd.click(); wait(pg, "!document.querySelector('.an .knp .knr')", 5)
         if pg.locator(".an .knp .knr").count(): P.append(tag + ": folding it again didn't close it")
         # PR3: self-tuning on: the card says so, the exit numbers show per league, a borrowed floor only stricter
-        html = pg.evaluate("v=>{const o=S.knOpen,l=S.knLg;S.knOpen=true;S.knLg='epl';const h=knobCard(v);S.knOpen=o;S.knLg=l;return h}", KV_LIVE)
+        if "Couldn't read the numbers" not in pg.evaluate("knobCard({})"): P.append(tag + ": an empty knob_view should say it couldn't be read")
+        if pg.evaluate("knobCard(undefined)") != "": P.append(tag + ": an older server (no knobs key) should show nothing")
+        html = pg.evaluate("v=>{const o=S.knOpen,l=S.knLg,g=S.knGrp;S.knOpen=true;S.knLg='epl';S.knGrp={profit:1,loss:1,hedge:1,sell:1,buy:1};const h=knobCard(v);S.knOpen=o;S.knLg=l;S.knGrp=g;return h}", KV_LIVE)
         for want in ("Self-tuning is on", "the newest 30% agree", "never looser than its start", "still a test"):
             if want not in html: P.append(tag + ": live registry card missing %r" % want)
         if "none of that is switched on" in html: P.append(tag + ": live registry card still says it is off")
