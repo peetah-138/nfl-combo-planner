@@ -47,6 +47,7 @@
     "moments.js",
     "logaccess.js",
     "overlap.js",
+    "fullauto.js",
     "settings.js",
     "smallwins.js",
     "update.js",

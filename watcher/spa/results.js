@@ -207,7 +207,7 @@ function anBlock(a){if(!a||!a.at)return `<div class="card an"><div class="anh"><
   ${notes?`<ul class="annotes">${notes}</ul>`:''}<div class="${S.anJust?'antab':''}"><div class="m" style="font-size:12.5px;margin:4px 0 10px;line-height:1.45">${expl}</div>${body}</div>${sbCard(a.smart_buy)}${cbCard(a.comeback)}</div>`;}
 function anTab(k){if(S.anTab===k)return;S.anTab=k;S.anJust=true;renderResults();S.anJust=false;
  if(!matchMedia('(prefers-reduced-motion: reduce)').matches)document.querySelectorAll('.an .antbl .anrow').forEach((r,i)=>{r.style.animation=`rise .34s var(--ease) ${Math.min(i,12)*30}ms both`;});}
-function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));out.push(mktCard(d.mkt));out.push(carryCard(d.carry));
+function edgeBlock(d){const e=d.edge||{};const out=[];out.push(gateCard(d.panel));out.push(faCard(d.full_auto));if(d.proof)out.push(proofCard(d.proof));out.push(coverCard(d.cover));out.push(mktCard(d.mkt));out.push(carryCard(d.carry));
  const clv=e.clv||[0,0,0];
  if(clv[2]){const g=clv[1]/clv[0]-1;out.push(`<div class="card"><h3>Your prices vs kickoff <span>${clv[2]} combos</span></h3>
   <div style="display:flex;align-items:baseline;gap:12px"><b style="font-size:30px;letter-spacing:-.03em" class="${g>=0?'up':'down'}">${g>=0?'+':'−'}${Math.abs(g*100).toFixed(1)}%</b>

@@ -23941,6 +23941,266 @@ def panel_record():
     return out
 
 
+# ---------------------------------------------------------------- full auto: the real master switch (issue #7)
+# Pete's rule: nothing buys on its own until he flips this, and it starts OFF. Full auto is NOT a second buyer. It only
+# does what Pete's two taps do: Approve on a fresh draft panel, and Add on the "New since you approved" extras, inside
+# its own limits. Every order still goes through panel_exec (_buy_panel_bet: buy_single / accept_offer with the held
+# and opposite-side checks, the price check, Pause, can_trade, the unread-balance hold). Exits are the existing smart
+# sell and loss cut, untouched. The switch and its numbers live in their OWN file (never in the settings, the shared
+# keys or anything the Pi or the phone copies), so a stray settings post can't turn it on. A missing or unreadable
+# file means OFF. Turning it on needs the paper gate passed, or Pete's explicit "override the paper gate" (recorded).
+FA = {"bank": 300.0, "cap": 30.0, "max_open": 15, "streak": 4, "day_loss": 20.0}
+FA_LIMITS = {"bank": (50, 1000), "cap": (2, 100), "max_open": (1, 30), "streak": (2, 10), "day_loss": (2, 100)}
+FA_WHY = {"bank": "bankroll", "cap": "daily spend cap", "max_open": "open bets", "streak": "losses in a row",
+          "day_loss": "daily loss limit"}
+
+
+def _fa_path():
+    return os.path.join(HERE, "combo_fullauto.json")
+
+
+def fa_state():
+    """The saved switch and limits. Anything unreadable or odd: OFF with the default limits (fail closed)."""
+    st = load_json(_fa_path(), {})
+    st = st if isinstance(st, dict) else {}
+    out = dict(st)
+    out["on"] = st.get("on") is True
+    for k, (lo, hi) in FA_LIMITS.items():
+        try:
+            v = float(st.get(k, FA[k]))
+        except (TypeError, ValueError):
+            v = FA[k]
+        out[k] = int(min(hi, max(lo, v))) if k in ("max_open", "streak") else round(min(hi, max(lo, v)), 2)
+    if not isinstance(out.get("bets"), dict):
+        out["bets"] = {}
+    return out
+
+
+def _fa_save(st):
+    with file_lock(_fa_path()):
+        save_json(_fa_path(), st, strict=True)
+
+
+def _fa_update(fn):
+    """Read-change-write the file under its lock; fn(state) edits it in place."""
+    with file_lock(_fa_path()):
+        st = fa_state()
+        fn(st)
+        save_json(_fa_path(), st, strict=True)
+        return st
+
+
+def _fa_note(st, ev, now=None, **kw):
+    h = st.setdefault("history", [])
+    h.append(dict({"at": round(now or time.time()), "ev": ev}, **kw))
+    del h[:-20]
+
+
+def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
+    """Pete's switch. (ok, message, extra). Off is always allowed. On needs this Mac able to trade (never the Pi), and
+    the paper gate passed or override=True (the 'override the paper gate' confirmation); which one is recorded."""
+    now = now or time.time()
+    clean = {}
+    for k, v in (limits or {}).items():
+        if k in FA_LIMITS:
+            try:
+                lo, hi = FA_LIMITS[k]
+                clean[k] = float(v)
+                if not lo <= clean[k] <= hi:
+                    return False, f"The {FA_WHY[k]} must be between {lo} and {hi}.", {}
+            except (TypeError, ValueError):
+                return False, f"The {FA_WHY[k]} isn't a number.", {}
+    if on and not can_trade():
+        return False, "This computer can't place orders (it isn't the Mac that trades), so full auto stays off.", {}
+    gate = None
+    snap = None
+    if on and fa_state()["on"]:                     # already on (a limit or reset tap): the first choice stands
+        gate, snap = fa_state().get("gate"), fa_state().get("paper") or {}
+    elif on:
+        try:
+            snap = panel_record()["paper"]
+        except Exception as err:
+            print("full auto: couldn't read the paper record:", type(err).__name__, err)
+            snap = {"ready": False}
+        if snap.get("ready"):
+            gate = "passed"
+        elif override is True:
+            gate = "overridden"
+        else:
+            return False, ("The paper gate hasn't passed yet, so full auto stays off. To turn it on anyway, confirm "
+                           "'override the paper gate'."), {"needs_override": True}
+
+    def fn(st):
+        st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
+        if on:
+            was = st.get("on") is True
+            st["on"], st["gate"] = True, gate
+            if not was:
+                st["on_at"] = round(now)
+            st["paper"] = {k: snap.get(k) for k in ("bets", "pl", "days", "days_up", "clv", "ready")}
+            if not was:
+                _fa_note(st, "on", now, gate=gate)
+            if reset_brake:
+                st["brake"], st["reset_at"] = None, round(now)
+        else:
+            if st.get("on") is True:
+                _fa_note(st, "off", now)
+            st["on"] = False
+            if reset_brake:
+                st["brake"], st["reset_at"] = None, round(now)
+    _fa_update(fn)
+    if on:
+        return True, ("Full auto is ON" + (" (paper gate overridden)." if gate == "overridden" else ".")), {}
+    return True, "Full auto is OFF. Bets already approved still go; nothing new is approved.", {}
+
+
+def _fa_rows(now, days=10):
+    """[(day, item)] for every real panel bet of the last `days` panel days (restarted panels included)."""
+    if not STORE["db"]:
+        return []
+    _panel_table()
+    first = _panel_day(now - days * 86400)
+    rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
+    return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
+
+
+def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=False):
+    """Everything about today's full-auto state, read-only: the numbers, the brake and what is blocking it (plain English
+    in `blockers`; empty means it may act). read_positions: also read the account's positions now (what the pass does;
+    an unreadable read is a blocker, never a guess)."""
+    now = now or time.time()
+    st = st if st is not None else fa_state()
+    day = _panel_day(now)
+    rows = _fa_rows(now)
+    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE]
+    spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
+    open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
+    mine = {}
+    for d, c in rows:
+        if f"{d}|{c.get('id')}" in st["bets"]:
+            mine[f"{d}|{c.get('id')}"] = (d, c)
+    settled = sorted((x for x in mine.values() if x[1].get("result")),    # a loss is what it really made (panel_pl), exits included
+                     key=lambda x: (x[0], x[1].get("bought_at") or x[1].get("at") or 0))
+    pl = round(sum(panel_pl(c) or 0 for d, c in settled), 2)
+    risk = round(sum(float(c.get("stake") or 0) for d, c in mine.values()
+                     if c.get("state") in PANEL_LIVE and not c.get("result")), 2)
+    free = round(st["bank"] + pl - risk, 2)
+    after = [x for x in settled if (x[1].get("bought_at") or x[1].get("at") or 0) > (st.get("reset_at") or 0)]
+    run = 0
+    for d, c in reversed(after):
+        if (panel_pl(c) or 0) >= 0:
+            break
+        run += 1
+    loss_today = round(sum(panel_pl(c) or 0 for d, c in settled if d == day), 2)
+    brake = st.get("brake") if isinstance(st.get("brake"), dict) else None
+    if brake and brake.get("kind") == "day" and brake.get("day") != day:
+        brake = None                                      # a daily-loss pause ends with the panel day
+    if not brake and run >= st["streak"]:
+        brake = {"kind": "streak", "why": f"{run} losing bets in a row (the limit is {st['streak']}). Reset it when you're ready."}
+    elif not brake and loss_today <= -st["day_loss"]:
+        brake = {"kind": "day", "day": day, "why": f"down {money(-loss_today)} today (the limit is {money(st['day_loss'])}). It starts again tomorrow."}
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": st["cap"], "open": open_n,
+           "max_open": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
+           "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
+           "room": round(max(0.0, st["cap"] - spent), 2), "slots": max(0, st["max_open"] - open_n)}
+    b = []
+    if paused or (TRADING_PAUSED and TRADING_PAUSED()):
+        b.append("Pause is on. Nothing new is approved or bought until you turn Pause off.")
+    if not may_trade or not can_trade():
+        b.append("This computer can't place orders, so nothing is approved here.")
+    if brake:
+        b.append("Paused itself: " + brake["why"])
+    if out["room"] < PANEL_OWN_MIN:
+        b.append(f"Today's {money(st['cap'])} spending cap is used up ({money(spent)} spent).")
+    if out["slots"] <= 0:
+        b.append(f"{open_n} bets are open, the most it allows is {st['max_open']}.")
+    if free < PANEL_OWN_MIN:
+        b.append(f"The {money(st['bank'])} bankroll is all riding or lost ({money(max(free, 0))} free).")
+    if read_positions and not b:
+        try:
+            _held_all()
+        except Exception as err:
+            b.append("Couldn't read your Kalshi positions, so it buys nothing (" + type(err).__name__ + ").")
+    out["blockers"] = b
+    return out
+
+
+def full_auto_view(paused=False, may_trade=True):
+    """What the Settings and Results cards show. Never raises."""
+    try:
+        st = fa_state()
+        v = fa_check(st, paused=paused, may_trade=may_trade)
+        real = panel_get("real")
+        if st["on"] and not v["blockers"] and not real:
+            v["blockers"].append("Waiting for today's panel to be built.")
+        if st["on"] and real and real.get("status") == "cancelled":
+            v["blockers"].append("Today's panel was cancelled, so it waits for the next one.")
+        v.update({"limits": {k: st[k] for k in FA_LIMITS}, "history": (st.get("history") or [])[-3:],
+                  "paper": st.get("paper"), "on_at": st.get("on_at"), "ok": True})
+        try:
+            v["gate_ready"] = bool(panel_record()["paper"].get("ready"))
+        except Exception:
+            v["gate_ready"] = False
+        return v
+    except Exception as err:
+        return {"ok": False, "on": False, "blockers": ["Full auto couldn't read its state, so it stays off (" + type(err).__name__ + ")."]}
+
+
+def _fa_overlap_ok(c):
+    """True when no game this extra touches is already over the overlap line. Unreadable: not ok (never a guess)."""
+    try:
+        over = overlap_games(allow=overlap_allow([]))
+        legs = c.get("legs") or []
+        return not overlap_of(over, [l.get("event") or "" for l in legs], [l.get("ticker") or "" for l in legs])
+    except Exception:
+        return False
+
+
+def full_auto_pass(paused=False, may_trade=True, now=None, log=print):
+    """One look, every minute from the watcher, just before panel_exec: when full auto is ON and nothing blocks it,
+    approve the fresh draft (what fits the cap, the open-bet limit and the bankroll) or add extras to the approved
+    panel, through the same panel_approve / panel_add Pete's taps use. Returns what it did, or None. Never buys itself."""
+    st = fa_state()
+    if not st["on"]:
+        return None
+    now = now or time.time()
+    v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
+    if v["brake"] and not (st.get("brake") or {}).get("kind"):
+        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"])))
+        log("full auto paused itself:", v["brake"]["why"])
+    if v["blockers"]:
+        return None
+    real = panel_get("real")
+    if not real:
+        return None
+    room, slots, free = v["room"], v["slots"], v["free"]
+    status, ids = real.get("status"), []
+    if status == "draft":
+        items = [c for c in real.get("items", []) if c.get("state") in (None, "draft", "")]
+    elif status == "approved":
+        x = panel_extras(real)
+        items = [c for c in ((x or {}).get("items") or []) if _fa_overlap_ok(c)]
+    else:
+        return None
+    for c in items:
+        s = float(c.get("stake") or 0)
+        if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01 or len(ids) >= slots:
+            continue
+        ids.append(c["id"])
+        room, free = room - s, free - s
+    if not ids:
+        return None
+    day = _panel_day(real.get("at"))
+    book = {c["id"]: float(c.get("stake") or 0) for c in items if c["id"] in ids}
+    _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
+    if status == "draft":
+        ok, msg = panel_approve(ids, "all", at=real.get("at"))
+    else:
+        ok, msg = panel_add(ids, "extra")
+    log(f"full auto {'approved' if status == 'draft' else 'added'} {len(ids)}: {msg}")
+    return {"ok": ok, "ids": ids, "msg": msg}
+
+
 # ---------------------------------------------------------------- the combo lab and the analytics
 # Pete: "make the paper buy combos at different levels so we can learn more." Every day the lab paper-buys
 # a few combos in each price band (how much Kalshi pays vs. fair), from real Kalshi quotes, with no money.
