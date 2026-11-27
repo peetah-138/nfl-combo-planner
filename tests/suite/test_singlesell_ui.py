@@ -200,7 +200,7 @@ with sync_playwright() as pw:
         pg.evaluate("(c=>{S.live.singles=[];S.live.combos=[c];S.open={};renderLive();tog(c.t)})(" + json.dumps(cmb) + ")"); time.sleep(.4)
         dn = pg.evaluate("[...document.querySelectorAll('.dnums')].map(e=>e.innerText).join('|')")
         row = pg.evaluate("(r=>r?r.innerText+'|'+((r.nextElementSibling||{}).innerText||''):'')(document.querySelector(\"[data-key='c:KXMVE-9']\"))")  # the open panel is the row's next sibling
-        if "No offer can beat waiting" not in dn or "no offer can beat waiting" not in row or "$13+" in dn + row or "$14+" in dn + row:
+        if "Not until it pays more" not in dn or "no offer can beat waiting" not in row or "$13+" in dn + row or "$14+" in dn + row:
             bad(f"{tag}: a combo line above its payout must show no price ({dn!r}, {row!r})")
         shot(pg, f"sellmax_combo_{tag}.png")
         pg.evaluate("(c=>{S.live.combos=[c];renderLive()})(" + json.dumps(dict(cmb, threshold=12.7, thr_over=False)) + ")"); time.sleep(.4)

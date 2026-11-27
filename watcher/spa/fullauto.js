@@ -12,7 +12,7 @@ function faCard(v,full){if(!v)return '';const on=!!v.on,m=x=>'$'+(+x||0).toFixed
   ${on&&b.length?`<ul class="fab">${b.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`:''}
   <div class="mini">Spent today<b>${m(v.spent)} <span class="m" style="font-weight:500">of ${m(v.cap)}</span></b></div>
   <div class="mini">Bets open<b>${v.open} <span class="m" style="font-weight:500">of ${v.max_open} allowed</span></b></div>
-  <div class="mini">Losing streak brake<b class="${br?'down':''}">${br?'Tripped':v.streak+' in a row <span class="m" style="font-weight:500">pauses at '+v.streak_limit+'</span>'}</b></div>
+  <div class="mini">Losing streak brake<b class="${br?'down':''}">${br?'Tripped':v.streak+' lost <span class="m" style="font-weight:500">(pauses after '+v.streak_limit+' in a row)</span>'}</b></div>
   ${br?`<div class="sbw sbx"><i>⚠️</i><span style="flex:1">Paused itself: ${esc(br.why)}</span></div>`:''}
   <div class="mini">Down today<b>${m(Math.max(0,-v.loss_today))} <span class="m" style="font-weight:500">pauses at ${m(v.day_loss)}</span></b></div>
   <div class="mini">Bankroll free<b>${m(v.free)} <span class="m" style="font-weight:500">of ${m(v.bank)}</span></b></div>
