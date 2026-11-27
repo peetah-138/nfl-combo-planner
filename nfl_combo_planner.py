@@ -27413,6 +27413,24 @@ def _knob_rows_brk_hedge(now):
     return brk, hed
 
 
+def _knob_game_kick(tks, fallback):
+    """When a cashed combo's first game started, for the stepper's 'after the last step' filter and 70/30 holdout (#309;
+    it used the buy time): the recorded kickoff when known, else the first in-play price the recorder saw on any leg,
+    else `fallback` (the buy time, as before). Read-only; never raises."""
+    try:
+        known = [t for t in (_kick_ts({"event": x.rsplit("-", 1)[0]}) for x in tks) if t]
+        if not known:
+            for x in tks:
+                got = store_rows("select min(ts) t from ticks where ticker=? and state='live'", (x,))
+                if got and got[0].get("t"):
+                    known.append(got[0]["t"])
+        # never earlier than the buy: a combo bought in play must not replay prices from before it existed (_paths and
+        # _sl_paths start from `kick`), so an in-play buy keeps its buy time exactly as before
+        return max(min(known), fallback) if known and fallback else fallback if not known else min(known)
+    except Exception:
+        return fallback
+
+
 def _knob_items(days=KNOB_DAYS):
     """The settled bets the stepper judges: smart_tune's (_tune_items), each bet once (a real panel combo is also in
     the history file's bets table: the panel's copy is kept), plus the real combos that were CASHED OUT, which
@@ -27446,7 +27464,7 @@ def _knob_items(days=KNOB_DAYS):
                 continue
             if tks:
                 out.append({"id": r["combo"], "kind": "combo", "stake": r["cost"], "pays": r["pays"],
-                            "kick": r["first_seen"], "legs": [{"ticker": t} for t in tks], "sold": True,
+                            "kick": _knob_game_kick(tks, r["first_seen"]), "legs": [{"ticker": t} for t in tks], "sold": True,
                             "pl": ((r["pays"] or 0) if got == "won" else 0) - r["cost"]})
     except Exception as err:                          # sold bets unreadable: judged on the rest, as before
         print("knob stepper: sold bets:", type(err).__name__, err)
@@ -30807,9 +30825,11 @@ def sb_resolve(now=None, limit=150):
                           "group by tickers order by u, k desc limit ?",   # the gate's own bets first (#137: universe
                           (now - 4 * 3600, now - 7 * 86400, limit))        # rows wait their turn), newest first, a
         if len(rows) >= limit:                                             # week at most (a void is given up on)
-            rows += store_rows("select tickers, max(kick) k from exit_shadow where res is null and kick is not null and "
-                               "kick < ? and kick > ? and source='universe' group by tickers order by k desc limit ?",
-                               (now - 4 * 3600, now - 7 * 86400, limit))
+            have = {r["tickers"] for r in rows}                            # (#309) the second look skips what the first
+            rows += [r for r in store_rows(                                # batch already holds: no repeated rows
+                "select tickers, max(kick) k from exit_shadow where res is null and kick is not null and "
+                "kick < ? and kick > ? and source='universe' group by tickers order by k desc limit ?",
+                (now - 4 * 3600, now - 7 * 86400, limit + len(have))) if r["tickers"] not in have][:limit]
         sets = {}
         for r in rows:
             try:
@@ -30846,6 +30866,33 @@ def _sb_game(tickers):
     return "+".join(sorted({re.sub(r"(SPREAD|TOTAL)-", "GAME-", t.rsplit("-", 1)[0]) for t in tickers or () if t}))
 
 
+SB_READ_CHUNK = 20000
+
+
+def _sb_rows_chunked(sql, since, chunk=None):
+    """`sql` (an exit_shadow select ending `where ts > ?` ... `order by ts`) read in pages of `chunk` rows, oldest first, by
+    (ts, rowid), instead of one 200k-row read under the store lock that the panel buy thread shares (#309). Each page
+    takes the lock on its own, so other threads get in between. The rows and their order are the same as one read. A read error
+    in any page raises (store_rows_strict): a half-read result would silently truncate the evidence."""
+    chunk = chunk or SB_READ_CHUNK
+    head, _, tail = sql.partition(" order by ts")
+    assert not tail, sql
+    last = None
+    while True:
+        if last is None:
+            got = store_rows_strict(head + " order by ts, rowid limit ?", (since, chunk))
+        else:
+            got = store_rows_strict(head.replace("where ts > ?", "where ts > ? and (ts > ? or (ts = ? and rowid > ?))", 1)
+                             + " order by ts, rowid limit ?", (since, last[0], last[0], last[1], chunk))
+        if not got:
+            return
+        for r in got:
+            yield r
+        if len(got) < chunk:
+            return
+        last = (got[-1]["ts"], got[-1]["_rid"])
+
+
 def _sb_results(now=None, wide=False, settled=True, uni=False):
     """One row per checked bet (last 60 days): its last check before its game (or its first check when it was only
     ever seen in play), as {'league', 'sport', 'ev', 'out', 'day', 'tickers', 'price', 'kind', 'skip', 'kick', 'ts',
@@ -30868,9 +30915,9 @@ def _sb_results(now=None, wide=False, settled=True, uni=False):
     first, last_pre, src, fc, gate = {}, {}, {}, {}, {}
     keep = "" if wide else (" and source in ('panel', 'idea', 'universe') and coalesce(grade, 'cand') != 'wide'" if uni
                             else " and source in ('panel', 'idea')")
-    sql = ("select ts, league, kind, tickers, kick, price, fair, ev, outcome, skip, source, grade, new, pays from "
+    sql = ("select rowid _rid, ts, league, kind, tickers, kick, price, fair, ev, outcome, skip, source, grade, new, pays from "
            "exit_shadow where ts > ?" + (" and outcome is not null" if settled else "") + keep + " order by ts")
-    for r in store_rows(sql, (now - SB_LEARN_DAYS * 86400,)):
+    for r in _sb_rows_chunked(sql, now - SB_LEARN_DAYS * 86400):
         k = r["tickers"]
         first.setdefault(k, r)
         if r["kick"] is None or r["ts"] <= r["kick"]:
