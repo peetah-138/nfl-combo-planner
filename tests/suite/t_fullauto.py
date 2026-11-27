@@ -220,6 +220,53 @@ E.full_auto_pass(now=time.time())
 ok("so the streak brake trips on swapped bets", E.fa_state()["brake"] and E.fa_state()["brake"]["kind"] == "streak")
 ok("a bet that was never full auto's is not counted", E.fa_check(st=dict(E.fa_state(), bets={}), now=time.time())["streak"] == 0)
 
+# fullauto-harden-144: a swap chain of any depth is followed (and a cycle can't hang it)
+reset_state()
+p = fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 9, "day_loss": 100})
+E.full_auto_pass(now=time.time()); E.panel_exec()
+a_ = day_items()[0]
+ch = {a_["id"]: {"state": "swapped"}}
+for i in range(1, 7):
+    ch[f"deep{i}"] = dict(a_, id=f"deep{i}", swap_of=(a_["id"] if i == 1 else f"deep{i-1}"), state="swapped" if i < 6 else "bought",
+                          result=None if i < 6 else "lost", pl=None if i < 6 else -a_["stake"], bought_at=time.time(), _new=True)
+ch[a_["id"]]["swap_of"] = "deep6"                  # a real cycle through one of full auto's own bets: a_ -> deep1 .. deep6 -> a_
+E._set_items(day, "real", ch)
+v = E.fa_check(now=time.time())
+ok("a swap chain 6 deep still counts the final loss as ours", v["streak"] == 1 and v["pl"] <= -a_["stake"] + 0.01)
+
+# old losses stay in bankroll-free and the streak (they used to drop out after 10 days)
+later = time.time() + 30 * 86400
+vl = E.fa_check(now=later)
+ok("a loss from 30 days ago still counts toward bankroll free and the streak", vl["streak"] == 1 and vl["pl"] == v["pl"] and vl["free"] == v["free"])
+ok("...but spend and open bets are only the recent view", vl["spent"] == 0 and vl["open"] == 0)
+
+# a limits-save or reset from a stale tab never turns it on; only the explicit turn-on does
+reset_state()
+okS, msgS, _ = E.fa_set(True, limits={"cap": 5}, explicit_on=False)
+ok("limits-save with on=true while off is ignored (stays off, limits unchanged)", not okS and E.fa_state()["on"] is False and E.fa_state()["cap"] != 5)
+okS, _, _ = E.fa_set(True, reset_brake=True, explicit_on=False)
+ok("a reset with on=true while off does not turn it on", not okS and E.fa_state()["on"] is False)
+okS, _, _ = E.fa_set(True, override=True, explicit_on=True)
+ok("the explicit turn-on still works", okS and E.fa_state()["on"] is True)
+okS, _, _ = E.fa_set(True, limits={"cap": 7}, explicit_on=False)
+ok("once it is on, a limits-save from a tab still saves", okS and E.fa_state()["on"] is True and E.fa_state()["cap"] == 7)
+E.fa_set(False)
+okS, _, _ = E.fa_set(False, limits={"cap": 9})
+ok("a stale off tab's Save limits (on=false) leaves full auto off", okS and E.fa_state()["on"] is False and E.fa_state()["cap"] == 9)
+# the turn-on decision is re-checked inside the file lock: if it was switched off between the early check and the write
+_fs = E.fa_state
+_n = [0]
+def _flip():
+    _n[0] += 1
+    return dict(_fs(), on=True) if _n[0] == 1 else _fs()
+E.fa_state = _flip
+okS, _, _ = E.fa_set(True, limits={"cap": 11}, override=True, explicit_on=False)
+E.fa_state = _fs
+ok("a racing limits-save can't set on=true inside the write step", not okS and E.fa_state()["on"] is False and E.fa_state()["cap"] != 11)
+okS, _, _ = E.fa_set(True, explicit_on="yes")
+ok("only a real True counts as the explicit turn-on", not okS and E.fa_state()["on"] is False)
+reset_state()
+
 # two passes at once can't overspend the cap
 reset_state(); fresh(6); E.fa_set(True, limits={"cap": 30, "max_open": 30})
 ts = [threading.Thread(target=E.full_auto_pass, kwargs={"now": time.time()}) for _ in range(4)]
