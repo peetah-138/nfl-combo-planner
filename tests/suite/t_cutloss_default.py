@@ -33,6 +33,14 @@ E.save_json(E.SMART_FILE, {"nba": {"floor": 1.5, "lam": 1.0, "loss": None, "loss
 ok("...but a league whose own tuning chose 'stop cutting' stays off", E.smart_params([T])["loss"] is None)
 E.save_json(E.SMART_FILE, {"all": {"floor": 1.5, "lam": 1.0, "loss": 0.2, "n": 90}}); E.SMART_CACHE["at"] = 0
 ok("a borrowed loss cut is still never borrowed: the default, not everyone's 20%", E.smart_params([T])["loss"] == 0.125)
+# ---- the Results table says what a league really starts on (display only; #556 follow-up)
+E.save_json(E.SMART_FILE, {"nba": {"loss": None, "n": 4}, "nfl": {"loss": 0.2, "n": 40}, "mlb": {"loss": None, "loss_off": True, "n": 50}})
+sm = {x["key"]: x for x in E.smart_summary()}
+ok("Results: no record shows the 12.5% default; own value and 'stop cutting' don't",
+   sm["nba"]["loss_default"] == 0.125 and sm["nfl"]["loss_default"] is None and sm["mlb"]["loss_default"] is None)
+E.CFG["loss_cut_default"] = False
+ok("Results: switch off, no default shown", E.smart_summary()[1]["loss_default"] is None or all(x["loss_default"] is None for x in E.smart_summary()))
+E.CFG["loss_cut_default"] = True
 E.save_json(E.SMART_FILE, {}); E.SMART_CACHE["at"] = 0
 
 # ---- the guards, on a faked score feed (same set-up as t_cutloss.py)
