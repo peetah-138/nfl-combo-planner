@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.26.143"
+VERSION = "2026.11.26.144"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -61,6 +61,7 @@ CFG = {
     "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
     "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
+    "hedge_before_loss_skip": True,   # (#312) auto cash-out weighs a hedge that locks in at least the cost before skipping a below-cost sale
     "live_bar_learn": True,           # (#287) learn (paper only) the in-play single green bar per league from live_fairs
     "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
     "loss_cut_default": True,   # the cautious starting loss cut (12.5% win chance, combos) for a league with no record of its own; off = the old "never until a league's own record turns it on". Every loss guard still applies
@@ -6215,10 +6216,16 @@ def auto_sell_now(plan):
                 rec["fee_note"] = fee_note                # fee model off, or no contracts: judged on the gross offer
             gross_below = o["offer"] < h["cost"] * o.get("frac", 1.0) - 0.005
             below = net < h["cost"] * o.get("frac", 1.0) - 0.005
-            if below and why != "cut loss" and not sl_ready.get(t):
-                log_decision(dict(rec, result="skipped", why="below what you paid"))
-                continue
-            if below and why != "cut loss":                   # a guarded stop-loss sale (gross below cost, or only the fee puts it below)
+            below_skip = below and why != "cut loss" and not sl_ready.get(t)
+            if below_skip:
+                # (#312) a below-cost sale is still never made here. But a hedge that locks in at least the combo's cost is
+                # not a loss, so it is weighed first (every hedge guard unchanged); anything else is skipped as before.
+                hg0 = hedge_for(t) if (CFG.get("hedge_before_loss_skip", True) and CFG.get("auto_hedge") and not clock
+                                       and not restriction_holding("buy")) else None
+                if not (hg0 and hg0.get("n") and hg0["locked"] >= h["cost"] - 0.005):
+                    log_decision(dict(rec, result="skipped", why="below what you paid"))
+                    continue
+            if below and why != "cut loss" and not below_skip:   # a guarded stop-loss sale (a below-cost hedge-only path is not one: no stop_loss tag) (gross below cost, or only the fee puts it below)
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
                 if not gross_below:
@@ -6239,6 +6246,8 @@ def auto_sell_now(plan):
                 if ready:
                     hg, gw = hedge_fresh(t, h, whole)
                     ready = hg is not None
+                    if ready and below_skip and hg["locked"] < h["cost"] - 0.005:
+                        hg, gw, ready = None, "wouldn't lock in what you paid at the fresh price", False   # (#312)
                 if not ready:
                     if gw == "waiting to confirm":
                         continue                # the sale waits while the hedge is confirmed (3+ checks, 3+ minutes)
@@ -6265,6 +6274,9 @@ def auto_sell_now(plan):
                     if unsure:
                         out.append("🤖 Auto-hedge: " + msg)
                         continue                # never retried, and no sale on top of a hedge that may have filled
+            if below_skip:                                # (#312) the hedge didn't go through: never sell below cost
+                log_decision(dict(rec, result="skipped", why="below what you paid"))
+                continue
             CASH_LAST.pop(t, None)
             # The sale's purpose (Pete, 2026-11-23: "It should only sell at a loss if that's a way to try to minimize
             # losses. Not when there's still an opportunity for it to get profit."): a sale whose offer was at or above
@@ -24078,6 +24090,26 @@ def panel_record():
 # file means OFF. Turning it on needs the paper gate passed, or Pete's explicit "override the paper gate" (recorded).
 FA = {"bank": 300.0, "cap": 30.0, "max_open": 15, "streak": 4, "day_loss": 20.0}
 FA_LIMITS = {"bank": (50, 1000), "cap": (2, 100), "max_open": (1, 30), "streak": (2, 10), "day_loss": (2, 100)}
+# (#144 soft brake, Pete: "I wouldn't want it to completely turn itself off. It should just adjust.") A losing streak no
+# longer stops full auto: it goes CAUTIOUS. Bet size and the daily cap shrink to a share of normal and the buy bar goes up one
+# notch per level (combos only: FAL's bar step, in points over the league's combo cut-off). It only ever makes full auto
+# more conservative than the saved limits. Levels: 100% (normal), 50%, 25% (the floor; never off, never above normal).
+# Each level back up needs 2 winning (non-loss) full-auto bets in a row since the last change, or 3 calm days with no loss.
+# 2 more losses in a row while cautious step it down one level. The daily loss limit pause is separate and unchanged.
+# THE CONFIDENCE LEVEL (Pete: full auto should be constantly adjusting): one number, 0 = the user's normal settings (the
+# ceiling, never exceeded), steps DOWN on losses and back UP on wins or calm. Everything the level adjusts is one row of
+# FA_LADDER, so a later adjustable setting plugs in by adding a key to every row and one reader (_fa_knob). Today's knobs:
+#   size: share of the normal bet size   cap: share of the normal daily cap   bar: extra points on the combo cut-off
+FA_LADDER = ({"size": 1.0, "cap": 1.0, "bar": 0.0},
+             {"size": 0.5, "cap": 0.5, "bar": 0.5},
+             {"size": 0.25, "cap": 0.25, "bar": 1.0})
+FA_CAUTION = {"factors": tuple(r["size"] for r in FA_LADDER), "wins": 2, "calm_days": 3, "drop_losses": 2}
+
+
+def _fa_knob(level, name):
+    """The level's value for one adjustable setting; a level or name out of range reads as the most cautious row."""
+    row = FA_LADDER[min(max(int(level), 0), len(FA_LADDER) - 1)]
+    return row[name]
 FA_WHY = {"bank": "bankroll", "cap": "daily spend cap", "max_open": "open bets", "streak": "losses in a row",
           "day_loss": "daily loss limit"}
 
@@ -24100,6 +24132,9 @@ def fa_state():
         out[k] = int(min(hi, max(lo, v))) if k in ("max_open", "streak") else round(min(hi, max(lo, v)), 2)
     if not isinstance(out.get("bets"), dict):
         out["bets"] = {}
+    out.setdefault("brake", None)
+    if not isinstance(out.get("caution"), dict):
+        out["caution"] = {"level": 0, "base_at": 0, "since": 0, "why": ""}
     return out
 
 
@@ -24177,12 +24212,15 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
                 _fa_note(st, "on", now, gate=gate)
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
+                st["caution"] = {"level": 0, "base_at": round(now), "since": 0, "why": ""}
+                _fa_note(st, "caution", now, text="You reset it: back to normal.", level=0)
         else:
             if st.get("on") is True:
                 _fa_note(st, "off", now)
             st["on"] = False
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
+                st["caution"] = {"level": 0, "base_at": round(now), "since": 0, "why": ""}
     _fa_update(fn)
     if refused:
         return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
@@ -24203,6 +24241,118 @@ def _fa_rows(now, days=None):
         first = _panel_day(now - days * 86400)
         rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
     return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
+
+
+def _fa_stamp(c):
+    return c.get("bought_at") or c.get("at") or 0
+
+
+def _fa_settle_key(c):
+    """When a bet's money moved (cash-out, else Kalshi's settle time), falling back to when it was bought."""
+    return c.get("cashed_at") or c.get("settled_at") or _fa_stamp(c)
+
+
+FA_SEEN_MAX = 200
+
+
+def _fa_caution_eval(st, after, run, now, legacy=False):
+    """Read-only: the confidence level as it stands now. The saved state is replayed over the full-auto bets settled since
+    it was last updated (`after`, oldest first, bets already counted are skipped by stamp), one bet at a time, so several
+    bets settling between two passes give the same result as one at a time. A loss (real P/L under 0) counts toward a step
+    down, a win (over 0) toward a step up, a push (exactly 0) is neutral. Returns level (0 normal ... top = the floor),
+    factor, pct, why, recovery numbers, `saved` (what to persist) and `events` (history lines). Pure: the pass saves it."""
+    F = FA_CAUTION
+    top = len(F["factors"]) - 1
+    c0 = st.get("caution") if isinstance(st.get("caution"), dict) else {}
+
+    def num(k, d=0.0):
+        v = c0.get(k)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else d
+    level = min(top, max(0, int(num("level"))))
+    base, since, loss_at = num("base_at"), num("since"), num("loss_at")
+    floor = num("floor_at")
+    seen = [x for x in (c0.get("seen") or []) if isinstance(x, str)] if isinstance(c0.get("seen"), list) else None
+    seen_set = set(seen or [])
+    wl, ww = int(num("wl")), int(num("ww"))
+    why = c0.get("why") if isinstance(c0.get("why"), str) else ""
+    events = []
+    if legacy and level == 0:                         # an older version's saved streak pause: not a stop, not silent either
+        level, wl, ww, since = top, 0, 0, now
+        base = max([base] + [_fa_stamp(c) for d, c in after])
+        seen = [f"{d}|{c.get('id')}" for d, c in after]; seen_set = set(seen)
+        why = f"Brake from before this update: tap Back to normal now, or it eases back by itself (after {F['wins']} winning bets or {F['calm_days']} calm days)."
+        events.append(f"Cautious ({round(F['factors'][top] * 100)}%): {why}")
+    if seen is None:                                  # state from before bets were tracked by id: the old stamp line stands in for it
+        seen = [f"{d}|{c.get('id')}" for d, c in after if _fa_stamp(c) <= base]
+        seen_set, floor = set(seen), max(floor, base)
+    fresh = [(d, c) for d, c in after if f"{d}|{c.get('id')}" not in seen_set and _fa_settle_key(c) > floor]
+    for d, c in sorted(fresh, key=lambda x: (_fa_settle_key(x[1]), _fa_stamp(x[1]))):   # in the order the money moved, each bet once
+        stamp = _fa_settle_key(c)
+        seen.append(f"{d}|{c.get('id')}")
+        base = max(base, _fa_stamp(c))
+        pl = panel_pl(c) or 0
+        if pl == 0:
+            continue                                  # a push: neither a win nor a loss
+        if pl < 0:
+            wl, ww, loss_at = wl + 1, 0, stamp
+            if level == 0 and wl >= st["streak"]:
+                level, wl, since = 1, 0, stamp
+                why = f"{st['streak']} losing bets in a row (the limit is {st['streak']})."
+                events.append(f"Cautious ({round(F['factors'][1] * 100)}%): {why}")
+            elif level and wl >= F["drop_losses"] and level < top:
+                level, wl, since = level + 1, 0, stamp
+                why = f"{F['drop_losses']} more losing bets in a row while cautious."
+                events.append(f"Cautious, tighter ({round(F['factors'][level] * 100)}%): {why}")
+        else:
+            wl = 0
+            if level:
+                ww += 1
+                if ww >= F["wins"]:
+                    level, ww, since = level - 1, 0, stamp
+                    events.append("Back to normal after %d winning bets." % F["wins"] if level == 0 else
+                                  f"Easing up to {round(F['factors'][level] * 100)}% after {F['wins']} winning bets.")
+                    if level == 0:
+                        why = ""
+    if level and now - max(since, loss_at) >= F["calm_days"] * 86400:
+        level, ww, wl, since = level - 1, 0, 0, now
+        events.append("Back to normal after %d calm days with no loss." % F["calm_days"] if level == 0 else
+                      f"Easing up to {round(F['factors'][level] * 100)}% after {F['calm_days']} calm days with no loss.")
+        if level == 0:
+            why = ""
+    if len(seen) > FA_SEEN_MAX:                       # bounded: what falls off is covered by floor_at (its newest settle time)
+        gone = seen[:len(seen) - FA_SEEN_MAX]
+        gs = set(gone)
+        floor = max([floor] + [_fa_settle_key(c) for d, c in after if f"{d}|{c.get('id')}" in gs])
+        seen = seen[-FA_SEEN_MAX:]
+    factor = F["factors"][level]
+    saved = {"level": level, "base_at": base, "since": since, "why": why, "wl": wl, "ww": ww, "loss_at": loss_at,
+             "floor_at": floor, "seen": seen}
+    calm_left = max(0.0, round((max(since, loss_at) + F["calm_days"] * 86400 - now) / 86400, 1)) if level else None
+    prev = {k: c0.get(k, 0 if k not in ("why", "seen") else "" if k == "why" else None) for k in saved}
+    return {"level": level, "factor": factor, "pct": round(factor * 100), "why": why, "wins": ww if level else 0,
+            "wins_need": F["wins"], "calm_days_left": calm_left, "bar_extra": _fa_knob(level, "bar"), "knobs": dict(FA_LADDER[level]),
+            "saved": saved, "events": events, "changed": saved != prev}
+
+
+def _fa_scaled(stake, factor):
+    """A stake at `factor` of normal: rounded down to the cent, never under the $2 minimum, never above the normal stake."""
+    if factor >= 1:
+        return stake
+    return min(stake, max(PANEL_OWN_MIN, math.floor(stake * factor * 100 + 1e-9) / 100))
+
+
+def _fa_caution_bar(items, level):
+    """Cautious only: combos must clear their league's cut-off by one more notch per level (FA_LADDER's bar).
+    Tighten-only; singles and lines are untouched. Raises on a bad value (the pass then approves nothing)."""
+    extra = _fa_knob(level, "bar")
+    kept, held = [], []
+    for c in items:
+        if c.get("kind") == "combo" and extra > 0:
+            ok = float(c.get("pct") or 0) >= combo_cutoff(c["code"], len(c["legs"]), c["legs"]) + extra / 100 - 1e-9
+        else:
+            ok = True
+        (kept if ok else held).append(c)
+    return kept, held
 
 
 def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=False):
@@ -24240,16 +24390,17 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
         run += 1
     loss_today = round(sum(panel_pl(c) or 0 for d, c in settled if d == day), 2)
     brake = st.get("brake") if isinstance(st.get("brake"), dict) else None
-    if brake and brake.get("kind") == "day" and brake.get("day") != day:
+    legacy = bool(brake and brake.get("kind") == "streak")   # an older version's streak pause: now it is caution, never a stop
+    if brake and (brake.get("kind") != "day" or brake.get("day") != day):
         brake = None                                      # a daily-loss pause ends with the panel day
-    if not brake and run >= st["streak"]:
-        brake = {"kind": "streak", "why": f"{run} losing bets in a row (the limit is {st['streak']}). Reset it when you're ready."}
-    elif not brake and loss_today <= -st["day_loss"]:
+    caut = _fa_caution_eval(st, after, run, now, legacy)
+    if not brake and loss_today <= -st["day_loss"]:
         brake = {"kind": "day", "day": day, "why": f"down {money(-loss_today)} today (the limit is {money(st['day_loss'])}). It starts again tomorrow."}
-    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": st["cap"], "open": open_n,
+    cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap"), 2)
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "caution": caut, "open": open_n,
            "max_open": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
-           "room": round(max(0.0, st["cap"] - spent), 2), "slots": max(0, st["max_open"] - open_n)}
+           "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, st["max_open"] - open_n)}
     b = []
     if paused or (TRADING_PAUSED and TRADING_PAUSED()):
         b.append("Pause is on. Nothing new is approved or bought until you turn Pause off.")
@@ -24258,7 +24409,8 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if brake:
         b.append("Paused itself: " + brake["why"])
     if out["room"] < PANEL_OWN_MIN:
-        b.append(f"Today's {money(st['cap'])} spending cap is used up ({money(spent)} spent).")
+        b.append(f"Today's {money(cap_eff)} spending cap is used up ({money(spent)} spent)"
+                 + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else "."))
     if out["slots"] <= 0:
         b.append(f"{open_n} bets are open, the most it allows is {st['max_open']}.")
     if free < PANEL_OWN_MIN:
@@ -24330,9 +24482,20 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         return None
     now = now or time.time()
     v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
-    if v["brake"] and not (st.get("brake") or {}).get("kind"):
-        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"])))
+    if v["brake"] and not (st.get("brake") or {}).get("kind") == "day":
+        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"], text="Paused for the day: " + v["brake"]["why"])))
         log("full auto paused itself:", v["brake"]["why"])
+    caut = v["caution"]
+    if caut["changed"] or (isinstance(st.get("brake"), dict) and st["brake"].get("kind") == "streak"):
+        def _save_caution(s):
+            s["caution"] = caut["saved"]
+            if isinstance(s.get("brake"), dict) and s["brake"].get("kind") == "streak":
+                s["brake"] = None
+            for e in caut["events"]:
+                _fa_note(s, "caution", now, text=e, level=caut["level"])
+        _fa_update(_save_caution)
+        for e in caut["events"]:
+            log("full auto:", e)
     if v["blockers"]:
         return None
     real = panel_get("real")
@@ -24355,21 +24518,33 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
             return None
         if held:
             log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
+    if caut["level"]:                                     # (#144 soft brake) cautious: one more notch on the bar, tighten-only
+        try:
+            items, held = _fa_caution_bar(items, caut["level"])
+        except Exception as err:
+            log("full auto cautious: nothing approved:", type(err).__name__, err)
+            return None
+        if held:
+            log(f"full auto cautious: left out {len(held)} bet{'' if len(held) == 1 else 's'} under the higher bar")
+    own = {}
     for c in items:
-        s = float(c.get("stake") or 0)
+        normal = float(c.get("stake") or 0)
+        s = _fa_scaled(normal, _fa_knob(caut["level"], "size"))            # cautious: smaller bets (never above the normal size)
         if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01 or len(ids) >= slots:
             continue
         ids.append(c["id"])
+        if s < normal - 0.005:
+            own[c["id"]] = s
         room, free = room - s, free - s
     if not ids:
         return None
     day = _panel_day(real.get("at"))
-    book = {c["id"]: float(c.get("stake") or 0) for c in items if c["id"] in ids}
+    book = {c["id"]: own.get(c["id"], float(c.get("stake") or 0)) for c in items if c["id"] in ids}
     _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
     if status == "draft":
-        ok, msg = panel_approve(ids, "all", at=real.get("at"))
+        ok, msg = panel_approve(ids, "all", at=real.get("at"), stakes=own or None)
     else:
-        ok, msg = panel_add(ids, "extra")
+        ok, msg = panel_add(ids, "extra", stakes=own or None)
     log(f"full auto {'approved' if status == 'draft' else 'added'} {len(ids)}: {msg}")
     return {"ok": ok, "ids": ids, "msg": msg}
 
@@ -24395,22 +24570,22 @@ FAL = {"week": 7 * 86400, "look": 6 * 3600, "judge_max": 14 * 86400, "days": 60,
        "game": {"lo": 0.10, "hi": 0.30, "step": 0.025}}      # share of the full-auto bankroll one game may carry
 FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30}            # = today's behaviour (the identity) and the loose end
 FAL_RECS = ("bar", "sbev", "game")
-FAL_NAMES = {"bar": "League shadow (combo bars)", "sbev": "Smart Buy paper book", "game": "Exposure paper log"}
+FAL_NAMES = {"bar": "Combo bars, league by league", "sbev": "Smart Buy bars", "game": "Per-game limit"}
 FAL_RUN = {"at": 0.0}
 FAL_NOT_WIRED = (
-    ("Paper panel", "it is the gate that unlocks full auto itself and has no number to step"),
-    ("Smart Buy shadow and the dial", "the dial already learns by itself every hour; nothing extra to wire"),
-    ("Knob stepper shadow", "it has its own weekly stepper and loss brake for smart sell's numbers"),
-    ("Momentum shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Exit-cap shadow", "it is about selling rules; full auto only approves buys"),
-    ("Smart-sell-more shadow", "it is about selling rules; full auto only approves buys"),
-    ("Flex shadow", "it is about selling rules; full auto only approves buys"),
-    ("Combo shadow trader", "display only; no pass bar is defined"),
-    ("Signal shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Broad shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Slate shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Prop shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Books' weight (mkt fair)", "it already steers long-shot ideas on its own; no full-auto number depends on it"))
+    ("Paper panel", "it is the practice gate that unlocks full auto itself and has no number to adjust"),
+    ("Smart Buy practice run and dial", "the dial already adjusts itself every hour; nothing extra to connect"),
+    ("Smart sell number tuning", "it already has its own weekly steps and loss brake"),
+    ("Momentum practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Early-exit cap practice run", "it is about selling rules; full auto only approves buys"),
+    ("Smart-sell-more practice run", "it is about selling rules; full auto only approves buys"),
+    ("Flex practice run", "it is about selling rules; full auto only approves buys"),
+    ("Combo practice trader", "display only; it has no pass mark yet"),
+    ("Signal practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Broad practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Slate practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Prop practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Market-odds weighting", "it already steers long-shot ideas on its own; no full-auto number depends on it"))
 
 
 # ---------------------------------------------------------------- the autopilot registry (#144, step 1)
@@ -24635,6 +24810,14 @@ def _fal_val_text(rec, v):
     return f"{v * 100:g}% of the bankroll"
 
 
+def _fal_change(key, dirn, to=None):
+    """A step in plain words: 'Raised the NBA combo bar a little' (a per-game limit goes the other way: tighter = lower)."""
+    rec, _ = _fal_split(key)
+    up = (dirn == "tighter") != (rec == "game")
+    tail = f" to {_fal_val_text(rec, to)}" if rec == "game" and to is not None else " one level" if rec == "sbev" else " a little"
+    return f"{'Raised' if up else 'Lowered'} the {_fal_name(key)}{tail}"
+
+
 def _fal_name(key):
     rec, lg = _fal_split(key)
     if rec == "game":
@@ -24737,8 +24920,8 @@ def _fal_apply(s, plan, now):
     if not isinstance(L.get("log"), list):
         L["log"] = []
 
-    def say(kind, key, text):
-        L["log"].append({"at": round(now), "kind": kind, "key": key, "text": text})
+    def say(kind, key, text, **extra):
+        L["log"].append({"at": round(now), "kind": kind, "key": key, "text": text, **extra})
         del L["log"][:-FAL["log"]]
     for rec in plan.get("nochange") or []:                   # an unreadable record: say so, at most once a day each
         if rec in AP_REG and now - float(L["nochg"].get(rec) or 0) >= 86400:
@@ -24759,10 +24942,9 @@ def _fal_apply(s, plan, now):
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
                 continue
             ev = a["ev"]
-            say("step", key, f"Learned: {_fal_name(key)} {_fal_val_text(rec, a['from'])} -> {_fal_val_text(rec, a['to'])} "
-                f"({'tighter' if a['dir'] == 'tighter' else 'looser'}) because on {ev['band']} past bets it would have changed, "
-                f"it made ${ev['gain']:.2f} more after fees, the newest {ev['hold_n']} agreed (${ev['hold']:+.2f}) and "
-                f"the low end of the range is ${a['lb']:+.2f}.")
+            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets this would have made "
+                f"${ev['gain']:.2f} more after fees.", ev={"band": ev["band"], "gain": ev["gain"], "hold_n": ev["hold_n"],
+                                                          "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"]})
             _fal_set(L, rec, key, a["to"])
             L["steps"][rec], L["since"][key] = round(now), round(now)
             L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
@@ -24770,19 +24952,21 @@ def _fal_apply(s, plan, now):
         elif lr and not lr.get("judged") and lr.get("key") == key:
             if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9 \
                     and ap_clamp(rec, lr["from"]) is not None and not (cautious and _ap_looser(rec, lr["to"], lr["from"])):
-                why = ("because the " + str(a["n"]) + " bets that step changed lost $" + format(-a["net"], ".2f") + " after fees in the week since."
+                why = ("the " + str(a["n"]) + " bets that change affected lost $" + format(-a["net"], ".2f") + " after fees in the week since."
                        if a.get("why", "lost") == "lost" else
-                       "because its results could not be read." if a.get("why") == "unreadable" else
-                       "because too few bets came in over two weeks to show it helped.")
-                say("revert", key, f"Learned: {_fal_name(key)} back {_fal_val_text(rec, lr['to'])} -> {_fal_val_text(rec, lr['from'])} " + why)
+                       "its results could not be read." if a.get("why") == "unreadable" else
+                       "too few bets came in over two weeks to show it helped.")
+                back = f" to {_fal_val_text(rec, lr['from'])}" if rec == "game" else " where it was"
+                say("revert", key, f"Put the {_fal_name(key)} back{back}: " + why,
+                    ev={"net": a["net"], "n": a["n"], "why": a.get("why", "lost"), "from": lr["to"], "to": lr["from"]})
                 _fal_set(L, rec, key, ap_clamp(rec, lr["from"]))
                 L["steps"][rec], L["since"][key] = round(now), round(now)
                 lr.update(judged=True, reverted=True)
                 L["change"] = {"rec": rec, "key": key, "from": lr["to"], "to": lr["from"], "at": round(now), "kind": "revert"}
             elif a["do"] == "kept":
-                say("kept", key, f"Learned: {_fal_name(key)} {_fal_val_text(rec, lr['to'])} kept; the {a['n']} bets "
-                    f"it changed since made ${a['net']:+.2f} after fees." if a["n"] else
-                    f"Learned: {_fal_name(key)} {_fal_val_text(rec, lr['to'])} kept; too few bets since to tell.")
+                say("kept", key, f"Kept the {_fal_name(key)} change: the {a['n']} bets it affected since made ${a['net']:.2f} "
+                    f"after fees." if a["n"] else f"Kept the {_fal_name(key)} change: too few bets since to tell.",
+                    ev={"net": a["net"], "n": a["n"]})
                 lr["judged"] = True
     L["status"] = status
     L["checked"] = round(now)
@@ -24958,7 +25142,7 @@ def fal_view(st):
         for rec in AP_REG:
             x = stat.get(rec) if isinstance(stat.get(rec), dict) else {}
             recs.append({"rec": rec, "name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", AP_REG[rec]["min_n"](rec)),
-                         "state": "not checked yet" if not x else ("passes its bar" if x.get("pass") else "no clear lesson"),
+                         "state": "not checked yet" if not x else ("has a clear lesson" if x.get("pass") else "no clear lesson"),
                          "note": x.get("note") or ""})
         log = [e.get("text") for e in (L.get("log") or [])[-5:] if isinstance(e, dict)][::-1]
         ch = L.get("change") if isinstance(L.get("change"), dict) and not L["change"].get("undone") else None
