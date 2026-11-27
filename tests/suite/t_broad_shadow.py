@@ -287,8 +287,9 @@ def h_unread():
     ok("H nor the recorder's internals (only the two hook calls and the flag exist outside)", not re.search(r"_bp_|bp_status|BP\[|BP\.", outside) and outside.count("broad_shadow(") == 1 and outside.count("bp_maintain(") == 1)
     ok("H the hook is one call after the signal-shadow line", "    signal_shadow(code, games, lc_all)                 # early-exit test: write-only recorder, never raises\n    broad_shadow(code, every, lc_all)" in src)
     other = open(os.path.join(REPO, "watcher", "combo_watcher.py")).read()
+    other = re.sub(r"# ===== READY TO PROMOTE \(report only\): begin =====.*?# ===== READY TO PROMOTE \(report only\): end =====", "", other, flags=re.S)   # #541: the report-only scoreboard reads them; t_promote.py checks that block
     ok("H the watcher never mentions the tables", not re.search(r"bp_(mkt|path|day)|broad_shadow", other))
-    ok("H the web app (spa) and logs status never read them", not any(re.search(r"bp_(mkt|path|day)", open(os.path.join(dp, f), errors="ignore").read()) for dp, _, fs in os.walk(os.path.join(REPO, "watcher")) for f in fs if f.endswith((".py", ".js", ".html"))))
+    ok("H the web app (spa) and logs status never read them", not any(re.search(r"bp_(mkt|path|day)", re.sub(r"# ===== READY TO PROMOTE \(report only\): begin =====.*?# ===== READY TO PROMOTE \(report only\): end =====", "", open(os.path.join(dp, f), errors="ignore").read(), flags=re.S)) for dp, _, fs in os.walk(os.path.join(REPO, "watcher")) for f in fs if f.endswith((".py", ".js", ".html"))))
     ok("H it never writes price_path or the other shadow tables", not re.search(r"(insert|update|delete)[^\n\"']*(price_path|sig_|live_fairs|closes)", blk, re.I))
     # measured size of a row (table plus both indexes), against the estimate the ceiling uses
     reset(); E._bp_tables(); E.store_x("delete from bp_path"); E.store_x("delete from bp_mkt")

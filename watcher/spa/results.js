@@ -10,7 +10,7 @@ function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.
   <div class="kpi"><span>Won · cashed</span><b>${d.won} <small>· ${d.cashed}</small></b></div>
   <div class="kpi"><span>Best result</span><b class="up" ${d.best!=null?`data-num="r:best" data-v="${Math.abs(d.best).toFixed(2)}" data-pre="${d.best>=0?'+':'−'}"`:''}>${smoney(d.best)}</b></div></div>`}
   ${plChart(d)}
-  ${anBlock(S.an)}${edgeBlock(d)}
+  ${anBlock(S.an)}${promoBlock(S.pr)}${edgeBlock(d)}
   ${historyBlock(d.history||[])}
  </div><aside class="side">
   <div class="card"><h3>Shadow auto-trading <span>paper</span></h3>${sh&&sh.quotes?`<div class="mini">Settled<b>${sh.n}</b></div><div class="mini">Paper P/L<b class="${sh.back-sh.staked>=0?'up':'down'}">${smoney(sh.back-sh.staked)}</b></div>
@@ -281,3 +281,15 @@ function clearBlock(b){hap('warning');if(!confirm('Clear this order block? Only 
 function skimRow(k){if(!k||!k.reserved)return '';return `<div class="srow"><div class="l"><b>Profit set aside</b><small>${money(k.reserved)} isn't bet with. Move it out of Kalshi, then tap here.</small></div><button class="btn ghost" onclick="const b=this;btnBusy(b);api('/app/api/act',{a:'skim_moved'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false))">I moved it</button></div>`;}
 function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"><b>Panel combo cut-off</b><small>Starts at 95% of fair for every sport and size, and adjusts itself weekly from results (never below 85%).</small></div><b>95%</b></div>`;
  return `<div class="srow" style="display:block"><div class="l"><b>Panel combo cut-off</b><small>Adjusts itself weekly from results; never below 85%.</small></div>${cs.map(c=>`<div class="mini" style="margin-top:6px">${esc(c.group.replace(':',' · ')+' picks')}<b>${c.level}%</b></div>${c.why?`<div class="m" style="font-size:11.5px">${esc(c.why)}</div>`:''}`).join('')}</div>`;}
+/* Ready to promote? (#541): read-only. One row per paper test: its plain name, a status chip, and the first check it
+   failed (or why it passed). Never turns anything on; the numbers come from the cached report, never computed here. */
+function promoBlock(p){if(!p||p.off)return '';
+ if(p.computing)return `<div class="card promo"><h2 style="margin:0">Ready to promote?</h2><div class="m" style="padding:6px 0 2px">Checking the paper tests…</div></div>`;
+ const rows=p.signals||[];if(!rows.length)return '';
+ const cls={pass:'look',fail:'fail',wait:'wait',na:'na'};const kls=r=>r.ready?'ready':(cls[r.state]||'wait');
+ const num=r=>r.state==='na'||!r.n?'':`<div class="pnum"><b class="${r.net>=0?'up':'down'}">${smoney(r.net)}</b> after fees <span class="m">· ${r.n} bets · ${r.games} games</span></div>`+(r.low!=null&&r.n>=20?`<div class="m prange">Likely between ${smoney(r.low)} and ${smoney(r.high)}${r.variant?' · best setting: '+esc(r.variant):''}</div>`:'');
+ return `<div class="card promo"><h2 style="margin:0">Ready to promote?</h2>
+  <div class="m prsub">Paper tests, counted in dollars after fees. This only reports; nothing turns on by itself.</div>
+  ${rows.map(r=>`<div class="prow ${kls(r)}"><div class="prtop"><b>${esc(r.name)}</b><span class="pchip">${esc(r.status)}</span></div>
+   ${r.what?`<div class="m prwhat">${esc(r.what)}</div>`:''}<div class="prwhy">${esc(r.reason||'')}</div>${num(r)}${r.note?`<div class="m prange">${esc(r.note)}</div>`:''}</div>`).join('')}
+  ${p.bar?`<div class="m prbar">${esc(p.bar)}</div>`:''}</div>`;}
