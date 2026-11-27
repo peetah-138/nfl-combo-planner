@@ -24202,6 +24202,12 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
             refused.append(True)                    # re-checked under the lock: only the explicit turn-on may switch it on
             return
         st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
+        if "max_open" in clean and isinstance(st.get("lessons"), dict):     # (#145) Pete's own number replaces what autopilot learned
+            for k in ("vals", "since", "holds"):
+                if isinstance(st["lessons"].get(k), dict):
+                    st["lessons"][k].pop("open_slots", None)
+            if isinstance(st["lessons"].get("last"), dict):
+                st["lessons"]["last"].pop("open", None)
         if on:
             was = st.get("on") is True
             st["on"], st["gate"] = True, gate
@@ -24397,10 +24403,11 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if not brake and loss_today <= -st["day_loss"]:
         brake = {"kind": "day", "day": day, "why": f"down {money(-loss_today)} today (the limit is {money(st['day_loss'])}). It starts again tomorrow."}
     cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap"), 2)
+    mo = ap_open_limit(st)                                # (#145) Pete's open-bet number, or what autopilot moved it to (8 to 20)
     out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "caution": caut, "open": open_n,
-           "max_open": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
+           "max_open": mo, "max_open_set": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
-           "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, st["max_open"] - open_n)}
+           "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, mo - open_n)}
     b = []
     if paused or (TRADING_PAUSED and TRADING_PAUSED()):
         b.append("Pause is on. Nothing new is approved or bought until you turn Pause off.")
@@ -24411,10 +24418,12 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if out["room"] < PANEL_OWN_MIN:
         b.append(f"Today's {money(cap_eff)} spending cap is used up ({money(spent)} spent)"
                  + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else "."))
+    slot_msg = f"{open_n} bets are open, the most it allows is {mo}."
     if out["slots"] <= 0:
-        b.append(f"{open_n} bets are open, the most it allows is {st['max_open']}.")
+        b.append(slot_msg)
     if free < PANEL_OWN_MIN:
         b.append(f"The {money(st['bank'])} bankroll is all riding or lost ({money(max(free, 0))} free).")
+    out["slots_only"] = bool(b) and all(x == slot_msg for x in b)   # (#145) the open-bet limit is the ONLY thing in the way
     if read_positions and not b:
         try:
             _held_all()
@@ -24458,6 +24467,117 @@ def _fa_overlap_ok(c):
         return False
 
 
+def _fa_candidates(st, real, now, caut, log, quiet=False):
+    """The bets this pass could approve or add, before the size, cap, bankroll and open-bet checks: the fresh draft, or the
+    extras on the approved panel, minus what Autopilot's learned numbers and a cautious level's higher bar leave out. None =
+    approve nothing (no panel to act on, or a check that could not be made). `quiet` skips the 'left out' log lines."""
+    status = real.get("status")
+    if status == "draft":
+        items = [c for c in real.get("items", []) if c.get("state") in (None, "draft", "")]
+    elif status == "approved":
+        x = panel_extras(real)
+        items = [c for c in ((x or {}).get("items") or []) if _fa_overlap_ok(c)]
+    else:
+        return None
+    if fal_on(st):                                        # (#144) skip-only: what the learned numbers say to leave out
+        try:
+            items, held = fal_filter(items, st, now)
+        except Exception as err:                          # a malformed value or any error: approve nothing this pass
+            log("full auto lessons: nothing approved:", type(err).__name__, err)
+            return None
+        if held and not quiet:
+            log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
+    if caut["level"]:                                     # (#144 soft brake) cautious: one more notch on the bar, tighten-only
+        try:
+            items, held = _fa_caution_bar(items, caut["level"])
+        except Exception as err:
+            log("full auto cautious: nothing approved:", type(err).__name__, err)
+            return None
+        if held and not quiet:
+            log(f"full auto cautious: left out {len(held)} bet{'' if len(held) == 1 else 's'} under the higher bar")
+    return items
+
+
+# ---- (#145) evidence for the open-bet limit. One row per bet full auto bought ("taken": how many bets were already open when
+# it was bought) or turned away ONLY because the open-bet limit was full ("skip": it fit the cap, the bankroll and every bar).
+# Skips are settled later from Kalshi's results (held to the end, after fees); taken bets use what they really made. Writing
+# these rows buys nothing and never blocks a buy: any error here is logged and the pass carries on.
+FA_SLOT_RUN = {"at": 0.0}
+
+
+def _fa_slot_table():
+    store_x("create table if not exists fa_slots(key text primary key, ts real, day text, kind text, open_at int, stake real, "
+            "pays real, tickers text, outcome text, pnl real)")
+    store_x("create index if not exists fa_slots_t on fa_slots(ts)")
+
+
+def _fa_slot_pays(c, s):
+    """What a bet of `s` dollars would pay if it won, held to the end (None when it can't be told: then it isn't evidence)."""
+    kind = c.get("kind")
+    normal = float(c.get("stake") or 0)
+    if normal <= 0 or s <= 0:
+        return None
+    if kind == "combo":
+        pays = c.get("pays") or normal * float(c.get("pct") or 0) * float(c.get("fair_mult") or 1)
+        return float(pays) * s / normal if pays else None
+    if kind == "early":
+        return None                                      # an exit-order bet: no plain held-to-the-end result to compare
+    p_ = c.get("paid") or c.get("price")
+    return s / (float(p_) + single_fee(float(p_))) if p_ and 0 < float(p_) < 1 else None
+
+
+def fa_slot_taken(items, ids, book, open_n, day, now, log=print):
+    """Record the bets this pass is buying with how many bets were open just before each. Never raises."""
+    try:
+        _fa_slot_table()
+        for i, c in enumerate(x for x in items if x["id"] in ids):
+            store_x("insert or replace into fa_slots values(?,?,?,?,?,?,?,?,?,?)",
+                    (f"{day}|{c['id']}", now, day, "taken", int(open_n) + i, float(book.get(c["id"]) or 0), None, None, None, None))
+    except Exception as err:
+        log("full auto open-bet evidence:", type(err).__name__, err)
+
+
+def fa_slot_skips(items, level, v, open_at, real, now, log=print):
+    """Record bets turned away only for want of a free slot (they must fit the room and the free bankroll as they stood).
+    One row per bet, never overwritten (a bet bought later replaces it with its 'taken' row). Never raises."""
+    try:
+        _fa_slot_table()
+        day = _panel_day(real.get("at"))
+        for c in items:
+            normal = float(c.get("stake") or 0)
+            s = _fa_scaled(normal, _fa_knob(level, "size"))
+            if s < PANEL_OWN_MIN or s > v["room"] + 0.01 or s > v["free"] + 0.01:
+                continue
+            pays = _fa_slot_pays(c, s)
+            tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+            if not pays or not tks:
+                continue
+            store_x("insert or ignore into fa_slots values(?,?,?,?,?,?,?,?,?,?)",
+                    (f"{day}|{c['id']}", now, day, "skip", int(open_at), round(s, 2), round(pays, 4),
+                     json.dumps([c.get("kind")] + tks), None, None))
+    except Exception as err:
+        log("full auto open-bet evidence:", type(err).__name__, err)
+
+
+def fa_slot_settle(now, limit=100):
+    """Give each turned-away bet its result once Kalshi has settled every leg: dollars it would have made held to the end,
+    after fees. Also drops rows older than FAL_OPEN['keep']. Quietly leaves a bet unresolved when a leg isn't settled yet."""
+    _fa_slot_table()
+    rows = store_rows_strict("select key, tickers, stake, pays from fa_slots where kind='skip' and outcome is null and ts < ? "
+                             "order by ts limit ?", (now - 3 * 3600, limit))
+    legs = {r["key"]: json.loads(r["tickers"]) for r in rows}
+    res = fetch_results({t for v in legs.values() for t in v[1:]}) if legs else {}
+    for r in rows:
+        kind, tks = legs[r["key"]][0], legs[r["key"]][1:]
+        rs = [res.get(t) for t in tks]
+        out = "lost" if "no" in rs else "won" if rs and all(x == "yes" for x in rs) else None
+        if not out:
+            continue
+        pnl = _lgsh_pnl(out, r["stake"], r["pays"]) if kind == "combo" else (r["pays"] - r["stake"] if out == "won" else -r["stake"])
+        store_x_strict("update fa_slots set outcome=?, pnl=? where key=?", (out, round(pnl, 4), r["key"]))
+    store_x("delete from fa_slots where ts < ?", (now - FAL_OPEN["keep"],))
+
+
 _FA_LOCK = threading.Lock()
 
 
@@ -24497,39 +24617,30 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         for e in caut["events"]:
             log("full auto:", e)
     if v["blockers"]:
+        if v.get("slots_only") and now - FA_SLOT_RUN["at"] >= FAL_OPEN["look"]:   # (#145) record what the full limit turned away (evidence only; buys nothing)
+            FA_SLOT_RUN["at"] = now
+            try:
+                real0 = panel_get("real")
+                items0 = _fa_candidates(st, real0, now, caut, log, quiet=True) if real0 else None
+                if items0:
+                    fa_slot_skips(items0, caut["level"], v, v["open"], real0, now)
+            except Exception as err:
+                log("full auto open-bet evidence:", type(err).__name__, err)
         return None
     real = panel_get("real")
     if not real:
         return None
     room, slots, free = v["room"], v["slots"], v["free"]
     status, ids = real.get("status"), []
-    if status == "draft":
-        items = [c for c in real.get("items", []) if c.get("state") in (None, "draft", "")]
-    elif status == "approved":
-        x = panel_extras(real)
-        items = [c for c in ((x or {}).get("items") or []) if _fa_overlap_ok(c)]
-    else:
+    items = _fa_candidates(st, real, now, caut, log)
+    if items is None:
         return None
-    if fal_on(st):                                        # (#144) skip-only: what the learned numbers say to leave out
-        try:
-            items, held = fal_filter(items, st, now)
-        except Exception as err:                          # a malformed value or any error: approve nothing this pass
-            log("full auto lessons: nothing approved:", type(err).__name__, err)
-            return None
-        if held:
-            log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
-    if caut["level"]:                                     # (#144 soft brake) cautious: one more notch on the bar, tighten-only
-        try:
-            items, held = _fa_caution_bar(items, caut["level"])
-        except Exception as err:
-            log("full auto cautious: nothing approved:", type(err).__name__, err)
-            return None
-        if held:
-            log(f"full auto cautious: left out {len(held)} bet{'' if len(held) == 1 else 's'} under the higher bar")
-    own = {}
+    own, skipped = {}, []
     for c in items:
         normal = float(c.get("stake") or 0)
         s = _fa_scaled(normal, _fa_knob(caut["level"], "size"))            # cautious: smaller bets (never above the normal size)
+        if s >= PANEL_OWN_MIN and s <= room + 0.01 and s <= free + 0.01 and len(ids) >= slots:
+            skipped.append(c)                             # (#145) it fit everything except the open-bet limit
         if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01 or len(ids) >= slots:
             continue
         ids.append(c["id"])
@@ -24541,6 +24652,9 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     day = _panel_day(real.get("at"))
     book = {c["id"]: own.get(c["id"], float(c.get("stake") or 0)) for c in items if c["id"] in ids}
     _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
+    fa_slot_taken(items, ids, book, v["open"], day, now, log)     # (#145) evidence for the open-bet limit; never blocks the buy
+    if skipped:
+        fa_slot_skips(skipped, caut["level"], v, v["open"] + len(ids), real, now)
     if status == "draft":
         ok, msg = panel_approve(ids, "all", at=real.get("at"), stakes=own or None)
     else:
@@ -24567,10 +24681,12 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
 FAL = {"week": 7 * 86400, "look": 6 * 3600, "judge_max": 14 * 86400, "days": 60, "log": 30,
        "bar": {"lo": 0.0, "hi": 5.0, "step": 0.5},          # points over the league's combo cut-off
        "sbev": {"lo": 0, "hi": 4, "step": 1},                # SB_DIAL_BARS level: none .. +$0.10 expected on $5
-       "game": {"lo": 0.10, "hi": 0.30, "step": 0.025}}      # share of the full-auto bankroll one game may carry
-FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30}            # = today's behaviour (the identity) and the loose end
-FAL_RECS = ("bar", "sbev", "game")
-FAL_NAMES = {"bar": "Combo bars, league by league", "sbev": "Smart Buy bars", "game": "Per-game limit"}
+       "game": {"lo": 0.10, "hi": 0.30, "step": 0.025},      # share of the full-auto bankroll one game may carry
+       "open": {"lo": 8, "hi": 20, "step": 1}}               # (#145) the most bets full auto may have open at once
+FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30, "open": FA["max_open"]}   # = today's behaviour (the identity); "open" starts from Pete's own number
+FAL_RECS = ("bar", "sbev", "game", "open")
+FAL_NAMES = {"bar": "Combo bars, league by league", "sbev": "Smart Buy bars", "game": "Per-game limit", "open": "Open-bet limit"}
+FAL_OPEN = {"min_n": 25, "loose_mult": 2, "loose_wait": 14 * 86400, "keep": 90 * 86400, "look": 600}
 FAL_RUN = {"at": 0.0}
 FAL_NOT_WIRED = (
     ("Paper panel", "it is the practice gate that unlocks full auto itself and has no number to adjust"),
@@ -24630,6 +24746,32 @@ def ap_brake_cautious(st):
         return True
 
 
+def _ap_open_base(st):
+    """Pete's own open-bet number (never written by autopilot), as a whole number."""
+    try:
+        return int(st.get("max_open", FA["max_open"]))
+    except (TypeError, ValueError):
+        return FA["max_open"]
+
+
+def ap_open_limit(st):
+    """The most bets full auto may have open right now: autopilot's learned number (8 to 20) while Autopilot is on and its
+    saved numbers can be read, else Pete's own. Never raises. It only decides how MANY bets; the daily cap, the daily loss
+    limit and the bankroll still bind every buy in the pass, whatever this says."""
+    base = _ap_open_base(st)
+    try:
+        if not fal_on(st):
+            return base
+        vals, err = _fal_vals(st)
+        L = st.get("lessons")
+        if err or vals is None or not (isinstance(L, dict) and isinstance(L.get("vals"), dict) and "open_slots" in L["vals"]):
+            return base                                      # nothing learned: Pete's own number, even outside 8 to 20
+        got = ap_clamp("open", vals["open"])
+        return base if got is None else got
+    except Exception:
+        return base
+
+
 def ap_clamp(rec, v):
     """`v` forced inside the setting's outer bounds (and a game share never above the whole bankroll); None when it isn't a
     plain finite number. The one place a value is fenced before it is saved."""
@@ -24639,7 +24781,7 @@ def ap_clamp(rec, v):
     v = min(max(v, b["lo"]), b["hi"])
     if rec == "game":
         v = min(v, 1.0)
-    return int(round(v)) if rec == "sbev" else round(float(v), 4)
+    return int(round(v)) if rec in ("sbev", "open") else round(float(v), 4)
 
 
 def _ap_looser(rec, a, b):
@@ -24681,13 +24823,15 @@ def fal_on(st):
 
 
 def _fal_key(rec, lg=None):
-    return "game_share" if rec == "game" else f"{rec}:{lg}"
+    return "game_share" if rec == "game" else "open_slots" if rec == "open" else f"{rec}:{lg}"
 
 
 def _fal_split(key):
     """('bar', 'nba') from 'bar:nba'; ('game', None) from 'game_share'. Anything else raises (a malformed value)."""
     if key == "game_share":
         return "game", None
+    if key == "open_slots":
+        return "open", None
     rec, lg = key.split(":", 1)
     if rec not in ("bar", "sbev") or not lg:
         raise ValueError(key)
@@ -24697,7 +24841,7 @@ def _fal_split(key):
 def _fal_vals(st):
     """(values, None) or (None, why). values = {'bar': {league: points}, 'sbev': {league: level}, 'game': share}. Nothing
     saved yet = the start values. A value that isn't a plain number inside its fixed range is a blocker, never a guess."""
-    out = {"bar": {}, "sbev": {}, "game": FAL_START["game"]}
+    out = {"bar": {}, "sbev": {}, "game": FAL_START["game"], "open": _ap_open_base(st)}
     L = st.get("lessons")
     if L is None:
         return out, None
@@ -24713,6 +24857,10 @@ def _fal_vals(st):
                 raise ValueError(key)
             if rec == "game":
                 out["game"] = float(v)
+            elif rec == "open":
+                if int(v) != v:
+                    raise ValueError(key)
+                out["open"] = int(v)
             else:
                 out[rec][lg] = int(v) if rec == "sbev" else float(v)
         return out, None
@@ -24723,13 +24871,18 @@ def _fal_vals(st):
 
 def _fal_cur(vals, key):
     rec, lg = _fal_split(key)
-    return vals["game"] if rec == "game" else vals[rec].get(lg, FAL_START[rec])
+    return vals["game"] if rec == "game" else vals["open"] if rec == "open" else vals[rec].get(lg, FAL_START[rec])
 
 
 def _fal_moves(rec, cur):
     """[(direction, new value)]: the tighter and the looser neighbour of `cur`, inside the fixed range. Looser only ever
     goes back toward the start value, never past it."""
     b, s0 = FAL[rec], FAL_START[rec]
+    if rec == "open":                                        # (#145) fewer open bets = tighter; the only setting that may loosen PAST its start
+        if not b["lo"] <= cur <= b["hi"]:
+            return []                                        # Pete's own number is outside autopilot's range: it leaves it alone
+        return [d for d in (("tighter", cur - b["step"]) if cur - b["step"] >= b["lo"] else None,
+                            ("looser", cur + b["step"]) if cur + b["step"] <= b["hi"] else None) if d]
     sg = -1 if rec == "game" else 1                          # tighter = a smaller game share, a bigger bar
     end = b["lo"] if rec == "game" else b["hi"]              # the tight end of the range (the loose end is the start)
     out = []
@@ -24744,7 +24897,7 @@ def _fal_moves(rec, cur):
 
 def _fal_min_n(rec):
     """The record's own minimum sample (the stepper's 10 changed / 20 new bets come on top, in knob_evidence)."""
-    return {"bar": LGSH["k_roi"], "sbev": SB_OPTIN["n"], "game": EXPO["dollar_n"]}[rec]
+    return {"bar": LGSH["k_roi"], "sbev": SB_OPTIN["n"], "game": EXPO["dollar_n"], "open": FAL_OPEN["min_n"]}[rec]
 
 
 def _fal_load(rec, now):
@@ -24769,6 +24922,19 @@ def _fal_load(rec, now):
                                    "and ts>? order by ts", (since,)):
             by[_fal_key("sbev", r["league"])].append({"k": r["ts"], "d": float(r["outcome"]), "s": SB_STAKE, "ev": float(r["ev"])})
         return by, lambda rs, v: [_sb_pass(r["ev"], int(v)) for r in rs]
+    if rec == "open":
+        _fa_slot_table()
+        pl = {}
+        for day, c in _fa_rows(now, FAL["days"] + 2):                  # what each bought bet really made (Kalshi's record, else held to the end)
+            v = panel_pl(c) if c.get("result") or c.get("pl_real") is not None else None
+            if v is not None:
+                pl[f"{day}|{c.get('id')}"] = float(v)
+        for r in store_rows_strict("select key, ts, kind, open_at, stake, outcome, pnl from fa_slots where ts>? order by ts", (since,)):
+            d = pl.get(r["key"]) if r["kind"] == "taken" else (float(r["pnl"]) if r["outcome"] else None)
+            if d is None:
+                continue                                                # not settled yet: not evidence
+            by["open_slots"].append({"k": r["ts"], "d": d, "s": float(r["stake"] or 0), "open_at": int(r["open_at"])})
+        return by, lambda rs, v: [r["open_at"] < v for r in rs]
     _expo_tables()
     for r in store_rows_strict("select ts, cost, bank, alloc, net, settled from expo_pos where seed=0 and coalesce(batch,1)<=1 "
                                "and ts>? order by ts, pos", (since,)):
@@ -24803,6 +24969,8 @@ def _fal_judge(rec, key, rs, passes, a, b, last_at):
 
 
 def _fal_val_text(rec, v):
+    if rec == "open":
+        return f"{int(v)} open bets"
     if rec == "bar":
         return f"+{v:g} points"
     if rec == "sbev":
@@ -24813,8 +24981,8 @@ def _fal_val_text(rec, v):
 def _fal_change(key, dirn, to=None):
     """A step in plain words: 'Raised the NBA combo bar a little' (a per-game limit goes the other way: tighter = lower)."""
     rec, _ = _fal_split(key)
-    up = (dirn == "tighter") != (rec == "game")
-    tail = f" to {_fal_val_text(rec, to)}" if rec == "game" and to is not None else " one level" if rec == "sbev" else " a little"
+    up = (dirn == "tighter") != (rec in ("game", "open"))
+    tail = f" to {_fal_val_text(rec, to)}" if rec in ("game", "open") and to is not None else " one level" if rec == "sbev" else " a little"
     return f"{'Raised' if up else 'Lowered'} the {_fal_name(key)}{tail}"
 
 
@@ -24822,12 +24990,21 @@ def _fal_name(key):
     rec, lg = _fal_split(key)
     if rec == "game":
         return "per-game limit"
+    if rec == "open":
+        return "open-bet limit"
     return f"{league_label(lg)} combo bar" if rec == "bar" else f"{league_label(lg)} Smart Buy bar"
 
 
 ap_register("bar", FAL_NAMES["bar"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["bar"], FAL_START["bar"], 1)
 ap_register("sbev", FAL_NAMES["sbev"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["sbev"], FAL_START["sbev"], 1)
 ap_register("game", FAL_NAMES["game"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["game"], FAL_START["game"], -1)
+ap_register("open", FAL_NAMES["open"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["open"], FAL_START["open"], -1)
+
+
+def _fal_slow(L, key, rs, now):
+    """True when the open-bet limit may NOT loosen yet: it needs two weeks since its last move and twice the usual sample."""
+    since = (L.get("since") or {}).get(key) or 0
+    return now - float(since) < FAL_OPEN["loose_wait"] or len(rs) < FAL_OPEN["loose_mult"] * FAL_OPEN["min_n"]
 
 
 def _fal_plan(st, now):
@@ -24885,6 +25062,8 @@ def _fal_plan(st, now):
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
                     if dirn == "looser" and (cautious or held):
                         continue                             # brake priority, or held after Pete's Undo: nothing loosens
+                    if rec == "open" and dirn == "looser" and _fal_slow(L, key, rs, now):
+                        continue                             # (#145) tighten fast, loosen slow
                     ok, ev, lb = ap_gate(rec, key, rs, passes, _fal_cur(vals, key), new, since.get(key) or 0)
                     if ok:
                         found.append({"do": "step", "rec": rec, "key": key, "from": _fal_cur(vals, key), "to": new,
@@ -24936,14 +25115,18 @@ def _fal_apply(s, plan, now):
         if a["do"] == "step":
             to = ap_clamp(rec, a["to"])                      # the outer fence, once more, right before it is saved
             if to is None or abs(to - a["to"]) > 1e-9 or _ap_frozen(L, key) \
-                    or (_ap_looser(rec, a["from"], to) and (cautious or _ap_held(L, key, now))):
+                    or (_ap_looser(rec, a["from"], to) and (cautious or _ap_held(L, key, now)))\
+                    or (rec == "open" and _ap_looser(rec, a["from"], to)
+                        and now - float(L["since"].get(key) or 0) < FAL_OPEN["loose_wait"]):
                 continue
             if now - float(L["steps"].get(rec) or 0) < FAL["week"] or (lr and not lr.get("judged")) \
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
                 continue
             ev = a["ev"]
-            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets this would have made "
-                f"${ev['gain']:.2f} more after fees.", ev={"band": ev["band"], "gain": ev["gain"], "hold_n": ev["hold_n"],
+            why = (f"the bets that fit only as the {max(a['from'], a['to'])}th open one {'lost' if a['dir'] == 'tighter' else 'would have made'} "
+                   f"money: on {ev['band']} past bets this would have made ${ev['gain']:.2f} more after fees."
+                   if rec == "open" else f"on {ev['band']} past bets this would have made ${ev['gain']:.2f} more after fees.")
+            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: {why}", ev={"band": ev["band"], "gain": ev["gain"], "hold_n": ev["hold_n"],
                                                           "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"]})
             _fal_set(L, rec, key, a["to"])
             L["steps"][rec], L["since"][key] = round(now), round(now)
@@ -24973,7 +25156,7 @@ def _fal_apply(s, plan, now):
 
 
 def _fal_set(L, rec, key, v):
-    if abs(v - FAL_START[rec]) < 1e-9:
+    if rec != "open" and abs(v - FAL_START[rec]) < 1e-9:     # (the open-bet limit's start is Pete's own number: always saved)
         L["vals"].pop(key, None)                             # back at the start: nothing saved
     else:
         L["vals"][key] = v
@@ -24986,6 +25169,10 @@ def fal_tick(st, now, log=print):
     if not fal_on(st) or now - FAL_RUN["at"] < FAL["look"]:
         return False
     FAL_RUN["at"] = now
+    try:
+        fa_slot_settle(now)                                  # (#145) give turned-away bets their results (a failure just means thinner evidence)
+    except Exception as err:
+        log("full auto open-bet evidence:", type(err).__name__, err)
     try:
         plan = _fal_plan(st, now)
     except Exception as err:                                 # any error at all: no step
@@ -25204,6 +25391,9 @@ def fal_view(st):
             learned += [{"name": _fal_name(_fal_key("sbev", lg)), "text": _fal_val_text("sbev", v)} for lg, v in sorted(vals["sbev"].items()) if v > 0]
             if vals["game"] < FAL_START["game"] - 1e-9:
                 learned.append({"name": _fal_name("game_share"), "text": _fal_val_text("game", vals["game"])})
+            if vals["open"] != _ap_open_base(st):
+                learned.append({"name": _fal_name("open_slots"), "text": _fal_val_text("open", vals["open"])
+                                + f" (you set {_ap_open_base(st)})"})
         stat = L.get("status") if isinstance(L.get("status"), dict) else {}
         recs = []
         for rec in AP_REG:
