@@ -47,6 +47,7 @@ ok("message names the real window (this week, Tue to Mon) and never says weekend
 mm = E.manual_cap_msg("nfl", 49.0, 5.0, 50.0)
 ok("a manual buy's message (Buy straight, Live-idea singles) says the Weekly cap and the window too",
    "Weekly cap" in mm and "that week (Tue to Mon)" in mm and "weekend" not in mm.lower() and "$1 left" in mm)
+ok("a manual buy's message also names the slider's $10 step (#112)", "raise it to at least $60" in mm and "at least $54" not in mm)
 ok("room left is never negative", "$0 left" in E.cap_msg(60.0, 5.0))
 ok("message says how far to raise the cap, in the slider's $10 steps (#112)", "raise it to at least $60" in m and "at least $54" not in m)
 E.set_league("nba"); E.CFG["budget"] = 50
