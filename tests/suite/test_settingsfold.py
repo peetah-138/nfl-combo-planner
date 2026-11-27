@@ -58,6 +58,15 @@ with sync_playwright() as pw:
     st = pg.evaluate("Object.fromEntries([...document.querySelectorAll('.scard[data-sid]')].map(c=>[c.dataset.sid,[!c.classList.contains('shut'),c.querySelector('.sfold').getAttribute('aria-expanded')]]))")
     chk(st["money"] == [True, "true"] and st["mac"] == [True, "true"], f"Money and The Mac should start open: {st}")
     chk(all(v == [False, "false"] for k, v in st.items() if k not in ("money", "mac")), f"the other sections should start folded: {st}")
+    # 2a. (#574) a long explanation shows two lines with a More button; More opens it, and tapping More never flips the switch
+    pg.evaluate("document.querySelector('#s-cash .sfold').click()"); time.sleep(.6)
+    lg = pg.evaluate("(()=>{const r=document.querySelector('#s-cash label.srow .smore');return r?[r.closest('label').querySelector('input').checked,!!r.parentNode.querySelector('small.clip')]:null})()")
+    chk(bool(lg) and lg[1], f"a long toggle explanation should be clipped with a More button: {lg}")
+    if lg:
+        pg.evaluate("document.querySelector('#s-cash label.srow .smore').click()"); time.sleep(.3)
+        after = pg.evaluate("(()=>{const r=document.querySelector('#s-cash label.srow .smore');return [r.closest('label').querySelector('input').checked,!r.parentNode.querySelector('small.clip'),r.textContent]})()")
+        chk(after[0] == lg[0] and after[1] and after[2] == "Less", f"More should open the text and never flip the switch: {lg} -> {after}")
+    pg.evaluate("document.querySelector('#s-cash .sfold').click()"); time.sleep(.4)
     # 2. the fold header is a real button, 64 pt or less tall (keeps its iOS tick), and a badge shows on a folded card
     hh = pg.evaluate("[...document.querySelectorAll('.sfold')].map(b=>b.offsetHeight)")
     chk(all(0 < h <= 64 for h in hh), f"fold headers must be <= 64pt tall: {hh}")

@@ -87,6 +87,9 @@ with sync_playwright() as pw:
         check(f"{scheme}: the hedge card shows", "lock in" in pg.evaluate("document.querySelector('main').innerText"))
         box = pg.evaluate("(()=>{const b=document.querySelector('.hdis');const r=b&&b.getBoundingClientRect();return r?[r.width,r.height]:null})()")
         check(f"{scheme}: Dismiss is thumb-sized (44px+ tall, 70px+ wide)", bool(box) and box[1] >= 43.9 and box[0] >= 70)
+        card = pg.evaluate("document.querySelector('.dcard.warn').innerText")
+        check(f"{scheme}: the hedge card names its numbers (Hedge costs, Locks in, You paid) and has no let-it-ride jargon", all(w in card for w in ("HEDGE COSTS", "LOCKS IN", "YOU PAID")) and "let-it-ride" not in card.lower())
+        check(f"{scheme}: the hedge card says a dismissed card comes back on a 20% / 50 cent change", "comes back" in card and "20%" in card and "50¢" in card)
         check(f"{scheme}: no sideways scroll", not pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"))
         if SHOTS:
             os.makedirs(SHOTS, exist_ok=True)
