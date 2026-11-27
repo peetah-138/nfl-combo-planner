@@ -893,6 +893,158 @@ re-picked on the old 70%) and the `hold_min` question. `hold_min` (30) stays ine
 Tests: `t_mkthold.py` (the `oos:` lines; the main case fails on the old code).
 
 
+#### Basketball discovery: offline research on NBA and men's college play-by-play (no product change)
+
+**Section:** Fair prices and data (research tooling only; nothing here is read by the app, the watcher or any money path)
+
+Offline research code in `tools/research/` (`discovery_common.py`, `basketball_fetch.py`, `basketball_data.py`,
+`basketball_discovery.py`) plus `docs/BASKETBALL_DISCOVERY.md` (pre-registration, method, caveats) and
+`docs/results/basketball-discovery-first-run.md` (aggregate numbers only). The data (hoopR/sportsdataverse files, ESPN
+derived, labelled CC-BY-4.0) stays outside the repo in `~/dev/research/basketball/`, is never committed or
+redistributed, and the venv is `~/dev/research/venv`. stats.nba.com and cdn.nba.com are not used.
+
+What it does: an expanding-window (train on earlier seasons, test on the next, 2022-2026) live win-probability baseline
+from game state plus the pre-game line, a richer model with permutation importance, a game-clustered residual scan with
+Benjamini-Hochberg control (hypothesis counts printed per family), a totals pace/anchor study, 13 pre-registered
+anecdotes and 5 totals anecdotes, and a decay tracker. A "survivor" needs BH q<0.05, at least 1 win-probability point
+(1 total point), 100+ games, same sign in 4 of 5 held-out seasons, and same sign in the other league.
+
+Result in one line: nothing here is a demonstrated edge. There are no live market prices in the data, so a residual
+against our own model is a lead to price, never a mispricing. Nearly all survivors are the baseline's own late-game
+calibration; the one other survivor is college `own_gain8_last5|ph2` (-1.2 pts). One pre-registered anecdote (rested team vs back-to-back team at half) is a weak
+college-led lead worth a look once live prices exist.
+
+Never touches: the engine, the watcher, Pause, caps, rule 8, sizing, any buy or sell path, `~/combowatch`, keys, the
+history database or any `combo_*.json`.
+
+Test: `tests/suite/t_discovery_synth.py` (synthetic data with a planted +3 point effect: the scan finds it, null segments
+stay out, game-clustered SE is wider than the naive one, BH known example, decay slope, permutation importance, scoring).
+It needs numpy and pandas, now in `tests/requirements-ci.txt`; locally it prints a SKIP if they are missing, in CI a
+missing import is a FAIL.
+
+
+Review follow-up: overtime explains most of the close-game-late-over total residual (about +0.5 pts in both leagues once overtime is removed and the shift is centred); T3 was dropped for too few games.
+
+#### Kalshi history replay (research tool)
+
+**Section:** Research tools (next to `tools/exit_replay.py`)
+
+`tools/kalshi_history_replay.py` downloads Kalshi's public settled single-game markets with 1-minute bid/ask candles
+(NFL first, then NBA and other sports with enough history), caches them OUTSIDE the repo in
+`~/dev/research/kalshi-history/`, and replays simple exit rules against hold-to-settlement: sell at bid >= cost + 3/5/10c,
+sell at T-1h or T-15m if bid > cost, and a buy-only-below-baseline filter. Fees `ceil(0.07*n*p*(1-p))` on entry and exit,
+entry at ask, exit at bid. The report gives per sport and price bucket the net cents per $1 staked, game-level bootstrap
+95% ranges, a 70/30 time-ordered pick-then-score, hides groups under 20 games, prints data-quality gates first, and
+tests the pass bar (>= 1c over hold, range above 0, 2+ sports or 2+ weeks, survives a 60 s lag). It also measures
+replacements for SB_PRE_CLOSE, SB_PRE_VOL, SB_SPREAD and SB_LIVE_WIDEN.
+
+Offline only: no change to any trading code, no keys, public unauthenticated GET paths only (others refused in code), one
+request per second with 429 back-off, responses cached. The Kalshi terms pages could not be read (429), so data stays
+local and is not redistributed. Docs: `docs/KALSHI_HISTORY_REPLAY.md`; first results: `docs/results/kalshi-history-first-run.md`.
+Tests: `tests/suite/t_kalshi_history_replay.py` (synthetic fixture with a known answer, no network).
+
+#### NFL trend discovery (offline research tool)
+
+Adds a research-only tool; nothing in the app, watcher or trading code changes.
+
+- `tools/research/nfl_discovery.py`: walk-forward state-only baseline, richer gradient-boosted model with candidate
+  facts, game-level situation scan with Benjamini-Hochberg control over every scanned cell (count printed), effect size
+  in win-probability points, season-stability (>=70% same sign), greedy explain-away of overlapping cells, 15
+  pre-registered claims (A01-A12 win probability, T01-T03 totals) as their own family, decay tracker, random-sign
+  placebo, and a synthetic mode with planted effects. Data is downloaded into `~/dev/research/nfl/` (never the repo).
+- `tools/research/nfl_state_vs_kalshi.py`: read-only Air-side check of the exported portable model
+  (`tools/research/nfl_state_model.json`) against Kalshi's live price from `sig_state`, `price_path` and `closes`.
+- `tools/research/requirements-research.txt`: pinned research venv (not installed by the app or CI).
+- Tests: `tests/suite/t_nfl_discovery.py` (pure-Python statistics always; synthetic end-to-end only where numpy,
+  pandas and scikit-learn exist) and `tests/suite/t_nfl_state_vs_kalshi.py` (synthetic history file: read-only,
+  aggregates only, hidden small groups, missing-table degradation).
+- Docs: `docs/NFL_DISCOVERY.md`; first real-data results in `docs/results/nfl-discovery-first-run.md`.
+- Data: nflverse, CC-BY-4.0 (credit nflverse contributors).
+
+#### NFL weather research (research only)
+
+Adds `tools/research/nfl_weather.py`: offline study of whether observed kickoff weather (wind, cold, rain/snow; dome excluded) beats Kalshi NFL total/yards/points/field-goal prices after fees. Uses public key-free endpoints only (Kalshi market data, Iowa Environmental Mesonet), at most 1 request/s. Not imported by the planner and nothing in the trading path.
+
+Result (local, ~/dev/research/nfl-weather/RESULT.md): no pass. Wind lowers totals about 2 points in 20 seasons of data, but the sportsbook line already prices much of it, and the Kalshi era has too few bad-weather games (3 to 17 per type in the test window) to show an edge net of fees. All market types INCONCLUSIVE. Shadow-recording list is in RESULT.md.
+
+#### Measure E: batch order-book read (#225), live-feel measurement and next step (#21), draw side tag (#182)
+
+**Section:** Reads and display only. What is bought or sold is unchanged (no stake, price, rule or order touched).
+
+##### #225: one Kalshi call for many order books
+- `books_now` (the Build page's spreads/totals and the shadow's panel fill) used to start one thread and one
+  `GET /markets/{ticker}/orderbook` per strike that was not read in the last minute (up to 8 per league for the Build
+  page, 4 for the panel fill). It now first asks `GET /markets/orderbooks?tickers=A&tickers=B...` once (up to 100
+  tickers per call, checked against Kalshi's live endpoint on 2026-11-26: same per-book shape, `orderbook_fp` plus
+  `ticker`), then reads singly only whatever the batch did not give.
+- Same numbers: each book goes through the same `_book_keep` (the one `book_depth` uses) into `BOOK_DEPTH`,
+  `BOOK_LADDER` and the price recorder.
+- Fails closed to the old path: a failed call, a non-200, an answer that is not a list, a book that is missing, garbled or not
+  asked for is left out, and that strike is read the old single way. One book or an error never changes the answer.
+- Not used on any buy, sale or hedge check: those keep `book_depth(..., max_age=0)`; `t_bookbatch.py` checks that.
+- Not done: reading Kalshi's rate-limit headers. The live answer only carries `x-ratelimit-limit` (600) and
+  `x-ratelimit-cost` (10 for a batch call), no "remaining", so there is nothing to back off on yet. Smart sell's own guard reads stay single (they must
+  be fresh); batching those is a separate money-path decision.
+- Before/after: 8 reads become 1 call for a Build line page with 8 unread strikes (4 become 1 for the panel fill).
+  `BOOK_BATCH_STATS` (`batch_calls`, `batch_books`, `fallbacks`) counts them for a real before/after on the Mac;
+  the age of the bid smart sell sees is not changed by this PR.
+- Test: `tests/suite/t_bookbatch.py` (batch vs individual reads give identical asks and depth; 500, exception and junk answers fall back; a missing or garbled book is read singly; splits at 100).
+
+##### #21: live feel, what is measured and the next step
+Already on develop before this change: the web app's score cache is 8 s while a game is live (was 45 s), the Live snapshot is served for 8 s,
+and the phone shows how old the numbers are. So the "45 s score cache" finding in the issue is done.
+
+Measured here (dev Mac, read-only log access, nothing secret printed): `tools/read_prod_logs.py` works, but neither the watcher log nor the
+database carries a per-page refresh time (page build, score age, tick-to-screen), so the stage-by-stage staleness table in the issue is still
+an estimate. A page build can only be timed where the app runs, with Pete's session, so it was not timed from here.
+
+Next step (smallest thing that gives real numbers, display/log only):
+1. Stamp the age of each input into the Live payload (ESPN scores, Kalshi prices, snapshot build seconds) and log one line a minute while a game
+   is live ("live ages: scores 6s, prices 9s, build 2.1s, tick gap 5s").
+2. Read that log for one live evening with `read_prod_logs.py --grep "live ages"`, then cut the biggest stage.
+3. Only after that: the slice from the issue's plan (a push of changed numbers over the existing SSE, a ticking clock on the game sheet).
+
+##### #182: draw side is tagged
+`attach_fair` now gives a 3-way game's draw side the same `sharp_line` (and `line_at`/`line_live`) as its two teams, so in low-credit mode a far
+combo or idea with a draw leg is not left out when the game has an odds-service line. Panel builders still skip draws, so nothing changes today.
+`t_lowcredit.py` section E runs the real path: `attach_fair` -> `_cand` -> `idea_legs_info`, and checks a game with no line is not tagged.
+
+#### Shadow batch E: paper book chooses like the panel; mkt_learn holdout report (issues #291, #474; #476 and #477 already done)
+
+**Section:** "Smart Buy" (paper book) and "Fair prices and data" (mkt_learn)
+
+Paper and record only. No buy, sell or sizing change, no new automatic money movement.
+
+##### Already done, skipped
+- **#476** (store what the promotion gate needs): shipped in PR #549 (`league_shadow_q`, `lgsh_gate`, dollars after Kalshi's fee,
+  hold to settle). See `league-shadow-gate.md`. Nothing more to do here.
+- **#477** (blend double-counts evidence): shipped in PR #549 for the shadow measurement (disjoint all-minus-sport,
+  sport-minus-league counts; a thin league's copied sport level counts for nothing). Live `calib_fair` is deliberately unchanged.
+- **#474**: the stricter-only oldest-70% / newest-30% test shipped in #549; only the measurement report is new here.
+
+##### #291 Smart Buy paper book picks like the real panel
+`sb_paper_build` now applies `choose_panel`'s overlap and share rules when it decides which paper bets are "bought":
+- one straight bet per game and family (a winner and a spread are one family, a total its own; `bet_family`),
+- spreads/totals at most `max(2, int(PANEL["size"] * PANEL["line_share"]))` (3) a day per budget,
+- at most `PANEL["size"]` (10) bets a day per budget (stakes and extras each),
+- still best expected dollars first, at most 2 a game, inside the day's budget (stakes and extras each).
+A bet the rules drop is still scored (its row stays, stake 0), so the CLV, skip and settled counts are unchanged; only the
+staked dollars and the graduation line's "ahead" follow the panel's discipline.
+Not modelled (the docstring and CLAUDE.md say so): the ahead floor (needs `_sim_panel`), the fill cap (book depth is not
+recorded in `exit_shadow`, so "cap by depth where known" has nothing to read), buying at approval time (it still uses the last
+check before the game). It stays a progress line, not a gate. Paper only: nothing here buys or sizes a real bet.
+Tests: `t_shadow_e.py` (the `#291` lines).
+
+##### #474 mkt_learn holdout: measurement report only
+`mkt_holdout_report` reads the cached `mkt_learn` result (never re-runs it, changes no weight) and counts, over groups with
+at least `min_n` markets: groups whose weight picked on the oldest 70% gained on the newest 30% (`oos_pass`), earned groups the
+holdout refuses (`oos_refuses`), the mean out-of-sample gain, and slices under `hold_min` (`under_hold_min`; 0 at min_n 200,
+so `hold_min` is inert as the issue noted). It rides along in `mkt_fair_summary` as `holdout`.
+The score is log loss under Kalshi's mid, not dollars: a dollar figure for a probability model would need an invented stake rule.
+Out of scope still: letting the oldest-70% weight replace the live weight (changes live fair prices; needs the measure-first
+pass on real settled data, which this report supports).
+Tests: `t_shadow_e.py` (the `#474` lines).
+
 ### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
 - Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
   `/exchange/status` names them: 0 Default, 1 Combos, 2 Crypto & Commodities, 3 Tennis, Baseball, Basketball), and an
@@ -2218,6 +2370,55 @@ Nothing about when or whether a sale, hedge or buy happens changed, and no numbe
   #290 (one progress line per league; "skips helping" only when it holds a league back, PR #547).
 
 
+#### Fee focus: what fees really cost, and would fewer, bigger bets help (measurement only)
+
+**Section:** Selling > "Early-exit value test, phase 1" (next to `tools/exit_replay.py`)
+
+`tools/fee_focus.py` is a read-only analysis script, one standalone file (it copies exit_replay's read-only helpers, so
+it needs nothing else). The Air's updater copies only the app's own files, so `tools/` is not in `~/combowatch`; one line
+fetches the script (public code, no key) and runs it (from a full clone: `python3 tools/fee_focus.py --out ~/fee_focus_summary.json`):
+
+```
+curl -fsSL https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/develop/tools/fee_focus.py -o ~/combowatch/fee_focus.py && python3 ~/combowatch/fee_focus.py --out ~/fee_focus_summary.json
+```
+ It opens `combo_history.db` with the same read-only helper as
+`exit_replay.py` (sqlite URI `mode=ro`), never writes to it, makes no network call and needs no key. It prints and writes
+**group aggregates only**: no tickers, no dates of individual bets, no order ids, no balances; any cell with fewer than 20
+bets prints "n<20, hidden". Missing tables or columns print "skipped: ..." for that part and the rest still runs. It is
+descriptive: nothing in the app, no buy, sell, sizing, cap or gate reads it, and no live behaviour changes.
+
+**Part A, fees (ledger).** (1) Recorded entry fee vs the standard `ceil(0.07 x n x p x (1-p))` per order, by single vs
+combo, both against the unrounded and the cent-rounded formula (this answers the open "what do combos pay" question; the
+combo ratio is exact on single-fill rows, `nf == 1`; zero-fee combos stay in the sample, so a true "combos pay no entry fee" shows as a ratio near 0 and Part B then uses that ratio). (2) Fee as % of stake by stake bucket ($0-1, 1-2, 2-5, 5-10, 10-25,
+25+) and price bucket (<15c, 15-30, 30-60, 60-85, 85+), and the rounding excess (the cent round-up) as % of stake.
+(3) Round-trip fees for bets sold early vs held, per bucket, and whether rebates or refunds show (negative or zero fee
+rows; the ledger keeps only fee totals, so a refund netted inside a positive total is invisible).
+
+**Part B, few strategic bets.** Net return per $ staked after fees, with game-level bootstrap 95% ranges, by grade, EV
+quartile, stake bucket and bets that day (1-2 / 3-5 / 6+), on the real ledger and on the settled `sb_paper` book (every
+paper bet re-scored at the app's flat $5 with whole contracts and the fee rounded up; combos use the Part A ratio).
+The same grade and EV cuts are also run on the REAL ledger bets that the paper book scored too (matched on the sorted leg
+tickers; `real_bets_by_paper_grade_and_ev`). Then the what-if: only the top N (1, 2, 3, 5) bets a day by EV, at 1x, 2x and 3x the paper stake, fees recomputed with
+rounding. The rule is picked on the first 70% of days (best per-dollar among the 2x and 3x rules) and scored on the last
+30%; `paper_book_as_staked` (the paper book at its own stakes, not real P/L) is printed beside it.
+
+**Caveats the output states.** Lost singles have no recorded size unless a `sell_log` row exists, so price-bucket and ratio
+cells lean toward won and sold rows. `ledger.fees` sums over fills (ratio exact only for one fill). `sb_paper` covers
+about 60 days, is a different population from real buys, and its recorded `plain` uses the app's unrounded fee model.
+Top-N cells shrink fast; hidden cells mean "too few to say". A past sample, not a decision.
+
+Tests: `t_feefocus.py` (synthetic history: byte-identical file after, no tickers or dates in the output, cells under 20
+hidden, the combo fee ratio read right at 1x and 2x, the 70/30 simulation grid, missing tables and files degrade).
+
+#### Loss-cut default: review fixes (#556 follow-up)
+
+- **Pre-marker "never cut" leagues stay off.** A league with 30+ results and no loss cut, with no `loss_off` key at all (tuned
+  to "never" before the marker existed), is now treated as having chosen "never cut", so the 12.5% default does not override it.
+  Read-time only, nothing is rewritten. An explicit `loss_off: false` or a league under 30 results still gets 12.5%.
+- **Fails closed.** If `_loss_cut_chosen_off` cannot read the settings it now returns True (no default cut), not False.
+- **Doc fix.** `loss-cut-default.md` said a brake resets a league to 12.5%; the code applies no default while braked.
+- Tests: `tests/suite/t_cutloss_default_legacy.py`; `t_cutloss_default.py` untouched-league case now uses under 30 results.
+
 ## Product notes (moved here from CLAUDE.md)
 
 Log access for the dev Mac (#377; hard rule 9). The watcher hub answers `GET /api/logs?source=console|autosell&since=&limit=`
@@ -3090,6 +3291,36 @@ Tests: `t_money_h.py` (fails on the old code).
   #439 (Add anyway shows a spinner and "Showing…", `ovAdd`).
 
 
+#### Rank on your own record: Best bets and the flip verdict (issues #243, #204; #265 held)
+
+**Section:** Build page (Best bets), Fair prices and data, Selling (self-tuning). Display and ranking only: nothing here buys or sells, and no live cut or guard changes.
+
+- **#243 Best bets rank on the calibrated chance.** `best_bets_feed` used to pick the top `BEST_LOOK` (30) candidates by the books' raw
+  edge, then size and simulate them on the raw chance. `_best_calibrate(c)` now puts every single and combo on the chance
+  corrected by your own record (`calib_fair` per leg, as the panel and the sheet's "on your record" profit do) before that
+  cut: the legs' `fair`, `chance`, the ranking return (`ret`), the stake (`_size`) and the exit simulation all read it. A
+  combo's return is `pct x corrected chance / books' chance - 1`. A candidate with no edge left on your record, or under the single bar
+  (`SINGLE_MIN_EDGE` 2.5c after fee and 4%, as in `single_candidates`), is dropped (never simulated, still counted in `looked`). The books' chance stays on each row as `chance_book`. An empty record or a
+  leg `calib_fair` cannot correct changes nothing. Spreads and totals are untouched (already on `calib_line`). It can only
+  reorder or drop a row.
+- **#204 The flip verdict is in dollars.** `flip_pick` adds `flip_ev` (stake / combo price x (corrected chance - price - fee),
+  fee = the standard taker fee on the combo's price, as Kalshi's combo fee is not verified) before and after, shown as
+  "Expected profit at $S, after fees and on your own record: $a -> $b". "Good flip" now also needs expected dollars not to
+  fall (more than a cent); a likelier flip whose dollars fall is a Trade-off, or Worse bet when it is not also clearly
+  likelier. Without prices the note is as before.
+- **#265 is held, not shipped (pending Pete's sign-off).** The loss guards `sl_prog`, `sl_drop`, `sl_checks`, `sl_span` and
+  `sl_gap` gate both the manual stop-loss switch and the learned loss cut, but `knob_judge("sl", ...)` replays only the
+  switch. A first version that judged each bet on the cut's replay when the cut is on was taken out: those knobs are in
+  `KNOB_LIVE` and live self-tuning is on, so it would change live loss numbers, and with the cut and `sl_auto` both on it
+  would look only at the cut and could let through a step that loses on the switch replay. Nothing about the judge, the
+  steppers, `_sl_tune` or any live guard changes in this PR. Option for later: judge a step on the WORSE of the two replays
+  (the switch's and the cut's, each only when that feature is on) so a step must not lose on either.
+- **Not done / checked:** none of the three was already built. No screenshots: the only visible change is the order of the
+  Best bets rows and one added sentence in the flip note (no layout or style change).
+- **Tests:** `t_ranke.py` (record flips the ranking and the simulated chance, an edge that exists only on the raw chance is
+  dropped, combo return, empty record unchanged, flip dollars and verdict); `t_bestbets.py`,
+  the knob tests are unchanged and passing.
+
 ### Results page
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
   levels (every quote by band: hit vs expected, riding return, worth at game time, lab ride vs smart sell),
@@ -3319,6 +3550,70 @@ lines, wording), and the updated `t_tap_polish.py`, `test_analytics.py`, `test_e
 
 
 
+#### Registry E: the numbers card folds up (display only)
+
+**Section:** Results › Selling › "The numbers smart sell and Smart Buy run on" and "What self-tuning changed"
+
+Nothing about when or whether a sale, hedge or buy happens changed, and no number the app tunes changed. Only how the card looks.
+
+- **#261 (done here):** opened, the card was about 60 rows. Each group (Taking a profit, Selling at a loss, Hedging, Selling: limits
+  and checks, Smart Buy) is now its own fold, shut by default, with a one-line summary like "12 numbers · 2 learned". Both self-tuning
+  cards now share one header that shows a keyboard focus ring, and the little arrow turns when you open or shut them. When the Mac
+  can't read the numbers the card says "Couldn't read the numbers right now." instead of vanishing. A number that learns league by
+  league carries a small "by league" tag when you pick a league chip. The three numbers that also sit in the table above
+  (profit floor, risk weight, cut losses) say so inside their group.
+- **#261, not done:** values do not roll when you switch league (they are written as words like "1.4x what you paid", not a plain
+  number), and the three duplicate rows are noted rather than deleted, because the card is the only place that shows their starting
+  point and range.
+- **Already done on develop, no change here:** #214 (closed; the stale-page reload was finished in #535, checked again by #552) and
+  the #246 items that landed in #535 and #552 (panel header numbers roll, toast ticks like a button, settled #c= link toast, sell sheet
+  wording). Left in #246 and untouched here because they live on the server's sell path: stake rounding, "expected +$" format, the
+  raw get_offer exception, and the .sacts hint taps.
+
+#### Plain words on the Promote and cut-losses cards, calmer toast (issues #569 #570 #571 #573)
+
+**Section:** Results page, Live page (notification links)
+
+Display and wording only; no money logic changed.
+
+- **Promote card (#569, #573):** "Ready: say go" is now "Ready to turn on", and the card says how: tell Claude "go" (there is
+  deliberately no button; nothing turns on by itself). "Cleared the strict bar" and "Streak 1 of 3" became "passed 3 checks in a
+  row, each on games it had not seen before" and "passed 1 of 3 checks on new games so far". The push reads
+  "<name> passed its paper test 3 times in a row. Tell Claude "go" to turn it on." (still no urgent words, so it goes in the
+  quiet digest). The status chip now always sits under its title, left-aligned, on every row (`results.css` `.prtop`).
+- **Cut-losses card (#570):** the long explanation that was repeated per league is said once above the table (`results.js`,
+  "Smart sell, tuned by league"), including why NBA / NFL / MLB differ: a league starts on the cautious 12.5% cut, then its own
+  number replaces it, and it can learn "never". Each row's Cut losses cell now carries one short reason ("starting value, too few
+  results yet", "its own result", "cutting did not help here"); a league's own late-game guards are shown only when it learned them.
+- **Toast (#571):** `openClosed`/`closedFill` now return whether the closed bet's page loaded, and `comboFromHash` shows "That bet
+  is no longer live" only then, never over "We can't find that bet" or "Couldn't load that bet".
+
+Tests: `t_promote.py` (ready wording and the push text), `test_queue_hygiene_ui.py` (toast only after the page loads, none over
+"can't find that bet"), `test_analytics.py` (the once-only cut-losses explanation).
+
+#### Follow-ups D
+
+- Results > Smart sell, tuned by league: the "Cut losses" column used to say "never" for a league with no loss cut of its own, even though combos there are on the 12.5% starting cut (#556). It now says "Default 12.5%" (late, confirmed; combos only). Still "never" when the switch is off or the league's own tuning chose no cut. Display only; no bet, sell or setting changes. It does not know about self-tuning's brake (which can hold the default off for a league).
+- t_orderbook "caps at the whole contracts on sale": passes on current develop (and in two full runs here). It only reads the source for the whole-contract cap and the "under one contract" message, both present in the Buy-idea code. The earlier failure was not reproducible, so neither test nor code changed (no money-path change).
+
+#### Money batch J: follow-ups checked (#525, #451, #309, #316)
+
+**Section:** Results › What's working (self-tuning registry label only)
+
+Each issue was read against develop first.
+
+- **#525** closed already (PR #548 merged). Nothing to do.
+- **#451** already fixed on develop (PR #550: an unclear order hides a Buy idea only while it may be live, and the check
+  fails closed when the singles read fails). Nothing to do.
+- **#316 items 1-2** already in develop (see the issue comment and PR #546). Items 3-5 change sell behaviour, left for a
+  money-path pass.
+- **#309, first bullet** fixed here: the registry marked the live exit knobs `borrow: "none"` while `knob_live_value`
+  does borrow them from the sport / everyone, never looser than the start. They are now `chain-stricter`, which is what
+  the code does. A label only: no number, gate or order changes. Test: `t_knobborrow_309.py` (fails on base).
+- **#309, other bullets** left open on purpose: `_knob_items` kick time, `sb_resolve` duplicates and `sb_paper_build`
+  chunking change what the stepper judges or how reads are done, not caution. The `ideas.js` null check is already fine
+  (`pct(null)` shows a dash). The lowest-value `auto_sell_now` test is a test-only addition, not done here.
+
 ### Look and feel (the makeover)
 - CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
   "Updated Ns ago" stamp: nowrap, small grey text). Reusing it made every new screen draw too wide for a moment (GitHub #52);
@@ -3544,6 +3839,37 @@ Display and wording only: no buy, sell, sizing or setting behaviour changes.
 
 Tests: `test_polish_c_ui.py` (phone, dark and light).
 
+
+#### Polish E: no double refresh after an incomplete account read (issue #457)
+
+**Section:** every screen that refreshes when money moves
+
+Display refresh only: nothing about buying, selling, sizing or balances changes.
+
+- **#457 (double-stamp half):** when an account read left a combo out (its legs couldn't be read) and a position or the
+  balance really changed, screens were told to refresh. The very next complete read then saw the same change against its older
+  copy and told them to refresh again. Now that second read stays quiet when only the already-announced money change differs and
+  no combo changed (`money_note`, `nfl_combo_planner.py`). The no-id failed-sale key half was already fixed in #523.
+- **Already done on develop, no change here:** #435 (`pReprice` restores focus and announces via `#repLive`), #438 (Comebacks
+  panel slides closed), #439 (Add anyway spinner and "Showing..."), #456 (Buy button keeps its width, polish-b / #557),
+  #414 (Best bets, Single games and Buy-lines already drop any market Pete holds, just bought or has an unclear order on, via
+  `held_markets()`, #419). Only a combo card that happens to include a held single stays listed; that is a different bet.
+- No screenshots: this PR has no visible change.
+
+#### Log access batch E: one-paste setup for the dev Mac (display and tooling only)
+
+**Section:** Settings › This Mac › "Let the dev Mac read logs"; `tools/read_prod_logs.py`
+
+Nothing about buying, selling, sizing or any number the app tunes changed. Log access stays read-only.
+
+- **#379:** the one-time code sheet has a **Copy setup command** button. It copies one Terminal line that saves the address and
+  the code in the dev Mac's keychain (under the names `read_prod_logs.py` already reads), then prints a hint. The line is built in the page
+  from what is on screen and goes only to the clipboard (never sent, logged or stored); its leading space keeps it out of shell history where that is on.
+  `tools/read_prod_logs.py --problems` is a one-word grep for `refused|check|failed|held|Traceback`.
+  Tests: `test_logaccess_ui.py` (button, command shape, quote escaping, 44px, light and dark), `t_logs_problems.py`.
+- **Already done on develop, no change here:** #528 (result column limit, `LOG_DB_COLUMNS_MAX`), #378 (app sheet instead of `confirm()`
+  in `logaccess.js`), #380 (long-line cut to "[line too long]" and the under-1-second worst-case assertion in `t_logs_caps.py`).
+  PR #532. `LOG_RATE` stays at 30/min until a real-Mac measurement says otherwise.
 
 ## Kalshi API watch (GitHub issue #82)
 
