@@ -154,8 +154,10 @@ function tapEl(t){if(t&&t.classList&&t.classList.contains('hsw'))t=t.parentEleme
  addEventListener('pointerdown',e=>{if(e.button)return;const el=tapEl(e.target);if(!el)return;up();held=el;el.classList.add('prs');},{capture:true,passive:true});
  ['pointerup','pointercancel','dragstart'].forEach(k=>addEventListener(k,up,{capture:true,passive:true}));addEventListener('scroll',up,{capture:true,passive:true});
  addEventListener('click',e=>{const tg=e.target;if(tg&&tg.matches&&(tg.matches('.hsw,input[switch]')||tg.matches('label')&&tg.querySelector('input[switch]')))S.hswAt=performance.now();   // the finger's own switch ticked
+  S.tapAt=performance.now();
   const el=tapEl(e.target);if(!el||el.matches('input[type=range]')||el.closest('[data-hapt]'))return;
-  hap(el.matches('.tabbar button,.nav button,.seg button,.sbtog button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');},true);
+  hap(el.matches('.tabbar button,.nav button,.seg button,.sbtog button,.gtabs button,.ant button,.rng2 button,.chip,select,input[type=checkbox],label')?'selection':'light');
+  hapOwed();},true);
  addEventListener('input',e=>{if(e.target&&e.target.type==='range')hap('selection');},true);})();
 /* swipe left or right anywhere on a page to move between tabs */
 (()=>{let x0=null,y0=0,t0=0,ok=true;
@@ -272,7 +274,8 @@ function btnFail(host,msg,b){S.berr={host,msg:String(msg||'That didn\'t go throu
  if(!paintErr()){toast(S.berr.msg,7000,'bad');S.berr=null;}}
 function paintErr(){document.querySelectorAll('.berr').forEach(e=>e.remove());const e=S.berr;if(!e)return false;if(Date.now()>e.until){S.berr=null;return false;}
  let h=null;try{h=document.querySelector(e.host);}catch(x){}if(!h)return false;
- const d=document.createElement('div');d.className='berr';d.setAttribute('role','status');d.innerHTML='<i aria-hidden="true">✕</i><span>'+esc(e.msg)+'</span>';h.insertAdjacentElement('afterend',d);
+ const d=document.createElement('div');d.className='berr'+(e.shown?' still':'');e.shown=true;   // #545: fades in once; a repaint rebuilds it already settled
+ d.setAttribute('role','status');d.innerHTML='<i aria-hidden="true">✕</i><span>'+esc(e.msg)+'</span>';h.insertAdjacentElement('afterend',d);
  clearTimeout(S.berrT);S.berrT=setTimeout(()=>{if(S.berr&&Date.now()>=S.berr.until){S.berr=null;document.querySelectorAll('.berr').forEach(x=>x.remove());}},Math.max(50,e.until-Date.now()+50));return true;}
 function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> '+esc(label||b.textContent.trim());}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
