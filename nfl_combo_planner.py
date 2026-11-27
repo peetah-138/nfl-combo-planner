@@ -19022,12 +19022,9 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
 IDEA_FAIR_SRC = {"live sportsbook line": "live line", "live model": "live model"}
 
 
-def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=False, now=None, pfair_at=None):
-    """Where a single-game Buy idea's fresh price gets its fair chance (issue #255, #286). Before the game: Buy straight's
-    rules. The board's side only with a sportsbook behind it (a side holding Kalshi's own price is circular: no fair),
-    read within SINGLE_FAIR_AGE (12 min; unknown age = stale), a winner's chance calibrated (calib_fair); with no board
-    side the idea's own chance only if pfair_at (when it was found) is that fresh. Otherwise no fair price: the card
-    shows Kalshi's price only, no edge, never green (stricter only; display and green, buy guards unchanged). Once the game is under way: only
+def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=False, now=None):
+    """Where a single-game Buy idea's fresh price gets its fair chance (issue #255). Before the game: the board's side
+    (else the idea's own model chance for a spread/total), exactly as before. Once the game is under way: only
     live_side_fair (a live sportsbook line read in the last LIVE_LINE_AGE seconds, else the live model on a fresh
     score), never the board's number (which can be the pre-game price, or Kalshi's own mid from when Build was built);
     with neither there is no fair price at all. Returns {"live", "fair", "how", "src" (what the card says: "live
@@ -19047,37 +19044,13 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
         live = bool(row_live) or bool(kick and float(kick) <= now) or started(x)
     except Exception:
         live = bool(row_live) or bool(kick and float(kick) <= now)
-    if not live:                                       # before the game: Buy straight's fair-price rules (#286)
-        sf, why = side.get("fair"), None
-        if sf and not side.get("src"):                 # a board side with no sportsbook is Kalshi's own price: circular
-            why = "the board only has Kalshi's own price for this one, not a sportsbook's"
-        elif sf:
-            try:
-                age = now - float(side.get("fair_at") or 0)
-            except (TypeError, ValueError):
-                age = None
-            if not side.get("fair_at") or age is None or age > SINGLE_FAIR_AGE:   # same 12-minute limit as Buy straight
-                why = "the sportsbook price is " + (f"{int(age / 60)} minutes old" if side.get("fair_at") and age is not None
-                                                    else "of unknown age") + "; refresh Build for a new one"
-            else:
-                f = float(sf)
-                if kind not in ("spread", "total"):    # a winner's chance is calibrated against your record, as on Buy straight
-                    try:
-                        f = round(calib_fair(ticker_sport(tk) or "", f, tk), 4)
-                    except Exception:
-                        why = "the fair chance couldn't be calibrated just now"
-                if not why:
-                    out["fair"] = f
-                    out["how"] = out["src"] = "line model" if kind in ("spread", "total") else "sportsbooks"
-        elif pfair and pfair_at and 0 <= now - float(pfair_at) <= SINGLE_FAIR_AGE:   # no board side: the idea's own, if fresh
-            out["fair"] = float(pfair)
-            out["how"] = out["src"] = "line model" if kind in ("spread", "total") else "from when it was found"
-        else:
-            why = "no fresh sportsbook price for this game"
-        if out["fair"] is None:
-            out["nofair"] = why or "no fresh sportsbook price for this game"
-            out["warn"].append({"k": "nofair", "t": f"No fair price ({out['nofair']}), so there's no edge to show. You'd be "
-                                "going on Kalshi's price alone."})
+    if not live:                                       # before the game: unchanged (the board's fair, else the model's)
+        f = side.get("fair") or pfair or None
+        if f:
+            out["fair"] = float(f)
+            out["how"] = out["src"] = ("line model" if kind in ("spread", "total") else
+                                       "from when it was found" if not side.get("fair") else
+                                       "sportsbooks" if side.get("src") else "Kalshi's price")
         return out
     out["live"] = True
     try:

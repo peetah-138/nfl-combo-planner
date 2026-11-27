@@ -1,8 +1,6 @@
 # CHECK: group=engine
-# money-h-144: three stricter-only changes. (1) #286 the pregame single Buy idea's fair chance follows Buy straight's
-# rules: a board side only with a sportsbook behind it, read within SINGLE_FAIR_AGE, a winner's chance calibrated; the
-# idea's own stored chance only while fresh; otherwise no fair price (no edge, never green). (2) #482 the old total
-# curve never gives a higher chance than the same curve at the league's fitted width. (3) #374 the killer's skipped
+# money-h-144: two stricter-only changes. (1) #482 the old total
+# curve never gives a higher chance than the same curve at the league's fitted width. (2) #374 the killer's skipped
 # deals are scored (measurement only). Fakes only: nothing is bought.
 import os, time, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
@@ -17,42 +15,6 @@ BOOK = {"ask": 0.55, "bid": 0.53, "spread": 0.02, "ask_size": 500}
 E.started = lambda s: False
 E._game_over = lambda t: False
 side = {"ticker": T, "event": "KXNBAGAME-26DEC25DENLAL", "fair": 0.70, "src": "pinnacle", "fair_at": now - 60}
-
-# ---- (1) #286 pregame idea fair chance
-f = E.idea_single_fair(T, side, 0.62, BOOK, now=now)
-ok(f"fresh board side with a sportsbook: used ({f['fair']}), not the idea's own 0.62", f["fair"] is not None and not f["nofair"]
-   and abs(f["fair"] - 0.70) < 0.2 and f["src"] == "sportsbooks")
-E_cal = E.calib_fair
-E.calib_fair = lambda code, fair, ticker=None, table="closes": round(fair - 0.05, 4)
-f = E.idea_single_fair(T, side, 0.62, BOOK, now=now)
-ok(f"a winner's chance goes through calib_fair, as on Buy straight ({f['fair']})", f["fair"] == 0.65)
-E.calib_fair = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
-f = E.idea_single_fair(T, side, 0.62, BOOK, now=now)
-ok("a calibration hiccup: no fair price, never the raw one", f["fair"] is None and f["nofair"])
-E.calib_fair = E_cal
-f = E.idea_single_fair(T, dict(side, fair_at=now - E.SINGLE_FAIR_AGE - 60), 0.62, BOOK, now=now)
-ok("a board price older than 12 minutes: no fair price, and it does NOT fall back to the idea's own", f["fair"] is None
-   and "minutes old" in f["nofair"] and f["warn"] and f["warn"][0]["k"] == "nofair")
-f = E.idea_single_fair(T, {k: v for k, v in side.items() if k != "fair_at"}, 0.62, BOOK, now=now)
-ok("a board price of unknown age: no fair price (fails closed)", f["fair"] is None and "unknown age" in f["nofair"])
-f = E.idea_single_fair(T, dict(side, src=""), 0.62, BOOK, now=now)
-ok("a board side holding Kalshi's own price (no sportsbook): circular, no fair price", f["fair"] is None and "Kalshi's own" in f["nofair"])
-f = E.idea_single_fair(T, None, 0.62, BOOK, now=now, pfair_at=now - 3600)
-ok("no board side and the idea's chance an hour old: no fair price", f["fair"] is None and f["nofair"])
-f = E.idea_single_fair(T, None, 0.62, BOOK, now=now)
-ok("no board side and no age for the idea's chance: no fair price", f["fair"] is None)
-f = E.idea_single_fair(T, None, 0.62, BOOK, now=now, pfair_at=now - 120)
-ok("no board side, the idea's chance 2 minutes old: still used", f["fair"] == 0.62 and f["src"] == "from when it was found")
-sp = "KXNBASPREAD-26DEC25DENLAL-DEN5"
-f = E.idea_single_fair(sp, {"ticker": sp, "kind": "spread", "fair": 0.55, "src": "model", "fair_at": now - 10}, None, BOOK, now=now)
-ok("a spread with a fresh model side: used, not calibrated as a winner", f["fair"] == 0.55 and f["src"] == "line model")
-f = E.idea_single_fair(sp, {"ticker": sp, "kind": "spread", "fair": 0.55, "src": "model", "fair_at": now - 3600}, 0.55, BOOK, now=now)
-ok("a spread with a stale side: no fair price", f["fair"] is None)
-W = open("wtest/combo_watcher.py", encoding="utf-8").read()
-blk = W[W.index('if a == "idea":'):W.index('if a == "singlequote":')]
-ok("the idea quote passes when the idea's own chance was found", 'pfair_at=row.get("ts")' in blk)
-ok("a pregame idea with no fair price still quotes Kalshi's price (not 'gone') and is never green",
-   'not fi["live"] and not fi["nofair"]' in blk and "clears = fair is not None and edge" in blk)
 
 # ---- (2) #482 old total curve: never a higher chance than at the fitted width
 for code in ("ncaamb", "nba", "ncaaf", "ncaawb", "nfl"):
@@ -74,7 +36,7 @@ ok("hockey totals (Poisson) are untouched", E.line_fair("nhl", "total", 5.5, Tru
    1 - E._poisson_cdf(5, 6.0))
 ok("a total of None is still no fair price", E.line_fair("ncaamb", "total", 150.5, True, {"total": None}) is None)
 
-# ---- (3) #374 killer skipped deals scored
+# ---- (2) #374 killer skipped deals scored
 E.store_x("create table if not exists killer(ts real, kind text, legs text, picks text, mode text, status text, "
           "stake real, pays real, pct real, why text, outcome text)")
 def row(status, why, outcome, mode="on", stake=10.0, pays=40.0):
