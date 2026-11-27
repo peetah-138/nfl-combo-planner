@@ -137,7 +137,9 @@ LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view",
            "KNOB_HAIRCUT", "KNOB_LIVE", "KNOB_PRM_ERR", "_knob_bet_chain", "_knob_braked", "_knob_err", "_knob_nums", "_knob_sale_league",
            "_knob_valid", "knob", "knob_cap", "knob_live_value", "knob_state_cached",
            # the learned selling guards (feed/break episodes, behind their own switch)
-           "KNOB_SHADOW_ROWS", "knob_live_names"]
+           "KNOB_SHADOW_ROWS", "knob_live_names",
+           # (#144) the full-auto lessons reuse the stepper's judging maths (evidence, minimums) for their own full-auto-only numbers
+           "KNOB_EPS", "KNOB_HOLD_MIN", "knob_evidence"]
 LIVE_OK = sorted(LIVE_OK)
 ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"
    + (f" {uses}" if uses != LIVE_OK else ""), uses == LIVE_OK)
