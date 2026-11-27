@@ -4095,10 +4095,22 @@ def webapp_main():
                         "league": x.get("league")})
         for g in out:                                    # the chance line: what the Mac recorded for this pick lately
             tk = g.get("ticker")
+            g["start_ts"] = None                         # when the game starts (epoch seconds), for the display order only
+            try:
+                st = A.start_dt(A.game_event(str(tk or "").rsplit("-", 1)[0]), tk) if tk else None
+                g["start_ts"] = round(st.timestamp()) if st else None
+            except Exception:
+                pass
             hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
                                 (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
             g["spark"] = [[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]
-        out.sort(key=lambda g: (g.get("state") != "live", -(g.get("combos") or 0) - len(g.get("singles") or [])))
+        def shown_order(g):                              # live first, upcoming soonest first (no start = last), finished newest first
+            ts = g.get("start_ts")
+            done = g.get("phase") == "over" or g.get("state") == "over" or g.get("phase") == "probably_over"
+            live = g.get("state") == "live" and not done and g.get("phase") != "waiting"
+            b = 0 if live else 2 if done else 1
+            return (b, ts is None, (-ts if b == 2 else ts) if ts is not None else 0, str(g.get("ticker") or g.get("name") or ""))
+        out.sort(key=shown_order)
         return jsonable({"games": out, "at": d.get("at"), "fresh": freshness()})
 
     SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
