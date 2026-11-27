@@ -205,6 +205,8 @@ E.maker_pass = lambda *a, **k: []
 E.screen_live = lambda games, bf: ([], [])
 E.injury_note = lambda *a, **k: ([], False)
 E.LEAGUE["code"] = "nba"
+E.KICKOFF["EV1"] = "2099-01-01T00:00:00Z"        # the push gate wants a kick time on file, and a read of what you hold
+E.MINE["view"] = {"singles": [], "singles_ok": True, "combos": []}; E.MINE["view_at"] = time.time()
 for label, depth, expect in (("unknown book (None)", None, 0), ("thin book", {"thin": True, "ask": 0.4, "bid": 0.3}, 0),
                              ("good book", {"thin": False, "ask": 0.40, "bid": 0.39, "ask_size": 500}, 1)):
     E.book_depth = lambda t, max_age=60, _d=depth: _d

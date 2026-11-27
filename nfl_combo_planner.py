@@ -15888,13 +15888,12 @@ def shadow_pass(book_snap, log=print, alert=None):
             url = f"/#s={sid}" if sid else "/"
             pays_txt = f"{money(r['stake'])} pays about {money(r['pays'])}"
             inplay = ""
-            push_ok = bool(alert) and idea_push_ok(sid)    # (#177) no push for an idea the Live page's Smart Buy gate hides
-            if push_ok and before is None:
-                _alert(alert, f"💡 Buy idea: {picks} ({LG()['name']}) is priced at {pct:.0%} of fair. "
-                              f"{pays_txt}. Tap to get your price.{inplay}", "value", url)
-            elif push_ok:
-                _alert(alert, f"📈 Better price: {picks} went from {before:.0%} to {pct:.0%} of fair. {pays_txt}.",
-                       "price", url)
+            if before is None:                             # (#177) no push for an idea the Live page's gate hides
+                push_idea(alert, sid, f"💡 Buy idea: {picks} ({LG()['name']}) is priced at {pct:.0%} of fair. "
+                                      f"{pays_txt}. Tap to get your price.{inplay}", "value", url)
+            else:
+                push_idea(alert, sid, f"📈 Better price: {picks} went from {before:.0%} to {pct:.0%} of fair. {pays_txt}.",
+                          "price", url)
         st["quotes"].append({"day": today, "pct": round(pct, 4), "legs": len(c["legs"]), "league": LEAGUE["code"]})
         stake = 10 if pct >= 1.10 else 8 if pct >= 1.05 else 5
         if pct * 100 < st["min_pct"] or spent_today + stake > st["per_day"] or stake > st["bank"] or \
@@ -17582,6 +17581,7 @@ def line_pass(code, alert=None, log=print):
         pct = x["fair"] / (x["p"] + single_fee(x["p"]))
         if prev and now - prev[0]["ts"] < 7200 and pct - prev[0]["pct"] < 0.03:
             continue
+        told = bool(prev) and pct - prev[0]["pct"] < 0.03     # (#push-gate) re-stored after 2h: no second push unless better
         stake = edge_stake(1 + (pct - 1) * 0.7, CFG.get("size_min", 3), CFG.get("size_max", 10), x["fair"])
         n = max(1, int(stake / (x["p"] + single_fee(x["p"]))))
         sid = store_suggestion({"legs": [dict(x, event=x["event"] or "")], "fair": stake / x["fair"]},
@@ -17589,10 +17589,10 @@ def line_pass(code, alert=None, log=print):
         store_x("update suggestions set note=? where id=?",
                 (f"Priced from the sportsbook {'spread' if x['kind'] == 'spread' else 'total'} of "
                  f"{x['book_line']:+g}".replace("+", "" if x["kind"] == "total" else "+") + " with a score model", sid))
-        if alert:
-            _alert(alert, f"📐 {x['pick']} at {x['p'] * 100:.0f}¢ on Kalshi; the score model puts it at {x['fair']:.0%} "
-                          f"from the sportsbook line. About {x['edge'] * 100:.1f}¢ a contract in your favour.", "value",
-                   f"/#s={sid}" if sid else "/")
+        if alert and not told:                             # same gate as the page: pushed only if Live lists it now
+            push_idea(alert, sid, f"📐 {x['pick']} at {x['p'] * 100:.0f}¢ on Kalshi; the score model puts it at {x['fair']:.0%} "
+                                  f"from the sportsbook line. About {x['edge'] * 100:.1f}¢ a contract in your favour.", "value",
+                      f"/#s={sid}" if sid else "/")
         did.append(f"line idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
     return did
 
@@ -17863,8 +17863,8 @@ def single_pass(book_snap, alert=None, log=print):
         msg = (f"🎯 Single: {x['pick']}{live} at {x['p'] * 100:.0f}¢ on Kalshi; the sharp books say "
                f"{x['fair']:.0%}. About {x['edge'] * 100:.1f}¢ a contract in your favour after the fee."
                + (f" Injuries: {'; '.join(inj[:2])}." if inj else ""))
-        if alert and not told and idea_push_ok(sid):       # (#177) the page's Smart Buy gate decides the push too
-            _alert(alert, msg, "value", f"/#s={sid}" if sid else "/")
+        if alert and not told:                             # (#177) the page's Smart Buy gate decides the push too
+            push_idea(alert, sid, msg, "value", f"/#s={sid}" if sid else "/")
         did.append(f"single idea {x['pick']} {x['p']:.2f} vs {x['fair']:.2f}")
     return did
 
@@ -19148,24 +19148,84 @@ def store_suggestion(c, r, pct):
     return sid
 
 
-def idea_push_ok(sid, now=None):
-    """(#177) Whether a Buy idea's push may go out: only if the Live page would show it, by the same Smart Buy gate
-    (smart_buy_ideas_gate on the idea's own stored row). Skip-only: it can only hold a push back, never send one, and it
-    fails closed (no stored row, no history, any error: no push). The idea card itself is unaffected."""
+PUSH_MIN_LEAD = 15 * 60        # a Buy idea is pushed only when its game starts at least this far away
+
+
+def idea_push_state(sid, now=None):
+    """'ok' (push now), 'wait' (everything passes but Smart Buy's verdict on the idea is not written yet) or 'no'.
+    The idea must be on the Live page's own list right now (live_ideas: dismissed, bought, held, started, Smart Buy,
+    low credit and the top-IDEA_KEEP cut all apply) and its game at least PUSH_MIN_LEAD away. Where Smart Buy's dial is
+    active a push also needs the shadow's verdict already written (the page tolerates a missing one; a push must not).
+    Fails closed: no stored row, no kick time, no history, any error is 'no'."""
     try:
         if not sid:
-            return False
+            return "no"
+        now = now or time.time()
         rows = store_rows("select * from suggestions where id=?", (sid,))
-        if not rows:
-            return False
-        r = dict(rows[0], legs=json.loads(rows[0]["legs"]))
-        r.update(idea_describe(r))
-        r["idea_id"] = idea_id(r["legs"])
-        kept, _ = smart_buy_ideas_gate([r], now or time.time())
-        return bool(kept)
+        if not rows or not rows[0]["kick"] or rows[0]["kick"] < now + PUSH_MIN_LEAD:
+            return "no"
+        if not any(r.get("id") == sid for r in live_ideas(now)):   # the id the push links to is the one the page lists
+            return "no"
+        if smart_buy_on() and sb_dial(json.loads(rows[0]["legs"]), now)["level"] > 0:
+            if not sb_idea_verdict_written(json.loads(rows[0]["legs"]), now):
+                return "wait"
+        return "ok"
     except Exception as err:
         console_note(f"idea push gate: {type(err).__name__}: {err}")
+        return "no"
+
+
+def idea_push_ok(sid, now=None):
+    """Whether a Buy idea's push may go out now (see idea_push_state). Skip-only: it can only hold a push back, never
+    send one. The idea card itself is unaffected and nothing here touches an order."""
+    return idea_push_state(sid, now) == "ok"
+
+
+PUSH_WAIT = {}                 # sid -> (queued at, alert, msg, kind, url): pushes held only for Smart Buy's verdict
+PUSH_WAIT_MAX_AGE = 3600       # the shadow looks at ideas stored in the last hour, so a verdict can't come after that
+
+
+def push_idea(alert, sid, msg, kind, url):
+    """Send a Buy idea's push if the gate allows it; if only the shadow's verdict is missing, hold it and let
+    flush_idea_pushes send it right after the shadow writes one (once, only while the page still lists the idea and
+    the game is 15+ minutes away). In memory only: a restart drops the queue, so a held push is lost, never doubled."""
+    if not alert:
         return False
+    st = idea_push_state(sid)
+    if st == "ok":
+        _alert(alert, msg, kind, url)
+        return True
+    if st == "wait" and sid not in PUSH_WAIT:
+        PUSH_WAIT[sid] = (time.time(), alert, msg, kind, url)
+    return False
+
+
+def flush_idea_pushes(now=None):
+    """Send the held pushes whose verdict is now written; drop those the page hid, that start within 15 minutes, or
+    that waited too long. Each goes at most once (popped before sending). Never raises."""
+    n = 0
+    now = now or time.time()
+    for sid in list(PUSH_WAIT):
+        try:
+            queued, alert, msg, kind, url = PUSH_WAIT[sid]
+            st = "no" if now - queued > PUSH_WAIT_MAX_AGE else idea_push_state(sid, now)
+            if st == "wait":
+                continue
+            PUSH_WAIT.pop(sid, None)
+            if st == "ok":
+                _alert(alert, msg, kind, url)
+                n += 1
+        except Exception as err:
+            PUSH_WAIT.pop(sid, None)                  # fail closed: an error drops it
+            console_note(f"idea push flush: {type(err).__name__}: {err}")
+    return n
+
+
+def sb_idea_verdict_written(legs, now=None):
+    """Whether the shadow has already checked this Buy idea's market (an 'idea' row in the last 2 hours)."""
+    _exit_shadow_table()
+    return bool(store_rows("select 1 from exit_shadow where source='idea' and ts > ? and tickers=? limit 1",
+                           ((now or time.time()) - 2 * 3600, json.dumps(list(legs)))))
 
 
 def live_suggestions(max_age=3600, limit=6, newest=False):
@@ -21981,6 +22041,7 @@ def panel_collect(book_snap, code, log=print):
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
+    flush_idea_pushes()                                # pushes held for the verdict just written go out now
     return cands
 
 
