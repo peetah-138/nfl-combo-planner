@@ -1,7 +1,7 @@
 # CHECK: group=engine
 # Full auto (issue #7), the real master switch. OFF by default and fail closed: off (or an unreadable file) sends nothing;
 # it won't turn on without the paper gate or an explicit override (and records which); it respects the daily cap, the
-# open-bet limit, Pause and can_trade; the losing-streak and daily-loss brakes trip, say why and stay tripped until reset;
+# open-bet limit, Pause and can_trade; a losing streak makes it cautious (smaller, pickier, never off) and the daily-loss pause trips and ends with the day;
 # an unreadable positions read blocks buying. Everything goes through panel_approve / panel_add / panel_exec: Kalshi is
 # fake and every call is recorded, so nothing is ever sent.
 import os, threading, time, tempfile, json, importlib.util
@@ -180,12 +180,12 @@ for i, c in enumerate(items[:3]):
 E.panel_pass()
 r = E.full_auto_pass(now=time.time())
 st = E.fa_state()
-ok("3 losses in a row trips the brake and says why", st["brake"] and st["brake"]["kind"] == "streak" and "3 losing" in st["brake"]["why"])
-ok("tripped: nothing more is approved or added", r is None)
+ok("3 losses in a row goes cautious (soft brake), and says why", st["caution"]["level"] == 1 and "3 losing" in st["caution"]["why"] and st["on"] is True and not st["brake"])
+ok("cautious: it is not paused and not off (it may still act, smaller)", r is None or isinstance(r, dict))
 v = E.full_auto_view()
-ok("the card shows the brake", v["brake"] and any("Paused itself" in b for b in v["blockers"]))
+ok("the card shows cautious 50% and why", v["caution"]["level"] == 1 and v["caution"]["pct"] == 50 and "3 losing" in v["caution"]["why"] and v["brake"] is None and v["on"] is True)
 okR, _, _ = E.fa_set(True, reset_brake=True)
-ok("resetting clears it and the old losses don't re-trip it", okR and E.fa_state()["brake"] is None and E.fa_check(E.fa_state())["brake"] is None)
+ok("resetting returns to normal at once and the old losses don't re-trip it", okR and E.fa_check(E.fa_state())["caution"]["level"] == 0 and E.fa_state()["caution"]["level"] == 0)
 reset_state()
 p = fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 10, "day_loss": 2})
 E.full_auto_pass(now=time.time()); E.panel_exec()
@@ -203,7 +203,7 @@ E.full_auto_pass(now=time.time()); E.panel_exec()
 for i, c in enumerate(day_items()[:2]):
     E._set_items(day, "real", {c["id"]: {"state": "bought", "result": "won", "pl": 1.0, "pl_real": -c["stake"] / 2, "bought_at": time.time() + i}})
 E.full_auto_pass(now=time.time())
-ok("loss-cut exits (real P/L under zero) count toward the brake", E.fa_state()["brake"] and E.fa_state()["brake"]["kind"] == "streak")
+ok("loss-cut exits (real P/L under zero) count toward the brake", E.fa_state()["caution"]["level"] == 1)
 
 # a bet panel_exec swapped in (new id, swap_of = ours) is ours too: its loss counts, and a swap chain too
 reset_state()
@@ -217,7 +217,7 @@ E._set_items(day, "real", {a_["id"]: {"state": "swapped"},
 v = E.fa_check(now=time.time())
 ok("swapped-in bet (and a swap of a swap) counts toward the streak and P/L", v["streak"] == 2 and v["pl"] <= -(a_["stake"] + b_["stake"]) + 0.01)
 E.full_auto_pass(now=time.time())
-ok("so the streak brake trips on swapped bets", E.fa_state()["brake"] and E.fa_state()["brake"]["kind"] == "streak")
+ok("so the streak brake trips on swapped bets", E.fa_state()["caution"]["level"] == 1)
 ok("a bet that was never full auto's is not counted", E.fa_check(st=dict(E.fa_state(), bets={}), now=time.time())["streak"] == 0)
 
 # fullauto-harden-144: a swap chain of any depth is followed (and a cycle can't hang it)
@@ -296,3 +296,89 @@ reset_state()
 ok("a stray full_auto setting does nothing", E.fa_state()["on"] is False)
 ok("it is not a shared or synced setting", "full_auto" not in E.SHARED_KEYS and "full_auto" not in getattr(E, "WATCHER_SYNCED", ()))
 ok("through all of it nothing real was sent", not SENT)
+
+# ---- (#144 soft brake) confidence level: cautious, never off; two-way; never above normal
+E.buy_single = lambda t, n, px: (BOUGHT.append((t, n, px)) or (n, None)); E._held_all = lambda: []   # back to the fakes
+E._positions_strict = lambda *a, **k: []
+def settle(items, results, t0):
+    for i, (c, r) in enumerate(zip(items, results)):
+        pl = -c["stake"] if r == "L" else 1.0
+        E._set_items(day, "real", {c["id"]: {"state": "bought", "result": "lost" if r == "L" else "won", "pl": pl, "bought_at": t0 + i}})
+
+reset_state()
+p = fresh(8); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 3, "day_loss": 100})
+E.full_auto_pass(now=time.time()); E.panel_exec()
+day = E._panel_day(); its = day_items(); t0 = time.time() - 500
+settle(its[:3], "LLL", t0)
+nw = time.time()
+E.full_auto_pass(now=nw)
+st = E.fa_state()
+v = E.fa_check(st, now=nw)
+ok("soft brake: trip makes it cautious, still ON, no pause, logged", st["on"] is True and st["caution"]["level"] == 1 and not st["brake"]
+   and any(h.get("ev") == "caution" and "Cautious (50%)" in h.get("text", "") for h in st["history"]))
+ok("scaling: the daily cap is halved and room follows it", v["cap"] == 50.0 and v["cap_normal"] == 100 and v["room"] == round(50.0 - v["spent"], 2))
+ok("scaling: bet size is half, never under $2, never above normal", E._fa_scaled(10.0, 0.5) == 5.0 and E._fa_scaled(3.0, 0.5) == 2.0
+   and E._fa_scaled(2.0, 0.5) == 2.0 and E._fa_scaled(10.0, 1.0) == 10.0 and E._fa_scaled(10.0, 0.25) == 2.5)
+ok("the bar goes up one notch (tighten-only)", v["caution"]["bar_extra"] == 0.5 and E._fa_knob(0, "bar") == 0.0)
+ok("every level of the ladder is at or below normal", all(r["size"] <= 1 and r["cap"] <= 1 and r["bar"] >= 0 for r in E.FA_LADDER) and E.FA_LADDER[0] == {"size": 1.0, "cap": 1.0, "bar": 0.0})
+# the pass really sizes down: a fresh draft panel approved while cautious carries smaller stakes
+reset_state(); E.store_x("delete from panel", ())
+p = fresh(6); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 9, "day_loss": 100})
+normal = {c["id"]: c["stake"] for c in E.panel_get("real")["items"]}
+E._fa_update(lambda s: s.update(caution={"level": 1, "base_at": time.time(), "since": time.time(), "why": "test"}))
+E.full_auto_pass(now=time.time())
+got = [c for c in day_items() if c.get("state") in ("scheduled", "bought", "buying")]
+ok("cautious pass approves bets at no more than half their normal size (min $2)", got and all(c["stake"] <= max(2.0, normal[c["id"]] * 0.5) + 0.01 and c["stake"] <= normal[c["id"]] for c in got))
+# recovery, steps and floor, on the pure function with made-up settled bets (the engine's real panel is too small for 12 bets)
+def bet(i, r):
+    return (day, {"bought_at": 1000 + i, "result": "lost" if r == "L" else "won", "pl": -5.0 if r == "L" else 1.0})
+def ev(level, seq, now_=1500, base=999, since=1000):
+    st_ = {"streak": 3, "caution": {"level": level, "base_at": base, "since": since, "why": "t"}}
+    after_ = [bet(i, r) for i, r in enumerate(seq)]
+    run_ = 0
+    for _, c in reversed(after_):
+        if c["result"] != "lost":
+            break
+        run_ += 1
+    return E._fa_caution_eval(st_, after_, run_, now_)
+ok("normal + 3 losses -> cautious 50%, with a history line", ev(0, "LLL", base=0, since=0)["level"] == 1 and "Cautious (50%)" in ev(0, "LLL", base=0, since=0)["events"][0])
+ok("normal + 2 losses stays normal", ev(0, "LL", base=0, since=0)["level"] == 0)
+ok("cautious + 2 more losses -> 25% (the floor)", ev(1, "LL")["level"] == 2)
+ok("the floor holds: many more losses never go lower, never off", ev(2, "LLLLLL")["level"] == 2 and E.FA_LADDER[2]["size"] > 0)
+ok("one win: progress 1 of 2, no step yet", ev(2, "W")["level"] == 2 and ev(2, "W")["wins"] == 1 and ev(2, "W")["wins_need"] == 2)
+ok("two wins step up one level (25% -> 50%)", ev(2, "WW")["level"] == 1)
+ok("four wins from the floor return to normal, then stop (never above normal)", ev(2, "WWWW")["level"] == 0 and ev(0, "WWWW", base=0, since=0)["level"] == 0 and ev(0, "WWWW", base=0, since=0)["factor"] == 1.0)
+ok("a loss between wins resets the count", ev(1, "WLW")["level"] == 1 and ev(1, "WLW")["wins"] == 1)
+ok("a no-loss exit that made money counts as a win; the level never exceeds normal", all(ev(l, "W" * 9)["level"] >= 0 for l in (0, 1, 2)))
+# calm days: 3 days with no loss step up one level (saved each pass, so the next step needs 3 more)
+c2 = {"level": 2, "base_at": 0, "since": 5000, "why": "t"}
+e0 = E._fa_caution_eval({"streak": 3, "caution": c2}, [], 0, 5000 + 86400)
+e1 = E._fa_caution_eval({"streak": 3, "caution": c2}, [], 0, 5000 + 3.1 * 86400)
+e2 = E._fa_caution_eval({"streak": 3, "caution": e1["saved"]}, [], 0, 5000 + 3.1 * 86400 + 3.1 * 86400)
+ok("calm days: not yet after 1 day", e0["level"] == 2 and e0["calm_days_left"] is not None)
+ok("calm days: 3 days steps up one level", e1["level"] == 1)
+ok("calm days: another 3 days is back to normal", e2["level"] == 0)
+# manual reset from cautious
+E._fa_update(lambda s: s.update(caution={"level": 2, "base_at": 0, "since": nw, "why": "test"}))
+okR, _, _ = E.fa_set(True, reset_brake=True)
+ok("manual reset returns to normal immediately", okR and E.fa_check(now=time.time())["caution"]["level"] == 0)
+# daily loss limit unchanged by caution: still pauses until the next day
+reset_state()
+p = fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 10, "day_loss": 2})
+E.full_auto_pass(now=time.time()); E.panel_exec()
+day = E._panel_day(); c = day_items()[0]
+E._set_items(day, "real", {c["id"]: {"state": "bought", "result": "lost", "pl": -3.0, "bought_at": time.time()}})
+E._fa_update(lambda s: s.update(caution={"level": 1, "base_at": 0, "since": time.time(), "why": "x"}))
+vv = E.fa_check(now=time.time())
+ok("the daily loss limit still pauses (cautious or not) and ends with the day", vv["brake"] and vv["brake"]["kind"] == "day" and any("Paused itself" in b for b in vv["blockers"])
+   and E.fa_check(now=time.time() + 2 * 86400)["brake"] is None)
+# an older version's saved streak pause becomes caution, not a stop
+reset_state()
+p = fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30, "streak": 3, "day_loss": 100})
+E._fa_update(lambda s: s.update(brake={"kind": "streak", "why": "old"}))
+vv = E.fa_check(now=time.time())
+ok("a legacy streak pause is read as cautious, with no blocker", vv["brake"] is None and vv["caution"]["level"] == 1 and not any("Paused itself" in b for b in vv["blockers"]))
+# only a real master switch turns it off
+ok("cautious never turns the switch off", E.fa_state()["on"] is True)
+okO, _, _ = E.fa_set(False)
+ok("the master switch off still turns it off", okO and E.fa_state()["on"] is False)

@@ -24078,6 +24078,26 @@ def panel_record():
 # file means OFF. Turning it on needs the paper gate passed, or Pete's explicit "override the paper gate" (recorded).
 FA = {"bank": 300.0, "cap": 30.0, "max_open": 15, "streak": 4, "day_loss": 20.0}
 FA_LIMITS = {"bank": (50, 1000), "cap": (2, 100), "max_open": (1, 30), "streak": (2, 10), "day_loss": (2, 100)}
+# (#144 soft brake, Pete: "I wouldn't want it to completely turn itself off. It should just adjust.") A losing streak no
+# longer stops full auto: it goes CAUTIOUS. Bet size and the daily cap shrink to a share of normal and the buy bar goes up one
+# notch per level (combos only: FAL's bar step, in points over the league's combo cut-off). It only ever makes full auto
+# more conservative than the saved limits. Levels: 100% (normal), 50%, 25% (the floor; never off, never above normal).
+# Each level back up needs 2 winning (non-loss) full-auto bets in a row since the last change, or 3 calm days with no loss.
+# 2 more losses in a row while cautious step it down one level. The daily loss limit pause is separate and unchanged.
+# THE CONFIDENCE LEVEL (Pete: full auto should be constantly adjusting): one number, 0 = the user's normal settings (the
+# ceiling, never exceeded), steps DOWN on losses and back UP on wins or calm. Everything the level adjusts is one row of
+# FA_LADDER, so a later adjustable setting plugs in by adding a key to every row and one reader (_fa_knob). Today's knobs:
+#   size: share of the normal bet size   cap: share of the normal daily cap   bar: extra points on the combo cut-off
+FA_LADDER = ({"size": 1.0, "cap": 1.0, "bar": 0.0},
+             {"size": 0.5, "cap": 0.5, "bar": 0.5},
+             {"size": 0.25, "cap": 0.25, "bar": 1.0})
+FA_CAUTION = {"factors": tuple(r["size"] for r in FA_LADDER), "wins": 2, "calm_days": 3, "drop_losses": 2}
+
+
+def _fa_knob(level, name):
+    """The level's value for one adjustable setting; a level or name out of range reads as the most cautious row."""
+    row = FA_LADDER[min(max(int(level), 0), len(FA_LADDER) - 1)]
+    return row[name]
 FA_WHY = {"bank": "bankroll", "cap": "daily spend cap", "max_open": "open bets", "streak": "losses in a row",
           "day_loss": "daily loss limit"}
 
@@ -24100,6 +24120,9 @@ def fa_state():
         out[k] = int(min(hi, max(lo, v))) if k in ("max_open", "streak") else round(min(hi, max(lo, v)), 2)
     if not isinstance(out.get("bets"), dict):
         out["bets"] = {}
+    out.setdefault("brake", None)
+    if not isinstance(out.get("caution"), dict):
+        out["caution"] = {"level": 0, "base_at": 0, "since": 0, "why": ""}
     return out
 
 
@@ -24177,12 +24200,15 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
                 _fa_note(st, "on", now, gate=gate)
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
+                st["caution"] = {"level": 0, "base_at": round(now), "since": 0, "why": ""}
+                _fa_note(st, "caution", now, text="You reset it: back to normal.", level=0)
         else:
             if st.get("on") is True:
                 _fa_note(st, "off", now)
             st["on"] = False
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
+                st["caution"] = {"level": 0, "base_at": round(now), "since": 0, "why": ""}
     _fa_update(fn)
     if refused:
         return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
@@ -24203,6 +24229,100 @@ def _fa_rows(now, days=None):
         first = _panel_day(now - days * 86400)
         rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
     return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
+
+
+def _fa_stamp(c):
+    return c.get("bought_at") or c.get("at") or 0
+
+
+def _fa_caution_eval(st, after, run, now, legacy=False):
+    """Read-only: the caution state as it stands now, from the saved one and the full-auto bets settled since the last
+    reset (`after`, oldest first). Returns level (0 normal, 1 50%, 2 25%), factor, pct, why, recovery numbers, `saved` (the
+    dict to persist) and `events` (plain-English lines for the history, newest last). Pure: the pass saves it."""
+    F = FA_CAUTION
+    top = len(F["factors"]) - 1
+    c0 = st.get("caution") if isinstance(st.get("caution"), dict) else {}
+    try:
+        level = min(top, max(0, int(c0.get("level") or 0)))
+    except (TypeError, ValueError):
+        level = 0
+    base = float(c0.get("base_at") or 0) if isinstance(c0.get("base_at"), (int, float)) else 0.0
+    since = float(c0.get("since") or 0) if isinstance(c0.get("since"), (int, float)) else 0.0
+    why = c0.get("why") if isinstance(c0.get("why"), str) else ""
+    events = []
+    if legacy and level == 0:
+        level, base, since = 1, (_fa_stamp(after[-1][1]) if after else now), now
+        why = f"{run} losing bets in a row (the limit is {st['streak']})."
+        events.append(f"Cautious (50%): an older pause became caution. {why}")
+    for _ in range(8):
+        post = [c for d, c in after if _fa_stamp(c) > base]
+        tail_l = tail_w = 0
+        for c in reversed(post):
+            if (panel_pl(c) or 0) < 0 and not tail_w:
+                tail_l += 1
+            elif (panel_pl(c) or 0) >= 0 and not tail_l:
+                tail_w += 1
+            else:
+                break
+        last_loss = max([_fa_stamp(c) for c in post if (panel_pl(c) or 0) < 0] or [0])
+        if level == 0:
+            if tail_l >= st["streak"]:
+                level, base, since = 1, _fa_stamp(post[-1]), now
+                why = f"{tail_l} losing bets in a row (the limit is {st['streak']})."
+                events.append(f"Cautious ({round(F['factors'][1] * 100)}%): {why}")
+                continue
+            break
+        if tail_l >= F["drop_losses"] and level < top:
+            level, base, since = level + 1, _fa_stamp(post[-1]), now
+            why = f"{tail_l} more losing bets in a row while cautious."
+            events.append(f"Cautious, tighter ({round(F['factors'][level] * 100)}%): {why}")
+            continue
+        if tail_w >= F["wins"] or (now - max(since, last_loss) >= F["calm_days"] * 86400 and since):
+            how = f"{tail_w} winning bets in a row" if tail_w >= F["wins"] else f"{F['calm_days']} calm days with no loss"
+            level, base = level - 1, (_fa_stamp(post[-tail_w + F["wins"] - 1]) if tail_w >= F["wins"] else now)   # uses up only the wins it needed
+            since = now
+            events.append((f"Back to normal after {how}." if level == 0 else
+                           f"Easing up to {round(F['factors'][level] * 100)}% after {how}."))
+            if level == 0:
+                why = ""
+            continue
+        break
+    factor = F["factors"][level]
+    post = [c for d, c in after if _fa_stamp(c) > base]
+    wins = 0
+    for c in reversed(post):
+        if (panel_pl(c) or 0) < 0:
+            break
+        wins += 1
+    saved = {"level": level, "base_at": base, "since": since, "why": why}
+    calm_left = None
+    if level:
+        last_loss = max([_fa_stamp(c) for c in post if (panel_pl(c) or 0) < 0] or [0])
+        calm_left = max(0.0, round((max(since, last_loss) + F["calm_days"] * 86400 - now) / 86400, 1))
+    return {"level": level, "factor": factor, "pct": round(factor * 100), "why": why, "wins": min(wins, F["wins"]),
+            "wins_need": F["wins"], "calm_days_left": calm_left, "bar_extra": _fa_knob(level, "bar"), "knobs": dict(FA_LADDER[level]),
+            "saved": saved, "events": events, "changed": saved != {k: c0.get(k) for k in saved} and (bool(events) or bool(c0))}
+
+
+def _fa_scaled(stake, factor):
+    """A stake at `factor` of normal: rounded down to the cent, never under the $2 minimum, never above the normal stake."""
+    if factor >= 1:
+        return stake
+    return min(stake, max(PANEL_OWN_MIN, math.floor(stake * factor * 100 + 1e-9) / 100))
+
+
+def _fa_caution_bar(items, level):
+    """Cautious only: combos must clear their league's cut-off by one more notch per level (FA_LADDER's bar).
+    Tighten-only; singles and lines are untouched. Raises on a bad value (the pass then approves nothing)."""
+    extra = _fa_knob(level, "bar")
+    kept, held = [], []
+    for c in items:
+        if c.get("kind") == "combo" and extra > 0:
+            ok = float(c.get("pct") or 0) >= combo_cutoff(c["code"], len(c["legs"]), c["legs"]) + extra / 100 - 1e-9
+        else:
+            ok = True
+        (kept if ok else held).append(c)
+    return kept, held
 
 
 def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=False):
@@ -24240,16 +24360,17 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
         run += 1
     loss_today = round(sum(panel_pl(c) or 0 for d, c in settled if d == day), 2)
     brake = st.get("brake") if isinstance(st.get("brake"), dict) else None
-    if brake and brake.get("kind") == "day" and brake.get("day") != day:
+    legacy = bool(brake and brake.get("kind") == "streak")   # an older version's streak pause: now it is caution, never a stop
+    if brake and (brake.get("kind") != "day" or brake.get("day") != day):
         brake = None                                      # a daily-loss pause ends with the panel day
-    if not brake and run >= st["streak"]:
-        brake = {"kind": "streak", "why": f"{run} losing bets in a row (the limit is {st['streak']}). Reset it when you're ready."}
-    elif not brake and loss_today <= -st["day_loss"]:
+    caut = _fa_caution_eval(st, after, run, now, legacy)
+    if not brake and loss_today <= -st["day_loss"]:
         brake = {"kind": "day", "day": day, "why": f"down {money(-loss_today)} today (the limit is {money(st['day_loss'])}). It starts again tomorrow."}
-    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": st["cap"], "open": open_n,
+    cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap"), 2)
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "caution": caut, "open": open_n,
            "max_open": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
-           "room": round(max(0.0, st["cap"] - spent), 2), "slots": max(0, st["max_open"] - open_n)}
+           "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, st["max_open"] - open_n)}
     b = []
     if paused or (TRADING_PAUSED and TRADING_PAUSED()):
         b.append("Pause is on. Nothing new is approved or bought until you turn Pause off.")
@@ -24258,7 +24379,8 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if brake:
         b.append("Paused itself: " + brake["why"])
     if out["room"] < PANEL_OWN_MIN:
-        b.append(f"Today's {money(st['cap'])} spending cap is used up ({money(spent)} spent).")
+        b.append(f"Today's {money(cap_eff)} spending cap is used up ({money(spent)} spent)"
+                 + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else "."))
     if out["slots"] <= 0:
         b.append(f"{open_n} bets are open, the most it allows is {st['max_open']}.")
     if free < PANEL_OWN_MIN:
@@ -24330,9 +24452,20 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         return None
     now = now or time.time()
     v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
-    if v["brake"] and not (st.get("brake") or {}).get("kind"):
-        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"])))
+    if v["brake"] and not (st.get("brake") or {}).get("kind") == "day":
+        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"], text="Paused for the day: " + v["brake"]["why"])))
         log("full auto paused itself:", v["brake"]["why"])
+    caut = v["caution"]
+    if caut["changed"] or (isinstance(st.get("brake"), dict) and st["brake"].get("kind") == "streak"):
+        def _save_caution(s):
+            s["caution"] = caut["saved"]
+            if isinstance(s.get("brake"), dict) and s["brake"].get("kind") == "streak":
+                s["brake"] = None
+            for e in caut["events"]:
+                _fa_note(s, "caution", now, text=e, level=caut["level"])
+        _fa_update(_save_caution)
+        for e in caut["events"]:
+            log("full auto:", e)
     if v["blockers"]:
         return None
     real = panel_get("real")
@@ -24355,21 +24488,33 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
             return None
         if held:
             log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
+    if caut["level"]:                                     # (#144 soft brake) cautious: one more notch on the bar, tighten-only
+        try:
+            items, held = _fa_caution_bar(items, caut["level"])
+        except Exception as err:
+            log("full auto cautious: nothing approved:", type(err).__name__, err)
+            return None
+        if held:
+            log(f"full auto cautious: left out {len(held)} bet{'' if len(held) == 1 else 's'} under the higher bar")
+    own = {}
     for c in items:
-        s = float(c.get("stake") or 0)
+        normal = float(c.get("stake") or 0)
+        s = _fa_scaled(normal, _fa_knob(caut["level"], "size"))            # cautious: smaller bets (never above the normal size)
         if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01 or len(ids) >= slots:
             continue
         ids.append(c["id"])
+        if s < normal - 0.005:
+            own[c["id"]] = s
         room, free = room - s, free - s
     if not ids:
         return None
     day = _panel_day(real.get("at"))
-    book = {c["id"]: float(c.get("stake") or 0) for c in items if c["id"] in ids}
+    book = {c["id"]: own.get(c["id"], float(c.get("stake") or 0)) for c in items if c["id"] in ids}
     _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
     if status == "draft":
-        ok, msg = panel_approve(ids, "all", at=real.get("at"))
+        ok, msg = panel_approve(ids, "all", at=real.get("at"), stakes=own or None)
     else:
-        ok, msg = panel_add(ids, "extra")
+        ok, msg = panel_add(ids, "extra", stakes=own or None)
     log(f"full auto {'approved' if status == 'draft' else 'added'} {len(ids)}: {msg}")
     return {"ok": ok, "ids": ids, "msg": msg}
 
