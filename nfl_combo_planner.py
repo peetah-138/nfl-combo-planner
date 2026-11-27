@@ -62,7 +62,6 @@ CFG = {
     "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
     "total_fit_sd": True,     # (#482) the old totals curve is never narrower than the league's fitted width (only lowers an Over's chance)
-    "hedge_before_loss_skip": True,   # (#312) auto cash-out weighs a hedge that locks in at least the cost before skipping a below-cost sale
     "pregame_idea_fair": True,        # (#286) a pregame single Buy idea's fair follows Buy straight's rules (fresh, calibrated, sportsbook-backed)
     "live_bar_learn": True,           # (#287) learn (paper only) the in-play single green bar per league from live_fairs
     "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
@@ -6215,15 +6214,9 @@ def auto_sell_now(plan):
                 rec["fee_note"] = fee_note                # fee model off, or no contracts: judged on the gross offer
             gross_below = o["offer"] < h["cost"] * o.get("frac", 1.0) - 0.005
             below = net < h["cost"] * o.get("frac", 1.0) - 0.005
-            below_skip = below and why != "cut loss" and not sl_ready.get(t)
-            if below_skip:
-                # (#312) a below-cost sale is still never made here. But a hedge that locks in at least the combo's cost is
-                # not a loss, so it is weighed first (every hedge guard unchanged); anything else is skipped as before.
-                hg0 = hedge_for(t) if (CFG.get("hedge_before_loss_skip", True) and CFG.get("auto_hedge") and not clock
-                                       and not restriction_holding("buy")) else None
-                if not (hg0 and hg0.get("n") and hg0["locked"] >= h["cost"] - 0.005):
-                    log_decision(dict(rec, result="skipped", why="below what you paid"))
-                    continue
+            if below and why != "cut loss" and not sl_ready.get(t):
+                log_decision(dict(rec, result="skipped", why="below what you paid"))
+                continue
             if below and why != "cut loss":                   # a guarded stop-loss sale (gross below cost, or only the fee puts it below)
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
@@ -6245,8 +6238,6 @@ def auto_sell_now(plan):
                 if ready:
                     hg, gw = hedge_fresh(t, h, whole)
                     ready = hg is not None
-                    if ready and below_skip and hg["locked"] < h["cost"] - 0.005:
-                        hg, gw, ready = None, "wouldn't lock in what you paid at the fresh price", False   # (#312)
                 if not ready:
                     if gw == "waiting to confirm":
                         continue                # the sale waits while the hedge is confirmed (3+ checks, 3+ minutes)
@@ -6273,9 +6264,6 @@ def auto_sell_now(plan):
                     if unsure:
                         out.append("🤖 Auto-hedge: " + msg)
                         continue                # never retried, and no sale on top of a hedge that may have filled
-            if below_skip:                                # (#312) the hedge didn't go through: never sell below cost
-                log_decision(dict(rec, result="skipped", why="below what you paid"))
-                continue
             CASH_LAST.pop(t, None)
             # The sale's purpose (Pete, 2026-11-23: "It should only sell at a loss if that's a way to try to minimize
             # losses. Not when there's still an opportunity for it to get profit."): a sale whose offer was at or above

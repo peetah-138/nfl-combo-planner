@@ -1,5 +1,5 @@
 # CHECK: group=engine
-# rank-e-144: #312 (auto cash-out weighs a hedge before skipping a below-cost sale), #482 (totals curve never narrower
+# rank-e-144: #482 (totals curve never narrower
 # than the league's fitted width), #287 (learned in-play green bar, paper only), #286/#243 (pregame idea fair, Best bets
 # board age and dollar pre-cut). Every Kalshi call is faked; nothing is sent.
 # Combo cost floor counts Kalshi's selling fee (issues #382, #383), the way singles net it (`single_fee`): a combo
@@ -87,42 +87,6 @@ def run(offs, mode=None, script=("executed",), dt_=0, contracts=20, why="smart")
     return out, [r for r in logs if r.get("result") in ("failed", "sold", "skipped")]
 
 
-
-# ---- #312: a below-cost sale weighs a hedge that locks in at least the cost first (never sells below cost here)
-HG = {"n": 20, "cost": 3.0, "locked": 10.5, "ticker": "HEDGE-T"}
-placed, hedge_asked = [], []
-E.hedge_for = lambda t, price=None: (hedge_asked.append(t), dict(HG))[1]
-E.hedge_guard = lambda t, h_, hg, now=None: (GUARD["ok"], GUARD["why"])
-E.hedge_fresh = lambda t, h_, whole: (dict(HG), "") if GUARD["fresh"] else (None, "no fresh price for the hedge")
-E.place_hedge = lambda t, hg=None, auto=False: (placed.append(t), "✅ hedged")[1]
-E.hedge_cap_now = lambda: 100.0
-E.hedge_seen_note = lambda *a, **k: None
-GUARD = {"ok": True, "why": "", "fresh": True}
-E.CFG.update(auto_hedge=True, hedge_before_loss_skip=True)
-out, f = run([10.0])
-ok("#312: below cost but a hedge locks in more than the cost: hedged, no sale", placed == ["C1"] and accepts == []
-   and any(r.get("result") == "hedged" for r in logs), (placed, logs))
-placed.clear(); HG["locked"] = 9.0
-out, f = run([10.0])
-ok("#312: a hedge that locks in LESS than the cost: skipped as before, nothing hedged or sold", placed == [] and accepts == []
-   and f and f[0]["why"] == "below what you paid", (placed, f))
-HG["locked"] = 10.5; GUARD.update(ok=False, why="score feed stale")
-out, f = run([10.0])
-ok("#312: the hedge guards still hold (not ready): skipped, no hedge, no sale", placed == [] and accepts == [], (placed, accepts))
-GUARD.update(ok=True, fresh=False)
-out, f = run([10.0])
-ok("#312: the fresh-price check fails: skipped, no hedge, no sale", placed == [] and accepts == [] and f and f[0]["why"] == "below what you paid")
-GUARD.update(fresh=True)
-HG["locked"] = 10.5
-E.CFG.update(hedge_before_loss_skip=False); hedge_asked.clear()
-out, f = run([10.0])
-ok("#312: switch off: the old skip, the hedge isn't even looked at", placed == [] and not hedge_asked and f and f[0]["why"] == "below what you paid")
-E.CFG.update(hedge_before_loss_skip=True, auto_hedge=False); hedge_asked.clear()
-out, f = run([10.0])
-ok("#312: auto-hedge off: the old skip", placed == [] and not hedge_asked and f and f[0]["why"] == "below what you paid")
-E.CFG.update(auto_hedge=True)
-out, f = run([13.0])
-ok("#312: a normal above-cost sale is untouched (sells, no hedge)", accepts and placed == [])
 
 # ---- #482: the old totals curve is never narrower than the league's fitted width, and never raises a chance
 g = {"total": 172.5}
