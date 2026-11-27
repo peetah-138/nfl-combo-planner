@@ -25,7 +25,7 @@ versus holding but only about +$10 versus what prod already did. Out of sample: 
 roughly $0 to +$39, so it may be flat. 15% cut a winner. This is a cautious start to be re-measured, not a proven gain.
 
 **Stepper.** Self-tuning (knob) stepping now judges a league from 12.5% (what live really uses) unless the league was explicitly
-turned off, and a brake resets a league's loss cut to 12.5%, not to "off". The default is never double-applied: a step or a
+turned off, and a brake applies no default (no cut is the strictest), so a braked league has no loss cut until the brake lifts. The default is never double-applied: a step or a
 league's own value replaces it. The Bet card / loss chip (PR feat/loss-chip) reads the same `smart_params` fields, unchanged.
 
 **Tests.** `tests/suite/t_cutloss_default.py` (default fires under guards; not above 12.5%; not when any guard fails; switch off
