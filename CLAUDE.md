@@ -591,6 +591,7 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   killer line; such a quote is held back and logged with the verdict's own words. Fewer killer buys, never more; no new
   switch; no valuation, early-exit, caps, Pause or rule 8 change. Test: `t_killer_suspect.py` (suspect and under-bar quotes
   skipped with a logged reason in watch and on mode; an ok quote still reaches the killer check and act).
+- **`mkt_holdout_report` (#474, read-only):** counts, from the cached `mkt_learn` result, how many groups' oldest-70% weight gained on the newest 30% and how many earned groups that holdout refuses (log loss, not dollars); in `mkt_fair_summary` as `holdout`. Test: `t_shadow_e.py`.
 - **`mkt_learn` recency-stability veto (#345; stricter only, not a true holdout).** `mkt_learn` keeps a grid weight on the
   books when it beats Kalshi's mid by `MKT["gain"]` (0.002) and 2 standard errors over 200+ settled markets. It now also
   needs the same weight to beat the mid on the newest 30% of that league/bet type/phase's settled markets **by game date**
@@ -1249,8 +1250,9 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
     used, stakes and extras each with their own budget; less than $2 of room = not bought) and what that stake made if
     held. CLV for singles/spreads/totals from the first panel-grade check's price (when a graduated buy would have
     bought). The base is the panel's saved one (`combo_sizing.json`), else the bankroll setting: never a Kalshi read.
-    Its own table: never `panel` (the $300 gate), `ledger` or `analytics()`'s gate numbers. Simpler than the real panel
-    on purpose (no ahead floor, no 30% share for spreads/totals, no fill cap), so it is a progress line, not a gate.
+    Its own table: never `panel` (the $300 gate), `ledger` or `analytics()`'s gate numbers. Follows the real panel's overlap and share rules (#291: one straight bet per game and family, spreads/totals at
+    most max(2, 30% of 10) a day, at most 10 bets a day per budget) but not its ahead floor, fill cap (depth is not recorded) or
+    approval-time buy, so it is a progress line, not a gate.
     `sb_paper_leagues` (cached 2 min) feeds the Results card's **"Bigger stakes, on paper: not yet"** line per league:
     the bar counts ONLY live-scored (never backfill), panel-grade, staked, settled bets, one per game a day (settled,
     dollars ahead, share of days up, CLV, whether the skips helped); extras and history are kept apart (`extra_n`,
