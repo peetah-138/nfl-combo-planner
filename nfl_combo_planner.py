@@ -5900,7 +5900,7 @@ def _smart_trigger(t, h):
     tp = float(CFG.get("take_profit") or 0) / 100
     lock_on = bool(CFG.get("lock_trail", True))
     if CFG.get("lock_trail", True):
-        arm = max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+        arm = max(knob.get("trail_arm", TRAIL_ARM) * P, knob.get("trail_arm_cost", TRAIL_ARM_COST) * cost)   # #551b: the tuned numbers the sale uses
         if (MINE.get("peak") or {}).get(t, 0.0) < arm and arm <= sell_top(P) + 0.005 and not any(s == "paused" for s, _ in blk):
             out["lock_at"] = round(arm, 2)
     others = [w for w, on in ((f"your take-profit line (${max(tp * P, TP_MIN_GAIN * cost):.2f})", tp > 0),
@@ -5921,7 +5921,7 @@ def _smart_trigger(t, h):
     ro = real["offer"] / max(real.get("frac", 1.0), 0.01) if real and real.get("rfq") != "estimate" else 0.0
     # #525: the asks auto cash-out sends past the back-off (lock-in, a guarded stop-loss) are exempt, so the card must not say
     # "holding off" when one of them could still ask: Lock in counts once it is armed (the peak reached its arm line)
-    lock_armed = lock_on and (MINE.get("peak") or {}).get(t, 0.0) >= max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+    lock_armed = lock_on and (MINE.get("peak") or {}).get(t, 0.0) >= max(knob.get("trail_arm", TRAIL_ARM) * P, knob.get("trail_arm_cost", TRAIL_ARM_COST) * cost)
     ask_exempt = bool((MINE.get("sl_ready") or {}).get(t)) or lock_armed
     if over:
         out["smart_txt"] = "Smart sell's bar is above anything Kalshi can pay for this combo." + \
@@ -20959,6 +20959,8 @@ def mkt_learn(now=None):
                 MKT_VETO[k] = {"w": w, "since": None}
             if held:
                 MKT_VETO.pop(k, None)
+        elif mkt_hold_on() and k in MKT_VETO:                            # #551a: one not-earned run must not lift a veto; the 2 h clock restarts
+            MKT_VETO[k]["since"] = None
         else:
             MKT_VETO.pop(k, None)
         if not mkt_hold_on():                                            # Settings switch off: the in-sample bar alone (#497)
@@ -24580,11 +24582,12 @@ def _ledger_table():
                 "side text, offer real, cost real, pays real, frac real, chance real, by text, combo text, "
                 "outcome text, held real, done real, primary key(ts, ticker, result))")
         have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
-        for col, typ in (("live", "int"), ("ask", "real")):           # #228 PR4: in play at the sale; a single's ask
+        for col, typ in (("live", "int"), ("ask", "real"), ("disc", "real")):   # #228 PR4: in play at the sale; a single's ask; #300: the combo discount at the sale
             if have and col not in have:
                 store_x(f"alter table sell_log add column {col} {typ}")
         have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
         STORE["sell_live"] = {"live", "ask"} <= have   # else the old columns (a busy file): sales are never lost
+        STORE["sell_disc"] = STORE["sell_live"] and "disc" in have   # #300: only `disc` missing keeps live/ask
         STORE["ledger_ok"] = True
 
 
@@ -24823,11 +24826,15 @@ def sale_store(rec):
            rec.get("kind") or ("combo" if is_combo(rec.get("ticker") or "") else _bet_kind(rec.get("ticker") or "")),
            rec.get("side") or "yes", rec.get("offer"), rec.get("cost"), rec.get("pays"), rec.get("frac") or 1.0,
            rec.get("chance"), rec.get("by"), str(rec.get("combo") or "")[:200])
-    if STORE.get("sell_live"):
+    if STORE.get("sell_live") and STORE.get("sell_disc", STORE.get("sell_live")):
+        store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
+                "by, combo, live, ask, disc) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                row + (None if lv is None else int(bool(lv)), rec.get("ask"), rec.get("disc")))
+    elif STORE.get("sell_live"):                  # only `disc` couldn't be added: live and ask are still kept
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo, live, ask) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 row + (None if lv is None else int(bool(lv)), rec.get("ask")))
-    else:                                         # the new column couldn't be added (a busy file): the sale still counts
+    else:                                         # the new columns couldn't be added (a busy file): the sale still counts
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo) values(?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
@@ -27886,6 +27893,10 @@ def knob_sale_expect(r, disc=None):
             lv = r.get("live")
             d = (disc or {}).get(lv is None or bool(lv))
             d = kalshi_discount(lv is None or bool(lv)) if d is None else d   # unknown: in play (most automatic sales)
+            try:                                       # #300: never gentler than today's number: the discount logged AT the sale counts when higher
+                d = max(d, float(r["disc"])) if r.get("disc") is not None and 0.5 <= float(r["disc"]) <= 1.0 else d
+            except (TypeError, ValueError, KeyError):
+                pass
             return offer, d * ch * n
         bid = offer / n
         try:
@@ -27911,7 +27922,7 @@ def _knob_brake_sales(st, now, live=False):
     recorded at the sale (knob_sale_expect); a part with no logged chance doesn't count. Counted as soon as it sells
     (no waiting for the game). Only sales after the league's last brake ENDED and within 30 days; never the Pi's rows."""
     _ledger_table()
-    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {'live, ask' if STORE.get('sell_live') else 'null as live, null as ask'} "
+    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {('live, ask, disc' if STORE.get('sell_disc', STORE.get('sell_live')) else 'live, ask, null as disc') if STORE.get('sell_live') else 'null as live, null as ask, null as disc'} "
                       "from sell_log where result='sold' "
                       "and ts > ? and (\"by\" is null or \"by\" != 'pi') order by ts", (now - KNOB_MONTH,))
     disc = {True: kalshi_discount(True), False: kalshi_discount(False)}
