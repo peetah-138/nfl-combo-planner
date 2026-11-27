@@ -113,6 +113,7 @@ with sync_playwright() as pw:
         if pg.locator(".an .knp .knr").count(): P.append(tag + ": folding it again didn't close it")
         # PR3: self-tuning on: the card says so, the exit numbers show per league, a borrowed floor only stricter
         if "Couldn't read the numbers" not in pg.evaluate("knobCard({})"): P.append(tag + ": an empty knob_view should say it couldn't be read")
+        if "Try again" not in pg.evaluate("knobCard(null)") or 'aria-live' not in pg.evaluate("knobCard({})"): P.append(tag + ": a failed knob read (null or empty) needs a Try again button and aria-live")
         if pg.evaluate("knobCard(undefined)") != "": P.append(tag + ": an older server (no knobs key) should show nothing")
         html = pg.evaluate("v=>{const o=S.knOpen,l=S.knLg,g=S.knGrp;S.knOpen=true;S.knLg='epl';S.knGrp={profit:1,loss:1,hedge:1,sell:1,buy:1};const h=knobCard(v);S.knOpen=o;S.knLg=l;S.knGrp=g;return h}", KV_LIVE)
         for want in ("Self-tuning is on", "the newest 30% agree", "never looser than its start", "still a test"):

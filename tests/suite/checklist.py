@@ -1,7 +1,7 @@
 # The check list's test names and how they are split up. run_checks.sh reads this; so does CI (one job per shard).
 #   python checklist.py static                -> the static checks written as scripts (st_*.py; the static group)
 #   python checklist.py static                -> the static checks written as scripts (st_*.py; the static group)
-#   python checklist.py engine                -> every engine test (t_*.py)
+#   python checklist.py engine [i/N]          -> every engine test (t_*.py), or only shard i of N
 #   python checklist.py page [i/N]            -> the page tests (test_*.py), or only shard i of N
 #   python checklist.py lanes K name ...      -> the names spread over K lanes, one line per lane
 #   python checklist.py retry                 -> the page tests allowed one automatic retry (CI only, CHECK_RETRY=1)
@@ -115,7 +115,7 @@ if __name__ == "__main__":
     if a[:1] == ["static"]:
         print(" ".join(STATIC))
     elif a[:1] == ["engine"]:
-        print(" ".join(ENGINE))
+        print(" ".join(shard(ENGINE, a[1] if len(a) > 1 else "")))
     elif a[:1] == ["page"]:
         print(" ".join(shard(PAGE, a[1] if len(a) > 1 else "")))
     elif a[:1] == ["lanes"]:
@@ -124,4 +124,4 @@ if __name__ == "__main__":
     elif a[:1] == ["retry"]:
         print(" ".join(RETRY))
     else:
-        sys.exit("usage: checklist.py static | engine | page [i/N] | lanes K names... | retry")
+        sys.exit("usage: checklist.py static | engine [i/N] | page [i/N] | lanes K names... | retry")

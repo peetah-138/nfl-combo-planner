@@ -215,7 +215,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.26.143`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.26.144`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -1045,6 +1045,82 @@ Out of scope still: letting the oldest-70% weight replace the live weight (chang
 pass on real settled data, which this report supports).
 Tests: `t_shadow_e.py` (the `#474` lines).
 
+#### money-g-144: the pregame single Buy idea is priced like Buy straight (#286)
+
+Only fail-closed changes. No new automatic money movement; no guard loosened. Switch `idea_pre_strict`
+(Settings file, default ON; OFF = the old pricing).
+
+##### What changed
+
+The web app's quote for a pregame single-game Buy idea (act `idea`) now takes its fair chance from
+`idea_pre_fair`, the same rules as `single_buy_quote`:
+
+- (a) the board's price must have been read within `SINGLE_FAIR_AGE` (12 min); an unknown age counts as too old;
+- (b) a moneyline chance goes through `calib_fair` but only ever the lower of calibrated and raw (`min`), so it can never move up;
+- (c) a board side with no sportsbook `src` (Kalshi's own normalised price, circular) is never a fair price;
+- (d) the idea's stored `pfair` (up to an hour old, uncalibrated) is never used;
+- (e) the suggested stake is the smaller of the old `edge_stake` and Buy straight's `_size` (never larger).
+
+With no fair price the card shows Kalshi's price only, no edge, never green, at the smallest usual stake (the
+same as an idea under way with no live fair price). Pete's own typed stake is untouched. The buy guards
+(`singlebuy`: price, size, cap, Pause, unknown outcome) are unchanged.
+
+##### Live numbers that could move
+
+Display and the suggested stake on the pregame single Buy idea card only:
+
+1. the card's fair chance and edge (calibrated, or absent when the price is stale, circular or from the stored chance);
+2. whether the card is green (`clears`): only ever green -> not green, never the reverse;
+3. the card's suggested stake: only ever lower or equal.
+
+Nothing else moves: not the panel, Smart Buy dial, smart sell, hedge, loss cut, caps, or any learned value.
+
+##### Looked at and left alone (see the PR text)
+
+#142 leaks 1-8 and 10 are already shipped; leak 7 is covered by #341 (no idea on a game under way). #285 item 2 is
+done (`_replay_real` haircut). The rest needs Pete or a design pass.
+
+Tests: `tests/suite/t_idea_inplay.py` (stale, unknown age, circular, stored chance, calibration, spread, switch).
+
+#### money-h-144: two stricter-only money items (#482, #374)
+
+Nothing here moves money by itself, loosens a guard, or adds an automatic action. Each change can only make a displayed
+fair chance, a green mark or a recommendation the same or stricter. No new switches (nothing to turn on or off).
+
+##### #482 Old total curve never gives a higher chance than at the fitted width
+`line_fair` (totals, old model) now takes the lower of the old curve (`TOTAL_SD`) and the same curve at the league's
+fitted width from `LINE_TABLES` (`_fitted_total_sd`), when that width is larger. Wider width only lowers a strike below
+the book total, and the `min` keeps a strike above it unchanged. Leagues without a fitted width (euroleague) and
+hockey/soccer (Poisson) are unchanged. Not done: the learned "too good to be true" check, the book-line display, team
+naming, live-score matching, `_bet_kind` exactness and the ESPN date match (items 2-7: display/matching or a product call).
+
+Live numbers that could move: ONLY the old-model fair chance for totals in ncaamb, nba, ncaaf, ncaawb and nfl, and only downward or
+unchanged: strikes below the book total get a lower chance (for example ncaamb with a 9-point gap: about 74% becomes about 71%), strikes
+above it are unchanged (the `min` makes a higher chance impossible). So totals can only get stricter: a smaller edge, fewer recommendations
+on Build, Best bets and the panel. `line_fairs.fair_old` (the old-vs-new comparison feeding `line_gate`) moves the same way.
+
+Indirect effect: `fair_old` feeds `line_gate`'s live old-vs-new comparison (`line_accuracy`/`line_live_stats`). After 200+ settled games the gate
+could flip either way for a league/kind; worst case is a few cents of edge on a few strikes.
+
+##### #374 Killer skipped deals are scored (measurement only)
+`killer_skipped_summary()` adds `skipped` to `killer_summary()`: how many skipped deals, how many settled, and what they
+would have won or lost in dollars, split into overlap skips (including "couldn't check your open bets") and the rest, so
+the 2-bet / 8% defaults can be tuned from data. Records nothing, buys nothing, changes no skip. Items 1 (unreadable-read
+alert) and the 429 cooldown part of 3 were already on develop; the read cache and combo dedupe are not done (a cache
+could hide a fresh bet and loosen the guard; the dedupe needs a real Kalshi combo record).
+
+Live numbers that could move: none (a new read-only field).
+
+##### Skipped from the middle third of the money list
+- #286: already covered by PR #595.
+- #309: overlaps open PR #594 (learn-c). #312: overlaps open PR #467 (hedge-vs-skip).
+- #287: needs a learned per-league bar from `live_fairs` (design call).
+- #316 items 3-5, #383, #382: change sell behaviour or need Pete's call (retry floors, hedge vs back-off, back-off counts).
+  #382's wording is already done (#424, #428).
+
+##### Tests
+`t_money_h144.py` (new; never-higher total curve, skipped-deal scoring).
+
 ### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
 - Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
   `/exchange/status` names them: 0 Default, 1 Combos, 2 Crypto & Commodities, 3 Tennis, Baseball, Basketball), and an
@@ -1294,6 +1370,74 @@ nothing is approved, bought or sent; refused without the gate, override needs an
 cap respected, extras added through `panel_add` and bought once; open-bet limit; Pause (watcher flag and app callable) and
 `can_trade` false block; a failed positions read blocks (stubbed and through the real `_held_all`); streak and daily-loss brakes
 trip, say why, stay until reset; a stray `full_auto` setting does nothing.
+
+#### fullauto-harden-144: harden the full-auto switch (follow-ups to #583)
+
+Full auto stays OFF by default. Nothing here adds automatic money movement; buying stays in `panel_exec`.
+
+- Bankroll free and the losing streak now use all real-panel history (`_fa_rows` no longer cuts at 10 days), so old losses
+  can't drop out and free up bankroll or reset the streak. "Spent today" and "bets open" stay a recent (10 day) view.
+- Stale tab: "Save limits" / "Reset the pause" send `on=true` without the "Turn on?" confirm. The server now ignores `on=true`
+  unless the request is the explicit turn-on (`turn_on` is exactly `true`, sent only by the Turn on button). While it is
+  already on, limits and reset still work. Fails closed.
+- A bet swapped in for one of ours is followed through the whole swap chain (was 3 deep), with no way to loop on a cycle.
+
+Tests: `tests/suite/t_fullauto.py` (deep chain and cycle, 30-day-old loss, stale-tab limits/reset, explicit turn-on).
+
+#### Paper lessons for full auto (#144)
+
+While full auto is ON, a paper or shadow record that has enough data and clearly passes its bar may move ONE small step of a
+full-auto-only number, tighter or looser, at most once per record per week. Nothing here runs while full auto is off.
+
+##### What can move (the only live numbers)
+
+All three are skip-only filters on the bets full auto itself picks (`full_auto_pass`). They can only leave a bet out; they never
+add, resize or buy anything. Buying stays in `panel_exec`.
+
+| Number | Start (today) | Range | Step | Evidence |
+|---|---|---|---|---|
+| `bar:<league>`: extra points over that league's combo cut-off | 0 | 0 to +5 | 0.5 | league shadow (`league_shadow_q`), min 30 settled quotes |
+| `sbev:<league>`: Smart Buy level (none .. +$0.10 expected on $5) | 0 | 0 to 4 | 1 | Smart Buy paper book (`sb_paper`), min 50 bets |
+| `game_share`: most of the full-auto bankroll one game may carry | 30% | 30% down to 10% | 2.5 points | exposure paper log (`expo_pos`), min 20 dollars-settled bets |
+
+"Looser" only walks a number back toward its start value; it never goes past today's behaviour.
+
+##### What never moves
+
+Daily cap, daily loss limit, bankroll, losing-streak brake, the manual panel, the live combo cut-off, Smart Buy's own dial,
+sizing, every sell rule. The code does not edit `fa_check`, `fa_set` or the limit fields (overlaps #589 only by sitting beside
+them in the same file).
+
+##### How a step is judged (same style as the knob stepper)
+
+Picked on the older 70% of past bets; the newest 30% must also gain; net dollars after fees; seeded bootstrap range above zero;
+the stepper's minimum of changed and new bets. Unreadable data, a small sample, or any error means no step. A malformed saved
+value approves nothing and shows as a blocker on the card.
+
+A week later the step is re-scored on the bets since. If they lost money it is reverted automatically (and only newer bets
+count afterwards); otherwise it is kept. Every step, keep and revert is logged with before/after and the evidence and shown on
+the full-auto card, for example "Raised the NBA combo bar a little: on 82 past bets this would have made $6.10 more after fees." (the evidence numbers stay in the saved record).
+
+Master switch `fa_lessons`: default ON, effective only while full auto is on. Its own tap on the card
+(`full_auto_lessons`), not part of `full_auto_set`.
+
+##### Honest caveats
+
+- The league shadow log is hold-to-settle (no early exits) and never backfills, so expect "too few yet" for a while.
+- The exposure evidence includes Pete's own manual bets, and its replay never releases finished bets.
+- Smart Buy paper book backfilled rows are ignored.
+
+##### Not wired yet (shown on the card with the reason)
+
+Paper panel (it is the unlock gate itself), Smart Buy shadow and dial (already self-learning), knob stepper shadow (own stepper),
+momentum, exit-cap, smart-sell-more, flex, combo shadow trader, signal, broad, slate, prop shadows (no bar defined or sell-side
+only), books' weight.
+
+##### Tests
+
+`tests/suite/t_fa_lessons.py`: off when full auto is off, fail closed on bad data, bounds both ways, revert and keep, weekly
+cap, master switch, identity at start values, manual panel unchanged. `t_leagueshadow.py` and `t_exposure.py` source guards are
+narrowed to allow only `_fal_load` / `_fal_min_n`.
 
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
@@ -2466,6 +2610,154 @@ hidden, the combo fee ratio read right at 1x and 2x, the 70/30 simulation grid, 
 - **Doc fix.** `loss-cut-default.md` said a brake resets a league to 12.5%; the code applies no default while braked.
 - Tests: `tests/suite/t_cutloss_default_legacy.py`; `t_cutloss_default.py` untouched-league case now uses under 30 results.
 
+#### The loss guards are judged on the decisions that really run (issue #265)
+
+the full change (not the "worse of two" shortcut) after the Opus review of #576 held this out.
+
+`sl_prog`, `sl_drop`, `sl_checks`, `sl_span` and `sl_gap` gate two decisions: the manual stop-loss switch and smart sell's
+learned loss cut (`stoploss_params`, `sl_confirm_params`, `_cut_guard_ts`). The weekly stepper judged them on the switch's
+replay alone (`_sl_replay`), so a step could be justified by a feature that is off and move a number a live feature uses.
+
+##### What changed
+
+- `knob_judge("sl", ...)` for those five knobs now calls `_knob_res_loss` per bet, on `knob_loss_drivers(vals)`:
+  the **learned cut** runs when smart sell is on and the group has a cut-off (the cautious default 12.5% included); the
+  **stop-loss** runs under Settings > Selling at a loss = Allow, or under Let it tune itself when the group's own
+  `sl_auto` is on. Cut only: the cut's real-record replay (`_knob_replay_at`, i.e. `_replay_real`, the guards gating its
+  loss cut). Stop-loss only: `_sl_replay`. Both: whichever would have sold **first** on that bet (on a tie the lower
+  result), because both would sell the same bet once. Neither: the bet's settled result, so the step gains nothing.
+- Net dollars after fees: the replays' sale prices are Kalshi's offers (or the estimate, with the 3% haircut on a loosening
+  step, #285) against what the bet cost; singles are not in this judge (loss guards are combos).
+- Out of sample: unchanged `knob_evidence` (only bets after the group's last step, step picked on the older 70%, the newest
+  30% must also gain). Brake, one mover per value, borrowed values only stricter, the start while braked: unchanged.
+- New for a **loosened** loss guard (also held tighten-only, see below) (`sl_prog` or `sl_drop` below the live value; the counts can't go below their start): the
+  bootstrap range of its net gain must be above zero too (the same check `sl_feed_age` and `brk_*` already had).
+  A tightening step keeps the ordinary bar.
+- Fail closed: no price record or damaged evidence for a bet raises `KnobJudgeUnreadable`; the stepper marks that knob
+  `unread` (logged, nothing moves) and carries on with the league's other knobs.
+- Untouched: `sl_auto`'s own judge, `_sl_tune` and everything smart_tune does with "Let smart sell tune its own numbers" OFF
+  (the old numbers exactly), the guards themselves, Pause, caps, rule 8. No new automatic money movement: it only changes
+  which step the existing self-tuning may take. The registry text for the five knobs now names the new judge.
+
+##### Tighten-only first run (Pete's call)
+
+Until Pete okays it, the five loss guards can only get **stricter** live. A loosening step the judge would take (`sl_prog`
+or `sl_drop` below the live value) that clears the whole bar is not applied: it is logged in `knob_shadow` with status
+`would have loosened` (and shown in the league's last-run list), and the league takes no live loosening step. Stricter
+steps behave as before. Loosening turns on only when `lg265_loosen_ok` is exactly `true` in `combo_knobs.json`, which Pete
+(or the release owner on his word) sets after reading the log. Fail closed: a missing, damaged, unreadable or non-`true`
+marker keeps it tighten-only. No automatic path sets the marker. Tests: `t_lossguard265.py` (no marker, `false` and a
+non-`true` value; the log row; a stricter step still goes live; marker `true` allows it; the bootstrap range at or below
+0 blocks a loosening even with the marker on and every other check met, above 0 lets it through).
+
+##### Known gap, not fixed here
+
+With the self-tuning switch OFF, smart_tune's older mover `_sl_tune` (writing `sl_prog`/`sl_drop` into smart.json, read
+by `_knob_sl` near `nfl_combo_planner.py:26647`) can still loosen those two guards on its own stop-loss-only score. This
+change and its tighten-only rule do not touch that path ("off = the old numbers exactly"). Filed as a separate issue.
+
+##### Which live numbers can move, and by how much
+
+Only these, only one step per league per weekly run, and only when the bar is cleared; bounds are the registry's:
+`sl_prog` 35-90% of the game (step 5 points, start 50%), `sl_drop` 10-45 points (step 5, start 20), `sl_checks` 3-6 (step 1,
+start 3), `sl_span` 180-600 s (step 30), `sl_gap` 120-300 s (step 30). The counts never loosen below their start. A league
+borrows only the stricter value of its sport's or everyone's.
+
+What moves versus the old judge (the old one's answer vs the new one's, dollars on one recorded game, stake $10 payout $20,
+a pick falling from 60% to 10% late in Q3; reproduced in `t_lossguard265.py`):
+
+| Settings | Step | Old judge | New judge |
+|---|---|---|---|
+| Let it tune itself, sl_auto off (a cut-off set) | `sl_prog` 50 to 55% | -0.98 | 0.00 (the cut is unmoved) |
+| same | `sl_drop` 20 to 15 pts (a LOOSENING step) | +0.66 | 0.00 (no stop-loss runs) |
+| same | `sl_span` 180 to 210 s | -0.98 | -1.64 (the cut would not have confirmed) |
+| Allow (guarded) | `sl_prog` 50 to 55% | -0.98 | -0.98 |
+| Allow (guarded) | `sl_drop` 20 to 15 pts | +0.66 | +0.64 |
+
+So for the common setting (the cut on, the stop-loss off) the old judge could have loosened `sl_drop` on a feature that
+was off; the new one cannot. Steps the old judge would have taken for stop-loss reasons stop; steps that matter to the cut
+(and were invisible before) can now qualify. Under Allow the answers are close, because the stop-loss sells first.
+
+Honest limit: Pete's real price history is not on this machine (it lives in the watcher's database), so there is no
+replay over it here; the table is a recorded-game fixture plus the random-state tests. The first weekly run after release
+logs every guard step it considers in `knob_shadow` (status `qualifies`, `vetoed`, `below`, `unread`), so the effect on the
+real record is readable before a second step is taken.
+
+##### Tests
+
+`t_lossguard265.py` (drivers per setting; the old vs new numbers above; earliest sale, tie, one rides on, neither;
+neither runs = no gain; `sl_auto` judge unchanged; unreadable record = no step and the other knobs still judged; the five
+use the new judge; `_sl_tune` untouched). Existing `t_knobpr567.py`, `t_knobstep.py`, `t_knoblive.py`, `t_knobreal.py`,
+`t_knobs.py` and `t_stoploss.py` pass unchanged.
+
+#### money-i-144: money backlog, last third (#551, #300, #302)
+
+Three guard-side fixes. Nothing here adds an automatic buy, sell or hedge, loosens a guard, or touches Pause, caps or rule 8.
+
+- **#551a, books-weight veto (`mkt_learn`):** a run where a group is not earned at all used to delete its veto entry, so the next
+  good run was earned at once and the 2 h wait (`MKT['hold_wait']`) was skipped. The entry now stays and its clock restarts
+  (`since = None`). Stricter only. The Settings switch off (`mkt_hold`) behaves as before (in-sample bar alone).
+- **#551b, Live card:** the "Lock in" line (`lock_at`, `lock_armed` in `_smart_trigger`) now uses the tuned `trail_arm` and
+  `trail_arm_cost` that `exit_policy` really sells on (via `knob_exit_prm`), not the fixed 60% / 1.5x. Display only.
+- **#300, brake footing:** the combo discount at the sale (`rec["disc"]`, already in the decision file) is now stored in
+  `sell_log` (new `disc` column, added to old files) and `knob_sale_expect` uses `max(today's discount, the one logged at the
+  sale)`, ignoring unusable values. Never lower than before, so the brake can only trip sooner, never later.
+- **Fallback:** if only the `disc` column cannot be added, `sale_store` still stores `live` and `ask` (`STORE["sell_disc"]`).
+- **#302, test only:** `t_money_i.py` adds the `auto_sell_now`-level test (learned 0.99 slip: an offer at 0.98 x the line is
+  skipped, 0.995 x sells, 0.97 control sells at 0.98).
+
+##### Live numbers that could move
+
+1. The self-tuning brake (`knob_brake_check`) can trip a little sooner for a league whose combo sales were made when Kalshi's
+   discount was higher than it is now. A brake puts that league's tuned exit numbers back to their starts (the strict direction).
+   Single sales, thresholds, `KNOB_EPS`, the streak length and the 30-day share are unchanged.
+2. A books-weight (`MKT_W` weights, so `longshot_leg_fair`'s blend vs Kalshi's mid in the 65-80% long-shot band) can stay 0 for up
+   to 2 h longer for a group that flaps between not earned and earned. Weights are only ever removed, never added or raised.
+   The veto record is in memory, so a restart still clears it, as before.
+3. A braked league loses the default 12.5% loss cut (existing behaviour: no cut is the strictest while a brake holds), and the brake can now trip sooner, so the default cut is dropped sooner. Worst case about $1 of salvage on a $10 payout per combo that would have been cut. Pinned by `t_money_i.py`.
+4. The Live card's "Lock in arms at $X" figure changes for a league whose arm numbers were tuned. Display only; the sale is unchanged.
+
+Nothing else: no stake, price, floor, slip, cap or buy decision changes.
+
+##### Not done (from the last third of the money list)
+
+- #519 (needs Pete: whether a Settings card / enforcement is wanted, and the caps), #299 (needs Pete's view on the #284 wording and
+  the band), #301 (needs a design decision: pricing both judge directions the same way moves tuned values), #353 (the server half
+  adds a card state on the buy path; the client half already ships), #246 (PR #593 is open on it; the rest is the sell-path text).
+- #302's replay differences (auto cap, retries at 0.97, ask throttle, offer timestamps) change the judge's results and wait for a
+  decision; only its requested test is added here.
+
+#### learn-c-144: learning follow-ups (#477 #476 #474 #309 #291)
+
+**Already on develop, skipped on purpose (nothing changed for them):**
+- #477 league blend double counting: fixed in #549 (`_lgsh_minus`, disjoint counts; `calib_fair` unchanged).
+- #476 league shadow dollars gate: shipped in #549 (`league_shadow_q`, `lgsh_gate`).
+- #474 mkt_learn holdout: #549 made the weight pick on the oldest 70% and require a gain on the newest 30% (stricter-only), #566 added `mkt_holdout_report`. What is left (a holdout that may pick a weight the old rule would not, and the inert `hold_min`) is a measure-before-change pass on real settled data and would loosen a live number, so it stays open.
+- #291 paper book: #566 added the panel's one-per-game-and-family, spread/total share and daily-size rules. The rest (ahead floor, fill cap by depth, buying at approval time, a stage-3 extras budget) needs data that is not recorded or a stage-3 definition that does not exist yet; paper only, left open.
+- #309 bullets 1 (labels, #564) and the `ideas.js` NaN check (`pct(null)` already returns a dash, `common.js`).
+
+**Done (#309 nits, read/record side):**
+- `_knob_items`: a cashed combo's `kick` is now its game start (`_knob_game_kick`: recorded kickoff, else the first in-play tick, else the buy time as before; never earlier than the buy, so a combo bought in play replays from its buy as before), so the stepper's "after the last step" filter and 70/30 holdout place it right.
+- `sb_resolve`: the second (universe) look skips rows the first batch already holds, so a full batch no longer wastes its second look on repeats (more universe results resolve per pass; nothing else changes).
+- `_sb_results` reads `exit_shadow` in pages of 20,000 by (ts, rowid) (`_sb_rows_chunked`) instead of one read of up to 200k rows under the store lock the panel buy thread shares. Same rows, same order; a read error in any page raises (`store_rows_strict`) instead of truncating.
+- Test gap: `t_knobfloor_309.py` runs `auto_sell_now` with `auto_slip` at its lowest allowed value (0.90) and shows a profit sale under cost is not made and the daily cap still stops the next sale; it also pins that `cut_accept` 0 and values below a knob's minimum are refused.
+
+**Live numbers that could move:** none directly (no buy, sell, size, price or cut-off is changed). Indirectly, the knob stepper's judgement of the cashed combos moves with the corrected start time (which bets count as before/after a step and which fall in the newest 30%), so a knob step could land one round earlier or later; the stepper's own bounds and stricter-only rules are unchanged. `sb_resolve` may settle more Smart Buy universe rows per pass, which feeds only the stricter-only early look.
+
+Tests: `t_learnc_309.py` (kick, paging, resolve), `t_knobfloor_309.py` (lowest knob values through a real sell pass). Both fail on the old code.
+
+#### Hedge weighed before a below-cost cash-out (#312): hedge weighed before skipping a below-cost cash-out (#312)
+
+Split out of #599 because it adds a NEW automatic hedge BUY trigger (a below-cost sale offer can now lead to an automatic hedge). Pete opted in on 2026-11-27 ("Yes, build it in"); Opus-reviewed OK.
+
+- Switch `hedge_before_loss_skip` (default ON): in `auto_sell_now`, when the offer is below cost (and not a guarded stop-loss), a hedge is weighed first. Requires `auto_hedge`, all existing hedge guards, the fresh-price check, and a hedge that locks in at least the cost. Otherwise the old skip stays. A below-cost sale never happens on this path.
+- Hedge records on this path are not tagged `stop_loss`/`fee_loss` (they are not stop-loss sales).
+- Live number that could move: auto cash-out may place a hedge buy it previously skipped.
+
+Tests: `tests/suite/t_rank_e312.py`, `t_combofee.py` (source assertion).
+
+Pete opted in on 2026-11-27.
+
 ## Product notes (moved here from CLAUDE.md)
 
 Log access for the dev Mac (#377; hard rule 9). The watcher hub answers `GET /api/logs?source=console|autosell&since=&limit=`
@@ -3397,18 +3689,72 @@ Tests: `t_money_h.py` (fails on the old code).
   "Expected profit at $S, after fees and on your own record: $a -> $b". "Good flip" now also needs expected dollars not to
   fall (more than a cent); a likelier flip whose dollars fall is a Trade-off, or Worse bet when it is not also clearly
   likelier. Without prices the note is as before.
-- **#265 is held, not shipped (pending Pete's sign-off).** The loss guards `sl_prog`, `sl_drop`, `sl_checks`, `sl_span` and
-  `sl_gap` gate both the manual stop-loss switch and the learned loss cut, but `knob_judge("sl", ...)` replays only the
-  switch. A first version that judged each bet on the cut's replay when the cut is on was taken out: those knobs are in
-  `KNOB_LIVE` and live self-tuning is on, so it would change live loss numbers, and with the cut and `sl_auto` both on it
-  would look only at the cut and could let through a step that loses on the switch replay. Nothing about the judge, the
-  steppers, `_sl_tune` or any live guard changes in this PR. Option for later: judge a step on the WORSE of the two replays
-  (the switch's and the cut's, each only when that feature is on) so a step must not lose on either.
+- **#265 shipped in release 144** (see "The loss guards are judged on the decisions that really run" under Selling). Loosening the five loss guards stays tighten-only until Pete sets `lg265_loosen_ok`.
 - **Not done / checked:** none of the three was already built. No screenshots: the only visible change is the order of the
   Best bets rows and one added sentence in the flip note (no layout or style change).
 - **Tests:** `t_ranke.py` (record flips the ranking and the simulated chance, an edge that exists only on the raw chance is
   dropped, combo return, empty record unchanged, flip dollars and verdict); `t_bestbets.py`,
   the knob tests are unchanged and passing.
+
+#### rank-e-144: Best bets and paper live bar (#243, #287)
+
+Rules kept: fail closed, no new automatic money movement, nothing loosened, switch `live_bar_learn` defaults ON.
+
+##### Done
+- **#243 Best bets.** Singles are dropped when the board is older than 12 min (`fair_at`); up to 10 extra candidates by expected dollars are simulated beyond the cut. (Calibrated ranking and #204 were already fixed in #576.)
+- **#287 learned in-play green bar:** PAPER ONLY. `live_single_bar` is reported as `live_bar` on the live quote and noted when it would have changed green; it gates nothing.
+- "Game not found" badge has a hover explanation (text unchanged).
+
+##### Live numbers that could move
+- Best bets: singles vanish when the board is stale; extra candidates are simulated.
+- Paper `live_bar` field only; no buy decision changes.
+
+##### Skipped / needs Pete
+- #482 totals curve and #286 pregame idea fair: landed on develop meanwhile (dropped from this PR).
+- #312: its own PR (#603), needs Pete.
+- #204, #243 part 1: already fixed (#576).
+- #287 enforcing the learned bar and two-side normalisation: needs Pete.
+- #482 items 3 to 7 and changing the badge text.
+
+Tests: `tests/suite/t_rank_e144.py` (new).
+
+#### Leftover small items from the 144 backlog sweep (#246)
+
+Display wording only. The Best bets heading total now uses the app's one signed-money formatter (`smoney`, same as the
+rest of the page) instead of a hand-built `+$` string, so big totals read `+$1,200` like every other figure.
+
+Checked and already done on develop, so not touched: #517 (inline handlers moved to `data-*`, report-only CSP, #552),
+#214 (#535), #379 (Copy setup command and `--problems`, #575), #414 (`held_markets()`, #419), #569 #570 #571 #573 (#580).
+
+Left out on purpose: #519 (needs Pete's decisions on a hedge marker, caps and a Settings card before any code), and from
+#246 the `get_offer` raw exception text (server side, sits on the sell path), the stake-control rounding, the `.sacts`
+hint taps and "Rough before 9 AM" (text not found in the code).
+
+Tests: `test_bestbets.py` (heading total).
+
+#### Leftover small items: lost-reply note, cap wording, quick accessibility wins (issues #453, #112, #140)
+
+Display and wording only. Nothing here touches buy, sell or sizing logic, the caps themselves, Pause or smart sell.
+
+- **#453 Lost-reply buy:** when a buy's reply is lost (the phone could not reach the Mac) or comes back unclear, Build
+  cards, Long shots and Live buy ideas now leave a sheet that stays until tapped ("Check Live" for a lost reply,
+  "Check Kalshi" for an unclear one) instead of a 6 to 9 second toast. If another sheet is already open it falls back
+  to a long toast. New `checkLive(msg, title)` in `moments.js`; the three buy paths flag a lost reply with `lost:true`.
+  The straight-bet sheet already behaved this way.
+- **#112 cap message:** the "over your cap" message now says to raise the cap to the next $10 step (what the Settings
+  slider can actually be set to, up to $200), e.g. "at least $60" for a $54 total. `cap_msg` only; the check
+  `spent + stake > budget` is unchanged.
+- **#140 quick wins:** the toast is a polite live region (`role=status`), buttons, links and fields get a keyboard focus
+  ring (`chrome.css`), and the grey "mute" text is a little darker in light mode (`#6f7890`) and lighter in dark mode
+  (`#8790a3`) for contrast.
+
+Checked and left to the other branch: nomoney-d-144 only touches the Best bets heading and housekeeping, no overlap.
+Left out: #431 (open PR #465, money wording decision), #494 (research outside the repo), #512 (adds new quote pulls
+and a recorder; not a small add-on), #63 #64 #69 #72 #78 #148 #187 (large, or need Pete's call on design), the rest of
+#140 (hold-to-buy and celebration changes alter the buy tap), and the other #112 items (paper test and hero estimate
+sit near the sell path).
+
+Tests: `t_nomoney_f.py` (source checks), `t_capmsg.py` (new $10-step wording).
 
 ### Results page
 - P/L by week, history with sport/date/outcome filters, the paper gate, and "📊 What's working": combo price
@@ -3427,7 +3773,7 @@ Tests: `t_money_h.py` (fails on the old code).
   profit, ROI, fees, days up/down, best/worst day, a running total (scrubbable), open bets as a separate **estimate**
   (last `pulse` row ≤ 30 min), Smart Sell vs holding (scorecard), Smart Buy skips (from `analytics()["smart_buy"]`'s
   gate, paper at $5), and breakdowns: bet type (paper beside it), league, how it ended (smart sell / you / held won /
-  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build & Live ideas
+  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build and other app buys, Live buy ideas
   together, held before tracking, you on Kalshi), price quality (panel items: expected edge band vs actual ROI,
   predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
   `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI
@@ -3703,6 +4049,40 @@ Each issue was read against develop first.
   chunking change what the stepper judges or how reads are done, not caution. The `ideas.js` null check is already fine
   (`pct(null)` shows a dash). The lowest-value `auto_sell_now` test is a test-only addition, not done here.
 
+#### Scoreboard follow-ups: Live idea buys tagged apart, stricter "more than luck" bar (issue #187)
+
+Labels and words only. Nothing here changes what is bought or sold, sizing, Pause, or any setting.
+
+- **Live idea buys tagged apart:** buying a Live buy idea's single game now tags it, so "Where it came from" lists
+  "Live buy ideas" on its own line and the old "Build & Live ideas" line is now "Build and other app buys". Bets bought
+  before this change stay under the old line (no history is rewritten). One tag write before the order; the order,
+  its caps and checks are untouched.
+- **Fairer "more than luck" sentence:** each breakdown's sentence tests several groups at once (about 10 leagues), so
+  one will look special by luck now and then. The bar for "keep it" / "worse than luck explains" now rises with the
+  number of groups (2.5 standard errors for a couple of groups, about 2.8 for ten). Combos have heavy tails (a few
+  big wins), so a combos row also needs 30 settled bets before it gets a verdict (other groups still 20).
+
+Checked and already done or taken: #431 (open PR #465), #494 (open PR #502), #483 (open PR #487), #453 #112 #140
+(merged #598), #112 hero-estimate stale price (already counted as not fresh). Left out as large or needing Pete's
+call on design: #63 #64 #69 #72 #78 #148, #512 (new recorder), and the rest of #187 (weekly push, settings links,
+timing for non-panel bets, feeding `smart_tune` is a selling change).
+
+Tests: `t_nomoney_g.py`.
+
+#### nits-144: display and wording nits from the 143 reviews
+
+Wording and layout only; nothing here touches buying, selling or sizing.
+
+- Settings "More" button (`.smore`) is at least 44px tall.
+- Full-auto "can't read positions" blocker no longer shows a Python exception name.
+- Hedge card "Sell at" with no beatable offer reads "Not until it pays more".
+- Full-auto losing-streak line reads "N lost (pauses after M in a row)".
+- Results cut-losses cell uses "Up to X%" for both its own and the starting value.
+- `knobCard`: the "Couldn't read the numbers" line shows for `null` as well as `{}`, is a live region, and has a Try again button (reloads Results).
+- Flip verdict note leads with the expected-dollars sentence (order only).
+
+Tests: `test_singlesell_ui.py` (new wording), `test_knobs_ui.py` (null, Try again, aria-live).
+
 ### Look and feel (the makeover)
 - CSS class names are global: `<main>` is marked `arrived` for 1.6 s after a screen change (never `fresh`, which is the small
   "Updated Ns ago" stamp: nowrap, small grey text). Reusing it made every new screen draw too wide for a moment (GitHub #52);
@@ -3959,6 +4339,13 @@ Nothing about buying, selling, sizing or any number the app tunes changed. Log a
 - **Already done on develop, no change here:** #528 (result column limit, `LOG_DB_COLUMNS_MAX`), #378 (app sheet instead of `confirm()`
   in `logaccess.js`), #380 (long-line cut to "[line too long]" and the under-1-second worst-case assertion in `t_logs_caps.py`).
   PR #532. `LOG_RATE` stays at 30/min until a real-Mac measurement says otherwise.
+
+#### Housekeeping pass (#544, #542, #433, #478, #559)
+
+No product behaviour changed.
+  - Already on develop, nothing built: #544 (CLAUDE.md hard rule 9 already points at `docs/LOG_ACCESS.md` and the tool; one description of the rules), #542 (Settings wording names every sale the switch covers; CLAUDE.md folded it in release 142), #433 (signal_shadow DDL once per open database, PR #534), #478 (PR #546).
+  - Test added (`t_push_gate`): a held Buy-idea push goes out at the end of a real `panel_collect` pass, once, and only after Smart Buy's verdict is written.
+  - `t_orderbook` "caps at the whole contracts on sale" passes on develop. It reads the watcher's source from `wtest/combo_watcher.py`, which only `tests/run_checks.sh` sets up; run on its own outside that folder it reads an empty string and fails. Not a code bug.
 
 ## Kalshi API watch (GitHub issue #82)
 

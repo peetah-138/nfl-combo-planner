@@ -262,10 +262,12 @@ ok("atomic: the next run writes it whole in one go",
    E.league_shadow_run(now + 5 * 10 ** 6, force=True) == len(bad_rows) == E.store_rows("select count(*) n from league_shadow")[0]["n"])
 ok("derived: the ticker prefixes come from SOCCER_LEAGUE", E._LGSH_PRE == {v: k for k, v in E.SOCCER_LEAGUE.items()})
 
-# ---- no decision function reads the shadow: only the shadow's own functions, the watcher hook and the report do
+# ---- no decision function reads the shadow: only the shadow's own functions, the watcher hook, the report and the
+# full-auto lessons reader (_fal_load: a step of a full-auto-only bar, see t_fa_lessons.py) do
 tree = ast.parse(open("wahome/engine.py").read())
 allowed = {"lgsh_blend", "_lgsh_say", "_lgsh_league_sport", "lgsh_rows", "_league_shadow_table", "league_shadow_run",
-           "league_shadow_view", "knob_pass", "analytics", "_lgsh_minus", "_league_shadow_q_table", "lgsh_log_quotes", "lgsh_gate", "_lgsh_mark", "_lgsh_log_batch", "_lgsh_pnl"}
+           "league_shadow_view", "knob_pass", "analytics", "_lgsh_minus", "_league_shadow_q_table", "lgsh_log_quotes", "lgsh_gate", "_lgsh_mark", "_lgsh_log_batch", "_lgsh_pnl",
+           "_fal_load", "_fal_min_n"}          # (#144) the full-auto lessons reader: the one allowed decision-side read, gated, bounded, fail closed
 bad = []
 for fn in [x for x in ast.walk(tree) if isinstance(x, ast.FunctionDef)]:
     names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)} | {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}

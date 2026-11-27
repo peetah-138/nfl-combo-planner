@@ -2,7 +2,7 @@
    guards, auto-hedge and Smart Buy decide with: its value now (per league where it already learns by league), where
    it starts, the widest it may ever go, and the things that never move by themselves. Read-only: the only controls
    are the fold and the league chips, which change what is shown, never a setting. */
-function knobCard(kv){if(kv&&!kv.knobs&&Object.keys(kv).length===0)return `<div class="m knerr" style="margin-top:14px;font-size:12.5px">Couldn't read the numbers right now.</div>`;if(!kv||!kv.knobs||!kv.knobs.length)return '';const o=!!S.knOpen;const ks=kv.knobs;
+function knobCard(kv){if(kv===null||(kv&&!kv.knobs&&Object.keys(kv).length===0))return `<div class="m knerr" role="status" aria-live="polite" style="margin-top:14px;font-size:12.5px">Couldn't read the numbers right now. <button type="button" class="knretry" style="min-height:44px;padding:0 12px;border:0;background:none;color:var(--acc);font-weight:600;cursor:pointer" onclick="load('results',true)">Try again</button></div>`;if(!kv||!kv.knobs||!kv.knobs.length)return '';const o=!!S.knOpen;const ks=kv.knobs;
  const tun=ks.filter(k=>k.cls==='tunable'||k.cls==='setting'),inv=ks.filter(k=>k.cls==='invariant'),ev=ks.filter(k=>k.cls==='evidence');
  const lgs=kv.leagues||[{key:'all',name:'Everything'}];const lg=lgs.some(l=>l.key===S.knLg)?S.knLg:'all';
  const nl=tun.filter(k=>k.values).length;

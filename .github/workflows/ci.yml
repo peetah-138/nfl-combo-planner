@@ -56,11 +56,16 @@ jobs:
         run: bash tests/run_checks.sh
 
   engine:
-    name: engine tests
+    name: engine tests ${{ matrix.part }}/4
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
     env:
       CHECK_GROUPS: engine
+      CHECK_ENGINE_SHARD: ${{ matrix.part }}/4
     steps:
       - uses: actions/checkout@v4
         with:

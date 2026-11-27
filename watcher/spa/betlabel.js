@@ -9,7 +9,7 @@ function betPlain(x){return String((x&&(x.plain||x.label||x.name))||'');}
 function betMatch(x){return String((x&&x.matchup)||'');}
 /* "CBB · Duke vs UNC", plus a quiet "game not found" when the teams are only the ticker's letters (HTML, escaped) */
 function betWhere(x){const m=betMatch(x);if(!m)return '';
- return `<span class="bwh">${x.league?esc(x.league)+' · ':''}${esc(m)}${x.found===false?' <i class="nf">game not found</i>':''}</span>`;}
+ return `<span class="bwh">${x.league?esc(x.league)+' · ':''}${esc(m)}${x.found===false?' <i class="nf" title="Kalshi has no matching game on our schedule feed yet; this does not mean the bet is wrong">game not found</i>':''}</span>`;}
 /* the short form for a chip: spread/win keep the team and line, a total keeps over/under and its matchup */
 function betChip(l){const p=betPlain(l);if(!l||!l.plain)return short(p);
  const base=p.replace(/\s*\(.*\)$/,'');
