@@ -2066,7 +2066,7 @@ First deliverable of `momentum-exit-design.md` section 5. **Nothing here sells o
   `smart_state`, `lock_at`. It says "should sell on the next check" only when Auto cash-out is on and nothing blocks it
   (`auto_sell_blockers`: Pause, daily limit, "I'll sell it", Kalshi refusing sales, unclear last sale, cannot trade here);
   otherwise it says why it won't sell right now, and shows nothing when Auto cash-out is off or the bet is "I'll sell it".
-  The old let-it-ride number is relabelled **Let-it-ride line**. Lock in reads "Protects a profit once the offer has
+  The old let-it-ride number is relabelled **Sell at** (card) and "sells once the offer reaches $X" (row), plain words from polish-143 (#572). Lock in reads "Protects a profit once the offer has
   reached $X."
 - **Tests.** `t_mom_shadow.py` (synthetic DB: rows written, a failing recorder changes nothing for selling, log lines,
   kill switch, throttle, pruning, nothing reads the tables back, card text).
