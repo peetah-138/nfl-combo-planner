@@ -16398,7 +16398,31 @@ def killer_summary():
     done = [r for r in rows if r["outcome"] and r["status"] in ("watched", "bought")]
     pl = sum((r["pays"] if r["outcome"] == "won" else 0) - r["stake"] for r in done)
     return {"mode": CFG.get("killer_mode", "watch"), "rows": rows[:12], "settled": len(done), "pl": round(pl, 2),
-            "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER}
+            "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER, "skipped": killer_skipped_summary()}
+
+
+def killer_skipped_summary():
+    """#374 measurement only: what the skipped killer deals WOULD have won or lost (their own stake and payout, once
+    settled), split into overlap skips and every other reason, so the overlap defaults can be tuned from data. Records
+    nothing, buys nothing, changes no skip; any problem = an empty summary."""
+    out = {"n": 0, "settled": 0, "pl": 0.0, "overlap_n": 0, "overlap_settled": 0, "overlap_pl": 0.0}
+    try:
+        for r in store_rows("select status, why, outcome, stake, pays from killer where mode='on' and status='skipped' "
+                            "order by ts desc limit 500"):
+            over = (r["why"] or "").startswith("you already have") or (r["why"] or "").startswith(KILLER_OVERLAP_UNREAD)
+            out["n"] += 1
+            out["overlap_n"] += 1 if over else 0
+            if r["outcome"]:
+                pl = (r["pays"] if r["outcome"] == "won" else 0) - (r["stake"] or 0)
+                out["settled"] += 1
+                out["pl"] += pl
+                if over:
+                    out["overlap_settled"] += 1
+                    out["overlap_pl"] += pl
+        out["pl"], out["overlap_pl"] = round(out["pl"], 2), round(out["overlap_pl"], 2)
+    except Exception:
+        pass
+    return out
 
 
 # ---- spreads and totals: priced from the sportsbook line with a score model
@@ -16539,10 +16563,24 @@ def line_fair(code, kind, line, team_is_home, g):
     if g.get("total") is None:
         return None
     if code in TOTAL_SD:
-        return _phi((g["total"] - line) / TOTAL_SD[code])
+        p = _phi((g["total"] - line) / TOTAL_SD[code])
+        fit = _fitted_total_sd(code, g["total"])
+        if fit and fit > TOTAL_SD[code]:                # #482: the league's fitted width is wider than the old curve's:
+            p = min(p, _phi((g["total"] - line) / fit))   # never the higher chance of the two (stricter only)
+        return p
     if code in ("nhl", "ahl", "soccer"):
         return 1 - _poisson_cdf(math.floor(line), g["total"])
     return None
+
+
+def _fitted_total_sd(code, total):
+    """The league's own fitted total-points width from LINE_TABLES (backtest of real finished games), or None.
+    Used only to make the old total curve stricter (#482); any problem = None = the old width alone."""
+    try:
+        sd = _line_sd(LINE_TABLES["leagues"][code]["total"], float(total))
+        return sd if math.isfinite(sd) and sd > 0 else None
+    except Exception:
+        return None
 
 
 # ---- spreads and totals, the margin-shape model (issue #117, part A). Same sportsbook line, but the chance of a
