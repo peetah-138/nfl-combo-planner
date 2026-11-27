@@ -24365,14 +24365,16 @@ def _fa_scaled(stake, factor):
     return min(stake, max(PANEL_OWN_MIN, math.floor(stake * factor * 100 + 1e-9) / 100))
 
 
-def _fa_caution_bar(items, level):
+def _fa_caution_bar(items, level, learned=None):
     """Cautious only: combos must clear their league's cut-off by one more notch per level (FA_LADDER's bar).
     Tighten-only; singles and lines are untouched. Raises on a bad value (the pass then approves nothing)."""
     extra = _fa_knob(level, "bar")
     kept, held = [], []
     for c in items:
         if c.get("kind") == "combo" and extra > 0:
-            ok = float(c.get("pct") or 0) >= combo_cutoff(c["code"], len(c["legs"]), c["legs"]) + extra / 100 - 1e-9
+            tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+            lrn = float((learned or {}).get(bet_key(tks) if tks else "mix", 0.0) or 0.0)   # the learned bar and the cautious one ADD
+            ok = float(c.get("pct") or 0) >= combo_cutoff(c["code"], len(c["legs"]), c["legs"]) + (max(lrn, 0.0) + extra) / 100 - 1e-9
         else:
             ok = True
         (kept if ok else held).append(c)
@@ -24507,7 +24509,10 @@ def _fa_candidates(st, real, now, caut, log, quiet=False):
             log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
     if caut["level"]:                                     # (#144 soft brake) cautious: one more notch on the bar, tighten-only
         try:
-            items, held = _fa_caution_bar(items, caut["level"])
+            lv, lerr = _fal_vals(st) if fal_on(st) else ({"bar": {}}, None)
+            if lerr:
+                raise ValueError(lerr)
+            items, held = _fa_caution_bar(items, caut["level"], lv["bar"])
         except Exception as err:
             log("full auto cautious: nothing approved:", type(err).__name__, err)
             return None
@@ -24622,12 +24627,15 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         return None
     now = now or time.time()
     v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
-    if v["brake"] and not (st.get("brake") or {}).get("kind") == "day":
+    sb = st.get("brake") if isinstance(st.get("brake"), dict) else {}
+    if v["brake"] and not (sb.get("kind") == "day" and sb.get("day") == v["brake"].get("day")):
         _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"], text="Paused for the day: " + v["brake"]["why"])))
         log("full auto paused itself:", v["brake"]["why"])
     caut = v["caution"]
     if caut["changed"] or (isinstance(st.get("brake"), dict) and st["brake"].get("kind") == "streak"):
         def _save_caution(s):
+            if s.get("caution") != st.get("caution") or s.get("reset_at") != st.get("reset_at"):
+                return                                    # Pete reset (or another writer changed it) since this pass read: his tap wins
             s["caution"] = caut["saved"]
             if isinstance(s.get("brake"), dict) and s["brake"].get("kind") == "streak":
                 s["brake"] = None
@@ -24744,7 +24752,7 @@ def ap_register(rec, label, load, min_n, text, bounds, start, tighter_sign):
                    "sign": tighter_sign}
 
 
-def ap_brake_cautious(st):
+def ap_brake_cautious(st, now=None):
     """THE BRAKE HOOK. True while the full-auto brake is in a cautious state, so nothing may loosen anywhere (tightening
     still may). Today: the losing-streak / daily-loss brake is tripped. The soft brake plugs in here later; this function
     is the only place the autopilot looks at the brake, and it never changes it. Reads both the hard brake (st["brake"])
@@ -24752,8 +24760,10 @@ def ap_brake_cautious(st):
     try:
         if not isinstance(st, dict):
             return True
-        if isinstance(st.get("brake"), dict) and st["brake"].get("kind"):
-            return True
+        b = st.get("brake")
+        if isinstance(b, dict) and b.get("kind"):
+            if not (b.get("kind") == "day" and b.get("day") and b.get("day") != _panel_day(now or time.time())):
+                return True                               # a daily-loss brake from an earlier panel day has ended; anything else, or unreadable, holds
         c = st.get("caution")
         if c is None:
             return False

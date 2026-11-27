@@ -438,3 +438,50 @@ ok("a legacy pause starts at the lowest level (25%) with a plain note on the car
 ok("cautious never turns the switch off", E.fa_state()["on"] is True)
 okO, _, _ = E.fa_set(False)
 ok("the master switch off still turns it off", okO and E.fa_state()["on"] is False)
+
+
+# ---- release 145 review fixes: a daily-loss brake from an earlier day, a reset during a pass, cautious over a learned bar
+reset_state()
+today = E._panel_day(time.time())
+E._fa_update(lambda s: s.update(brake={"kind": "day", "day": "2000-01-01", "why": "old"}, caution={"level": 0, "base_at": 0, "since": 0, "why": ""}))
+ok("a daily-loss brake from an earlier day does not count as cautious (loosening allowed)", E.ap_brake_cautious(E.fa_state()) is False)
+ok("... and the card shows no active brake", E.fa_check(now=time.time())["brake"] is None)
+E._fa_update(lambda s: s.update(brake={"kind": "day", "day": today, "why": "now"}))
+ok("a same-day daily-loss brake still counts as cautious", E.ap_brake_cautious(E.fa_state()) is True)
+E._fa_update(lambda s: s.update(brake={"kind": "day", "why": "no day"}))
+ok("a day brake with no readable day fails closed", E.ap_brake_cautious(E.fa_state()) is True)
+E._fa_update(lambda s: s.update(brake={"kind": "streak", "why": "old"}))
+ok("a streak brake still counts as cautious", E.ap_brake_cautious(E.fa_state()) is True)
+E._fa_update(lambda s: s.update(brake=None, caution={"level": 1, "base_at": 0, "since": 0, "why": "x"}))
+ok("caution level above 0 still counts as cautious", E.ap_brake_cautious(E.fa_state()) is True)
+ok("the daily-loss limit still blocks buying the same day", (lambda v: v["brake"] is None or v["brake"]["kind"] == "day")(E.fa_check(now=time.time())))
+
+# a 'Back to normal now' tap during the pass is not overwritten by the pass's older read
+reset_state()
+E.fa_set(True, override=True, limits={"cap": 100, "max_open": 30, "streak": 3, "day_loss": 100})
+E._fa_update(lambda s: s.update(caution={"level": 1, "base_at": 0, "since": time.time(), "why": "x"}))
+_orig_check = E.fa_check
+def _tap_during(*a, **k):
+    v = _orig_check(*a, **k)
+    E.fa_set(True, reset_brake=True)                      # Pete taps reset after the pass read its state
+    v["caution"] = dict(v["caution"], changed=True, level=2, saved={"level": 2, "base_at": 0, "since": 0, "why": "late"}, events=["late step"])
+    return v
+E.fa_check = _tap_during
+try:
+    E._full_auto_pass(now=time.time(), log=lambda *a: None)
+finally:
+    E.fa_check = _orig_check
+ok("a reset during the pass survives (caution stays at normal)", E.fa_state()["caution"]["level"] == 0)
+
+# the cautious bar adds to the learned bar (never below it)
+def _combo(pct):
+    legs = [{"ticker": "KXNBAGAME-G1-A", "event": "KXNBAGAME-G1"}, {"ticker": "KXNBAGAME-G2-B", "event": "KXNBAGAME-G2"}]
+    return {"kind": "combo", "code": "nba", "legs": legs, "pct": pct}
+_cut = E.combo_cutoff("nba", 2, _combo(0)["legs"])
+_lg = E.bet_key([l["ticker"] for l in _combo(0)["legs"]])
+_c = _combo(_cut + 0.0125)                                # clears learned 1.0 alone, not learned 1.0 + cautious 0.5
+k0, h0 = E._fa_caution_bar([_c], 1)
+k1, h1 = E._fa_caution_bar([_c], 1, {_lg: 1.0})
+k2, h2 = E._fa_caution_bar([_combo(_cut + 0.0155)], 1, {_lg: 1.0})
+ok("without a learned bar the cautious notch is unchanged", len(k0) == 1 and not h0)
+ok("cautious level 1 adds 0.5 on top of a learned +1.0", not k1 and len(h1) == 1 and len(k2) == 1)
