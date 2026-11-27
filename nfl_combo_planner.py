@@ -19025,6 +19025,30 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
 IDEA_FAIR_SRC = {"live sportsbook line": "live line", "live model": "live model"}
 
 
+def idea_pre_fair(tk, side, kind, now=None):
+    """(fair, how, why-none) for a single-game Buy idea's quote BEFORE the game (#286): the same rules as Buy straight's
+    pricing block in single_buy_quote. The board's side must carry a sportsbook source (a side with none holds Kalshi's
+    own normalised price: circular, never a fair price) and a price read within SINGLE_FAIR_AGE (an unknown age counts
+    as too old); a moneyline's chance is then calibrated by calib_fair, as on Buy straight. The idea's own stored
+    chance (up to an hour old, uncalibrated) is never used. Only ever withholds a fair price: with none there is no edge
+    to show and no green Buy. Never raises."""
+    now = now or time.time()
+    try:
+        if not (side.get("fair") and side.get("src")):
+            return None, None, ("no sportsbook line for this game" if not side.get("fair") else
+                                "the board's price for it isn't a sportsbook line")
+        at = float(side.get("fair_at") or 0)
+        if not at or now - at > SINGLE_FAIR_AGE:
+            return None, None, ("the sportsbook price is " + (f"{int((now - at) / 60)} minutes old" if at else "of unknown age")
+                                + "; refresh Build for a new one")
+        fair = float(side["fair"])
+        if kind == "win":
+            return round(min(calib_fair(ticker_sport(tk) or "", fair, tk), fair), 4), "sportsbooks + your record", None
+        return fair, "book line + score model", None
+    except Exception:
+        return None, None, "the fair price couldn't be worked out"
+
+
 def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=False, now=None):
     """Where a single-game Buy idea's fresh price gets its fair chance (issue #255). Before the game: the board's side
     (else the idea's own model chance for a spread/total), exactly as before. Once the game is under way: only
@@ -19047,7 +19071,14 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
         live = bool(row_live) or bool(kick and float(kick) <= now) or started(x)
     except Exception:
         live = bool(row_live) or bool(kick and float(kick) <= now)
-    if not live:                                       # before the game: unchanged (the board's fair, else the model's)
+    if not live and CFG.get("idea_pre_strict", True):  # (#286) before the game: Buy straight's own pricing rules
+        f, how, why = idea_pre_fair(tk, side, kind, now)
+        if f is not None:
+            out.update(fair=f, how=how, src=how)
+        else:
+            out["nofair"] = why
+        return out
+    if not live:                                       # switch off: the board's fair, else the model's (as before #286)
         f = side.get("fair") or pfair or None
         if f:
             out["fair"] = float(f)
