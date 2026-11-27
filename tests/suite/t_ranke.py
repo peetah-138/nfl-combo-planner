@@ -1,8 +1,7 @@
 # CHECK: group=engine
 # rank-e: display and ranking only. (#243) Best bets rank, size and simulate on the chance corrected by YOUR record
 # (calib_fair), not the books' raw one; (#204) the flip note states expected dollars after fees on that same chance and
-# never calls a flip good when they fall; (#265) a loss guard both the stop-loss switch and the learned loss cut use is
-# judged on the decision that is really running. Nothing is bought or sold here.
+# never calls a flip good when they fall. Nothing is bought or sold here.
 import os, time, tempfile, importlib.util
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
@@ -113,24 +112,10 @@ ok("D: the flip note states expected dollars before and after, after fees, on yo
    ok_ and "Expected profit at $20" in note and "after fees" in note)
 ok("D: a likelier flip whose expected dollars fall is not called a Good flip", "Good flip" not in note)
 
-# E: the loss-guard judge counts the decision that is running (#265)
-T1 = TA
-c1 = {"stake": 10.0, "pl": -10.0, "pays": 20.0, "legs": [{"ticker": T1, "p": 0.6}]}
-slp = [(now + 100 * k, {T1: (ch, "AAA 40-50 BBB " + sc)}) for k, (ch, sc) in enumerate(
-    [(0.3, "Q3 6:00"), (0.3, "Q3 5:00"), (0.3, "Q3 4:00"), (0.3, "Q3 3:00"), (0.1, "Q4 5:00"), (0.0, "Final")])]
-base = {"sl_prog": 0.5, "sl_drop": 0.2, "sl_checks": 3, "sl_span": 180, "sl_gap": 300}
-off = E.knob_judge("sl", [(c1, None, slp)], dict(base, sl_auto=0), "sl_drop", 0.25)
-ok("E: switch off and no cut: a step of a shared guard changes nothing (a feature that is off cannot justify it)",
-   off[0][1] == 0.0)
-on = E.knob_judge("sl", [(c1, None, slp)], dict(base, sl_auto=1), "sl_drop", 0.25)
-ok("E: switch on: the step is judged on the switch's replay as before",
-   abs(on[0][1] - (E._knob_res_sl(c1, slp, dict(base, sl_drop=0.25), {}) - E._knob_res_sl(c1, slp, base, {}))) < 1e-9)
-seen = []
-real = E._knob_res_replay
-E._knob_res_replay = lambda c_, path, slp_, v, cache, hair=False: seen.append(v["sl_drop"]) or (-5.0 if v["sl_drop"] < 0.22 else -1.0)
-cutv = dict(base, sl_auto=0, smart_loss=0.15, smart_floor=1.5, smart_lam=0.35)
-cut = E.knob_judge("sl", [(c1, [("p",)], slp)], cutv, "sl_drop", 0.25)
-E._knob_res_replay = real
-ok("E: loss cut on (switch off): the step is judged on the cut's real price replay", seen and abs(cut[0][1] - 4.0) < 1e-9)
-ok("E: the live loss guards, the tuner and the cut itself are untouched (judge only)",
-   {"sl_prog", "sl_drop", "sl_checks", "sl_span", "sl_gap"} <= set(E.KNOB_LIVE))
+# F: an edge that survives calibration but is under the single bar (2.5c after fee, 4%) is dropped like single_candidates does
+cs = E._cand("single", "nba", [{"ticker": "T", "event": "e", "pick": "Stars", "p": 0.60, "fair": 0.665}], 0.665, 0.08, "", price=0.60)
+calib({})
+ok("F: with no record the single is kept (raw edge about 5c after the fee)", E._best_calibrate(cs) is not None)
+calib({"all": [(0.65, 0.80, 0.665, 0.62, 3000)]})
+ok("F: on your record the edge is under 1c, positive but under the single bar, so it is dropped", E._best_calibrate(cs) is None)
+calib({})

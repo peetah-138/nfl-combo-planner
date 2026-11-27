@@ -26731,27 +26731,6 @@ def _knob_res_sl(c, slp, vals, cache, hair=False):
     return cache[key]
 
 
-KNOB_SL_SHARED = ("sl_prog", "sl_drop", "sl_checks", "sl_span", "sl_gap")   # the guards BOTH the stop-loss switch and the learned loss cut use
-
-
-def _knob_sl_total(c, path, slp, new, cur, cache, hair):
-    """(#265) One combo's change from a step of a loss guard that two decisions share. The guards gate the learned loss
-    cut (smart sell's) as well as the stop-loss switch, but the step used to be judged on the switch's replay alone, so a
-    step could be justified by a feature that is off and move a number a live feature uses. Now the bet is judged on the
-    decision that is really running: the learned loss cut's replay against the bet's real price record when the cut is on
-    (`smart_loss` set) and there is a record, else the switch's replay when the switch is on, else nothing (held to its
-    settled result). One replay per bet, never both added, because both would sell the same bet. Report/judge side only:
-    the guards, the cut and its gating are untouched."""
-    def res(v):
-        cut_on = v.get("smart_loss") and path and all(k in v for k in ("smart_floor", "smart_lam"))
-        if cut_on:
-            return _knob_res_replay(c, path, slp, v, cache, hair)
-        if v.get("sl_auto", 1):
-            return _knob_res_sl(c, slp, v, cache, hair)
-        return c["pl"]
-    return res(new) - res(cur)
-
-
 def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
     """The per-bet change [(kick, dollars gained, stake)] of moving `name` from cur[name] to `to`, every other knob at
     the group's current value, by the judge the registry names: smart sell's replay (`_replay`, the loss cut only where
@@ -26794,8 +26773,6 @@ def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
         if judge == "sl" and name == "sl_auto":      # the stop-loss's own switch: on = what it would have got, off = held
             d = (_knob_res_sl(c, slp, new, cache, hair) if new[name] else c["pl"]) - \
                 (_knob_res_sl(c, slp, cur, cache, hair) if cur[name] else c["pl"])
-        elif judge == "sl" and name in KNOB_SL_SHARED:
-            d = _knob_sl_total(c, path, slp, new, cur, cache, hair)
         elif judge == "sl":
             d = _knob_res_sl(c, slp, new, cache, hair) - _knob_res_sl(c, slp, cur, cache, hair)
         else:
@@ -31411,6 +31388,8 @@ def _best_calibrate(c):
             q = legs[0]["fair"]
             p = c["price"]
             ret = (q - p - single_fee(p)) / p
+            if q - p - single_fee(p) < SINGLE_MIN_EDGE or ret < 0.04:   # single_candidates' own bar, on the corrected chance
+                return None
         if ret <= 0:
             return None
         return dict(c, legs=legs, chance=round(q, 4), ret=round(ret, 4), edge=round(ret if c["kind"] == "combo" else ret * c["price"], 4),
