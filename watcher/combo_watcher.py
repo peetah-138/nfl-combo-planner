@@ -3850,6 +3850,16 @@ def webapp_main():
                     "Smart sell is watching this one now."}
         if a in ("idea_dismiss", "idea_undo", "idea_depth"):    # Live Buy ideas: hide / bring back / a look at the book (no orders)
             return idea_act(a, d, t)
+        if a == "hedge_dismiss":                    # hide one hedge card for today (display only: no order, no lock, no Pause check)
+            if not re.fullmatch(r"[A-Z0-9._-]{3,120}", t):
+                return {"ok": False, "msg": "That bet isn't recognized."}
+            try:
+                ok = A.hedge_dismiss(t)
+            except Exception as err:
+                log("hedge dismiss failed:", type(err).__name__, err)
+                ok = False
+            LIVE["at"] = 0
+            return {"ok": ok, "msg": "Hedge hidden. It comes back if the numbers change a lot, or tomorrow." if ok else "Couldn't hide that just now."}
         if a == "panel_whatif":                     # reads only, no app lock: the card's numbers at Pete's own amounts
             ids = d.get("ids")
             try:
