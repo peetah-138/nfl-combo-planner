@@ -1416,7 +1416,7 @@ value approves nothing and shows as a blocker on the card.
 
 A week later the step is re-scored on the bets since. If they lost money it is reverted automatically (and only newer bets
 count afterwards); otherwise it is kept. Every step, keep and revert is logged with before/after and the evidence and shown on
-the full-auto card, for example "Learned: NBA combo bar +0 points -> +0.5 points because ...".
+the full-auto card, for example "Raised the NBA combo bar a little: on 82 past bets this would have made $6.10 more after fees." (the evidence numbers stay in the saved record).
 
 Master switch `fa_lessons`: default ON, effective only while full auto is on. Its own tap on the card
 (`full_auto_lessons`), not part of `full_auto_set`.
