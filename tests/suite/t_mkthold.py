@@ -162,6 +162,23 @@ E.CFG["mkt_hold"] = True
 E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
 
 
+# #551a: one run where the group is NOT earned at all must not lift its veto: when the data turns good again the 2 h
+# clock starts from zero (before: the not-earned run dropped the veto and the next good run was earned at once).
+USELESS = lambda i, mid, fb: mid                                         # the books add nothing: not earned
+load(BAD, at=T0)
+ok("#551a setup: vetoed", "nba|win|pre" in E.MKT_VETO)
+r = load(USELESS, keep_veto=True, at=T0 + 600)
+ok("#551a a not-earned run: weight 0, and the veto is kept with its clock restarted",
+   r["w"] == 0.0 and "nba|win|pre" in E.MKT_VETO and E.MKT_VETO["nba|win|pre"]["since"] is None, (r, E.MKT_VETO))
+r = load(GOOD, keep_veto=True, at=T0 + 1200)
+ok("#551a the data turns good right after: still vetoed (the wait is not skipped)", r["w"] == 0.0 and r["vetoed"], r)
+r = E.mkt_learn(now=T0 + 1200 + 7300)["nba|win|pre"]
+ok("#551a ...and it lifts after 2 h of clear runs, as before", r["w"] > 0 and not r["vetoed"] and "nba|win|pre" not in E.MKT_VETO, r)
+E.MKT_VETO.clear()
+r = load(USELESS)
+ok("#551a a group never vetoed that is not earned leaves no veto behind", r["w"] == 0.0 and not E.MKT_VETO, r)
+
+
 # 8. #474: the true out-of-sample test. A weight picked on the OLDEST 70% must also beat the mid on the newest 30% it
 #    never saw. The books are 80% of the way right in the oldest 70% (the 70% pick is the top weight, 1.0) but only 60% of the way
 #    right in the newest 30% (a weight of 1.0 loses there; the all-rows weight, 0.75, still gains). Books and Kalshi's mid
