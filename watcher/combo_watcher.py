@@ -4511,14 +4511,14 @@ def webapp_main():
                     # the fair chance (#255): before the game the board's (spreads/totals: the model's), as before; a
                     # game under way only a live one (a fresh live line, else the live model), never the board's number
                     fi = A.idea_single_fair(tk, side, row.get("pfair"), dpt, kick=row.get("kick"),
-                                            row_live=bool(row.get("live")))
+                                            row_live=bool(row.get("live")), pfair_at=row.get("ts"))
                     if fi["over"]:
                         return {"ok": False, "gone": True, "msg": "That game is over. Kalshi settles it when the result is in."}
                     fair = fi["fair"]
                     if fair is None and fi["live"]:      # (#255) say why: this card shows Kalshi's price only, a manual tap
                         log(f"idea {str(d.get('id', ''))[:12]} {tk}: no live fair price ({fi['nofair'] or 'none'}); "
                             "card shows Kalshi's price only, no edge claimed")
-                    if fair is None and not fi["live"]:
+                    if fair is None and not fi["live"] and not fi["nofair"]:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
                     own, bad = A.own_stake(d.get("stake"))   # Pete's own amount (#145), checked here
                     if bad:

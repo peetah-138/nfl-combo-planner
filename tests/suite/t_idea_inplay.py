@@ -25,7 +25,7 @@ LT = LIVE_EV + "-BOS"
 now = time.time()
 BOOK = {"ask": 0.55, "bid": 0.53, "spread": 0.02, "ask_size": 500}
 pre_side = {"ticker": T, "pick": "Denver Nuggets", "event": EV, "exp": mk[T]["expected_expiration_time"], "fair": 0.80,
-            "src": "pinnacle"}
+            "src": "pinnacle", "fair_at": now - 60}       # read a minute ago (#286: older than 12 min is stale)
 live_side = {"ticker": LT, "pick": "Boston Celtics", "event": LIVE_EV, "exp": mk[LT]["expected_expiration_time"],
              "fair": 0.80, "src": "pinnacle"}
 ok("the fake's first game is under way, the Denver game isn't", E.started(live_side) and not E.started(pre_side))
@@ -34,10 +34,10 @@ ok("the fake's first game is under way, the Denver game isn't", E.started(live_s
 f = E.idea_single_fair(T, pre_side, 0.71, BOOK)
 ok(f"pregame: the board's fair exactly (0.80), labelled sportsbooks, not live ({f})",
    f["fair"] == 0.80 and f["src"] == "sportsbooks" and not f["live"] and not f["warn"] and not f["over"])
-f = E.idea_single_fair(T, None, 0.71, BOOK)
-ok(f"pregame with no board side: the idea's own chance as before (0.71, {f['src']})", f["fair"] == 0.71 and not f["live"])
+f = E.idea_single_fair(T, None, 0.71, BOOK, pfair_at=now - 60)
+ok(f"pregame with no board side: the idea's own chance while fresh (0.71, {f['src']})", f["fair"] == 0.71 and not f["live"])
 f = E.idea_single_fair(T, dict(pre_side, src=None, fair=0.6), None, BOOK)
-ok("pregame with Kalshi's own chance on the board: said so", f["fair"] == 0.6 and f["src"] == "Kalshi's price")
+ok("pregame with Kalshi's own chance on the board (circular): no fair price (#286)", f["fair"] is None and f["nofair"])
 
 # ---- under way with a fresh live sportsbook line: that line, said so
 fresh = dict(live_side, fair=0.66, line_live=True, line_at=now - 30)
@@ -134,7 +134,7 @@ ok("the combo idea with no fair price is priced at the smallest usual stake, nev
    "combo_offer(k, own if small is None else small)" in blk and '"rec": small, "own": False' in blk)
 ok("a live fair of exactly 0 is a fair price, not a crash (is not None, never truthiness)",
    "if fair else" not in blk.split('if row["n"] == 1')[1].split("if row[\"kick\"]")[0])
-f = E.idea_single_fair(T, None, 0.71, BOOK)
+f = E.idea_single_fair(T, None, 0.71, BOOK, pfair_at=now - 60)
 ok(f"pregame with no board side: labelled honestly ({f['src']})", f["src"] == "from when it was found")
 
 # ---- Build's live side (screen_live) holds Kalshi's mid with the odds' line_live/line_at still on it: never a "live line"
