@@ -1,4 +1,0 @@
-- **Housekeeping pass (#544, #542, #433, #478, #559 notes).** No product behaviour changed.
-  - Already on develop, nothing built: #544 (CLAUDE.md hard rule 9 already points at `docs/LOG_ACCESS.md` and the tool; one description of the rules), #542 (Settings wording names every sale the switch covers; CLAUDE.md folded it in release 142), #433 (signal_shadow DDL once per open database, PR #534), #478 (PR #546).
-  - Test added (`t_push_gate`): a held Buy-idea push goes out at the end of a real `panel_collect` pass, once, and only after Smart Buy's verdict is written.
-  - `t_orderbook` "caps at the whole contracts on sale" passes on develop. It reads the watcher's source from `wtest/combo_watcher.py`, which only `tests/run_checks.sh` sets up; run on its own outside that folder it reads an empty string and fails. Not a code bug.
