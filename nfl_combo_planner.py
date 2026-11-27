@@ -1743,6 +1743,10 @@ def attach_fair(games, book):
             g = bg[i] if src and BOOK_GAMES and all(bg) else None   # a line read after the start is a live line
             s["line_at"], s["line_live"] = (g.get("at"), bool(g.get("inplay"))) if g else (None, False)
             s["sharp_line"] = bool(g and g.get("sharp"))   # priced on the odds service's line, not free lines only
+        for t in ties:                            # a draw is priced off the same game line as its two teams (#182)
+            t["sharp_line"] = bool(src and any(s.get("sharp_line") for s in sides))
+            t["line_at"], t["line_live"] = next(((s["line_at"], s["line_live"]) for s in sides if s.get("line_at")),
+                                                (None, False))
         news[e] = max(abs(s["fair"] - k) for s, k in zip(sides_all, kal_all)) if src else 0
     return matched, news
 
@@ -17396,6 +17400,16 @@ def books_now(tickers, budget=None):
             out[t] = got[1]
         else:
             need.append(t)
+    if len(need) > 1:
+        try:
+            filled = books_batch(need, timeout=max(2.0, min(10.0, budget)))   # one call for many books (#225); whatever it misses is read singly
+        except Exception:
+            filled = set()
+        BOOK_BATCH_STATS["fallbacks"] += len(need) - len(filled)
+        need = [t for t in need if t not in filled]
+        for t in filled:
+            got = BOOK_LADDER.get(t)
+            out[t] = got[1] if got else None
     ths = [threading.Thread(target=book_asks, args=(t,), daemon=True) for t in need]
     for th in ths:
         th.start()
@@ -28630,11 +28644,16 @@ def book_depth(ticker, max_age=60):
         r = requests.get(f"{KALSHI}/markets/{ticker}/orderbook", timeout=10)
         if not r.ok:
             return None                           # 429/5xx: unknown, not an empty book (and not cached)
-        js = r.json()
-        info = book_info(js)
-        info["bid_size"] = _bid_size(js)          # contracts at the best YES bid (a manual sale's depth, #238)
+        return _book_keep(ticker, r.json(), now)
     except (requests.RequestException, ValueError):
         return None
+
+
+def _book_keep(ticker, js, now):
+    """Read one order book answer and keep it (the depth cache, the ask ladder, the price recorder); the same for a
+    single read and for one book out of a batch read, so both give identical numbers. May raise on an odd answer."""
+    info = book_info(js)
+    info["bid_size"] = _bid_size(js)              # contracts at the best YES bid (a manual sale's depth, #238)
     BOOK_DEPTH[ticker] = (now, info)
     BOOK_LADDER[ticker] = (now, _ask_ladder(js))      # every ask level, for the spreads/totals fill (issue #117 B)
     price_seen_book(ticker, info)                     # Smart Buy's price recorder (no new call)
@@ -28643,6 +28662,45 @@ def book_depth(ticker, max_age=60):
             BOOK_DEPTH.pop(k, None)
             BOOK_LADDER.pop(k, None)
     return info
+
+
+BOOK_BATCH_MAX = 100    # Kalshi's GET /markets/orderbooks takes up to 100 tickers (#225)
+BOOK_BATCH_STATS = {"batch_calls": 0, "batch_books": 0, "fallbacks": 0}
+
+
+def books_batch(tickers, timeout=10):
+    """Read several order books with Kalshi's batch endpoint (GET /markets/orderbooks, up to 100 tickers a call) and
+    keep each one exactly as `book_depth` would. Returns the set of tickers it filled. Reads only, and it fails closed:
+    a failed call, an odd answer, or a ticker the answer doesn't carry is simply left out of the set (nothing kept, nothing
+    guessed), so the caller reads that one the old single way. One bad book never keeps the others out (#225)."""
+    done = set()
+    tks = list(dict.fromkeys(t for t in tickers if t))
+    for i in range(0, len(tks), BOOK_BATCH_MAX):
+        chunk = tks[i:i + BOOK_BATCH_MAX]
+        if len(chunk) < 2:
+            continue                              # one book: the single read is the same one call
+        try:
+            r = requests.get(f"{KALSHI}/markets/orderbooks", params={"tickers": chunk}, timeout=timeout)
+            if not r.ok:
+                continue
+            rows = r.json().get("orderbooks")
+            if not isinstance(rows, list):
+                continue
+        except (requests.RequestException, ValueError, AttributeError):
+            continue
+        BOOK_BATCH_STATS["batch_calls"] += 1
+        now = time.time()
+        for row in rows:
+            try:
+                t = row["ticker"]
+                if t not in chunk or t in done or not isinstance(row.get("orderbook_fp", row.get("orderbook")), dict):
+                    continue
+                _book_keep(t, row, now)
+                done.add(t)
+                BOOK_BATCH_STATS["batch_books"] += 1
+            except Exception:
+                continue
+    return done
 
 
 def book_depth_shared(ticker):
