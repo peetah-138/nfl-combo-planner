@@ -1956,11 +1956,61 @@ def _pcents(x):
 
 
 def promote_game(ticker):
-    """The game a bet belongs to (bets on one game move together, so the range is built on games, not rows): the
-    ticker's second '-' part for a single; a combo (KXMVE...) is its own cluster."""
+    """The REAL game a single bet is on (bets on one game move together, so the range is built on games, not rows):
+    the ticker's second '-' part. A combo (KXMVE...) does not name its game; see promote_games()."""
     t = str(ticker or "")
     parts = t.split("-")
     return t if t.startswith("KXMVE") or len(parts) < 3 else parts[1]
+
+
+def promote_games(ticker, legs=None):
+    """The real games a bet touches, as a sorted tuple. A single: its one game. A combo: the games of all its legs
+    (`legs` maps combo ticker -> list of leg tickers, from the bets table). A combo whose legs are unknown falls back
+    to its own ticker (nothing better is known)."""
+    t = str(ticker or "")
+    if t.startswith("KXMVE"):
+        ls = (legs or {}).get(t) or []
+        gs = {promote_game(x) for x in ls if x and not str(x).startswith("KXMVE")}
+        return tuple(sorted(gs)) or (t,)
+    return (promote_game(t),)
+
+
+def promote_legs(q):
+    """combo ticker -> its leg tickers, from the bets table the app fills (empty if it does not exist yet)."""
+    if not _phave(q, "bets"):
+        return {}
+    out = {}
+    for r in _prows(q, "select combo, legs from bets where legs is not null limit ?", (PROMOTE["cap"],)):
+        try:
+            ls = json.loads(r["legs"]) if isinstance(r["legs"], str) else r["legs"]
+            out[r["combo"]] = [x if isinstance(x, str) else (x or {}).get("ticker") for x in ls or []]
+        except Exception:
+            continue
+    return out
+
+
+def promote_cluster(obs):
+    """Put every decision in the cluster of REAL games it belongs to. A decision names one game (`game`) or several
+    (`games`, a combo's legs). Decisions that share any game are merged into one cluster (a combo and the singles or
+    other combos on the same game win and lose together), so correlated outcomes count once. The cluster is keyed by its
+    smallest game key; returns copies with `game` set to it."""
+    parent = {}
+
+    def find(x):
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    sets = []
+    for o in obs:
+        gs = [str(g) for g in (o.get("games") or (o.get("game"),))] or [str(o.get("game"))]
+        sets.append(gs)
+        for g in gs[1:]:
+            a, b = find(gs[0]), find(g)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    return [dict(o, game=find(gs[0])) for o, gs in zip(obs, sets)]
 
 
 def promote_first(obs):
@@ -1971,7 +2021,7 @@ def promote_first(obs):
         k = (o["var"], o["pos"])
         if k not in best or o["ts"] < best[k]["ts"]:
             best[k] = o
-    return list(best.values())
+    return promote_cluster(list(best.values()))
 
 
 def promote_ranges(game_nets, levels, rng, boot):
@@ -2112,6 +2162,7 @@ def promote_obs_mom(q, **_):
     against holding to the end. Bets really sold ('cashed') have no known hold result, so they are left out."""
     if not _phave(q, "mom_shadow", "mom_after"):
         return [], 2, {}, ""
+    legs = promote_legs(q)
     rows = _prows(q, "select s.ts, s.ticker, s.cost, s.m_protect, s.m_cut, a.o_net0, a.o30, a.o60, a.outcome, a.payout "
                      "from mom_shadow s join mom_after a on a.sid = s.sid where (s.m_protect=1 or s.m_cut=1) and "
                      "a.outcome in ('won','lost','cashed') order by s.ts desc limit ?", (PROMOTE["cap"],))
@@ -2127,7 +2178,7 @@ def promote_obs_mom(q, **_):
             if r["o_net0"] is None or r["payout"] is None:
                 continue
             late = [x for x in (r["o30"], r["o60"]) if x is not None]
-            obs.append({"var": var, "pos": pos, "game": promote_game(r["ticker"]), "ts": r["ts"],
+            obs.append({"var": var, "pos": pos, "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "ts": r["ts"],
                         "v": float(r["o_net0"]) - float(r["payout"]),
                         "lag": (min(late) - float(r["payout"])) if late else None})
     note = f"{len(cashed)} bets that were really sold are left out, since what holding would have paid is unknown." if cashed else ""
@@ -2190,12 +2241,13 @@ def promote_obs_expo(q, **_):
     for r in rows:
         try:
             g = json.loads(r["games"]) if isinstance(r["games"], str) else r["games"]
-            game = str(next(iter(g))) if g else str(r["pos"])
+            games = tuple(sorted(str(x) for x in g)) if g else (str(r["pos"]),)
         except Exception:
-            game = str(r["pos"])
+            games = (str(r["pos"]),)
+        game = games[0]
         rules = [x.strip() for x in str(r["blocked"]).split(",") if x.strip()]
         for var in rules + ["any"]:
-            obs.append({"var": var, "pos": r["pos"], "game": game, "ts": r["ts"], "v": -float(r["net"]), "lag": None})
+            obs.append({"var": var, "pos": r["pos"], "game": game, "games": games, "ts": r["ts"], "v": -float(r["net"]), "lag": None})
     return obs, 5, {"both_sides": "No both sides of a game", "game_cap": "Limit on one game",
                     "league_cap": "Limit on one league", "day_cap": "Limit on one day", "any": "Any of these rules"}, \
         "It has no late-order replay yet, so it cannot pass."
@@ -2206,6 +2258,7 @@ def promote_obs_cap(q, **_):
     selling then made against holding. Off by default: no rows until it is switched on, and this never switches it on."""
     if not _phave(q, "exit_cap_shadow"):
         return [], 1, {}, ""
+    legs = promote_legs(q)
     res = promote_results(q)
     rows = _prows(q, "select ts, ticker, side, n, net from exit_cap_shadow where live_decision='hold' and "
                      "alt_decision is not null and alt_decision!='hold' and net is not null order by ts desc limit ?",
@@ -2215,7 +2268,7 @@ def promote_obs_cap(q, **_):
         if r["ticker"] not in res:
             continue
         won = (res[r["ticker"]] == 1) == (r["side"] == "yes")
-        obs.append({"var": "cap", "pos": f"{r['ticker']}|{r['side']}", "game": promote_game(r["ticker"]), "ts": r["ts"],
+        obs.append({"var": "cap", "pos": f"{r['ticker']}|{r['side']}", "game": promote_game(r["ticker"]), "games": promote_games(r["ticker"], legs), "ts": r["ts"],
                     "v": float(r["net"]) - (float(r["n"] or 0) if won else 0.0), "lag": None})
     return obs, 1, {"cap": "Capped sell line"}, "It has no late-order replay yet, so it cannot pass."
 
@@ -2240,6 +2293,14 @@ def promote_report(q, cfg=None, fee=None, now=None):
     rows and a resampling each), so it is only ever run from the timer or a background thread, never in a request."""
     cfg = cfg or {}
     rows = []
+    told, streak = dict(PROMOTE["pushed"]), {}
+    for path, into in ((PROMOTE_FILE, told), (PROMOTE_STREAK_FILE, streak)):
+        try:
+            with open(path, encoding="utf-8") as f:
+                got = json.load(f)
+            into.update(got if isinstance(got, dict) else {})
+        except (OSError, ValueError):
+            pass
     for key, name, what, fn in PROMOTE_SIGNALS:
         row = {"key": key, "name": name, "what": what, "note": ""}
         try:
@@ -2248,6 +2309,16 @@ def promote_report(q, cfg=None, fee=None, now=None):
             row["note"] = note
             if key == "cap" and not row["n"] and cfg.get("exit_cap_shadow") is not True:
                 row["reason"] = "This recorder is switched off, so nothing has been recorded."
+            if row.get("state") == "pass":
+                n_ = int((streak.get(key) or {}).get("n", 0)) if row.get("push_ok") else 0
+                row["streak"], row["streak_need"] = min(n_, PROMOTE_STREAK), PROMOTE_STREAK
+                if key in told:      # the one real "go": the stricter bar was cleared on 3 batches of new games and you were told
+                    row.update(ready=True, status="Ready: say go",
+                               reason=f"It cleared the strict bar on {PROMOTE_STREAK} batches of new games, and you were told. Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games.")
+                else:
+                    row.update(ready=False, status="Looking good, not proven yet",
+                               reason=f"Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games, and it holds up so far. "
+                                      f"Streak {row['streak']} of {PROMOTE_STREAK}: it has to keep holding on new games before you are told it is ready.")
         except Exception as err:
             log("promote:", key, type(err).__name__, err)
             row.update(state="wait", status="Not enough data", reason="Could not be read just now.", n=0)

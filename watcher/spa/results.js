@@ -286,10 +286,10 @@ function cutCard(cs){if(!cs||!cs.length)return `<div class="srow"><div class="l"
 function promoBlock(p){if(!p||p.off)return '';
  if(p.computing)return `<div class="card promo"><h2 style="margin:0">Ready to promote?</h2><div class="m" style="padding:6px 0 2px">Checking the paper tests…</div></div>`;
  const rows=p.signals||[];if(!rows.length)return '';
- const cls={pass:'pass',fail:'fail',wait:'wait',na:'na'};
+ const cls={pass:'look',fail:'fail',wait:'wait',na:'na'};const kls=r=>r.ready?'ready':(cls[r.state]||'wait');
  const num=r=>r.state==='na'||!r.n?'':`<div class="pnum"><b class="${r.net>=0?'up':'down'}">${smoney(r.net)}</b> after fees <span class="m">· ${r.n} bets · ${r.games} games</span></div>`+(r.low!=null&&r.n>=20?`<div class="m prange">Likely between ${smoney(r.low)} and ${smoney(r.high)}${r.variant?' · best setting: '+esc(r.variant):''}</div>`:'');
  return `<div class="card promo"><h2 style="margin:0">Ready to promote?</h2>
   <div class="m prsub">Paper tests, counted in dollars after fees. This only reports; nothing turns on by itself.</div>
-  ${rows.map(r=>`<div class="prow ${cls[r.state]||'wait'}"><div class="prtop"><b>${esc(r.name)}</b><span class="pchip">${esc(r.status)}</span></div>
+  ${rows.map(r=>`<div class="prow ${kls(r)}"><div class="prtop"><b>${esc(r.name)}</b><span class="pchip">${esc(r.status)}</span></div>
    ${r.what?`<div class="m prwhat">${esc(r.what)}</div>`:''}<div class="prwhy">${esc(r.reason||'')}</div>${num(r)}${r.note?`<div class="m prange">${esc(r.note)}</div>`:''}</div>`).join('')}
   ${p.bar?`<div class="m prbar">${esc(p.bar)}</div>`:''}</div>`;}

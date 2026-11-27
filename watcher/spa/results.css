@@ -21,7 +21,7 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 .promo .prsub{font-size:12.5px;padding:4px 0 8px}.prow{border-top:1px solid var(--line);padding:12px 0;display:grid;gap:4px}
 .prtop{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}.prtop b{font-size:14.5px;min-width:0;flex:1 1 180px}
 .pchip{font-size:11.5px;font-weight:800;padding:4px 10px;border-radius:99px;background:var(--panel2);color:var(--sub);white-space:nowrap;border:1px solid var(--line)}
-.prow.pass .pchip{background:var(--yesbg);color:var(--yes);border-color:transparent}.prow.fail .pchip{background:var(--nobg);color:var(--no);border-color:transparent}
+.prow.ready .pchip{background:var(--yesbg);color:var(--yes);border-color:transparent}.prow.look .pchip{background:rgba(217,160,40,.16);color:#e0b04a;border-color:rgba(217,160,40,.45)}@media (prefers-color-scheme:light){.prow.look .pchip{color:#8a5d06}}.prow.fail .pchip{background:var(--nobg);color:var(--no);border-color:transparent}
 .prow.na .prtop b,.prow.na .prwhy{color:var(--sub)}.prwhat{font-size:12.5px}.prwhy{font-size:13.5px}.pnum{font-size:13.5px}.prange{font-size:12.5px}.prbar{font-size:12px;border-top:1px solid var(--line);padding-top:10px;margin-top:2px}
 
 /* #290: Smart Buy league lines: calmer second line, and more readable grey than the default muted text */

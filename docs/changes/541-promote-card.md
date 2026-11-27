@@ -40,6 +40,19 @@ card's 99% "Passing" label; and the push needs the pass to hold on **3 successiv
 bets a game, a look after every game): **1.0% ever pushed with one setting (3,200 seasons) and 1.3% with three settings tried (1,200 seasons)**, against 6-8% of the same seasons in which the card's own 99% label reads Passing at some point. `t_promote.py` repeats the simulation and fails if the rate
 passes 3%.
 
+**Real games, not combos (correlated bets):** a real game often spawns several combos (and singles) that win and lose
+together. Counting each combo as its own "game" let three combos from ONE game look like three new games, so one lucky
+game could beat the "3 batches of newly settled games" rule (19.7% of zero-edge seasons ever pushed, 1,000 simulated).
+Now every decision is clustered by the REAL game: a single by its game, a combo by the games of its legs (read from the
+`bets` table's leg tickers; a combo whose legs are unknown counts as its own unit, since nothing better is known), and
+two bets that share any game are merged into one cluster. Zero-edge seasons with 3 correlated combos per real game: **1.2% ever pushed (1,000 seasons)**; the old per-combo code fails the same test (14% over 250 seasons in `t_promote.py`). The minimum sample (40+ clusters, 15+ in the latest 30%), the
+"newly settled" streak, the range and the 70/30 split all count clusters, not combos.
+
+**What the chip says (no false "go"):** the judge can read "passes" in about 5-7% of zero-edge seasons at some point, so
+that is no longer shown as a green "Passing". It reads **"Looking good, not proven yet"** in calm amber, with the streak
+("Streak 1 of 3: it has to keep holding on new games before you are told it is ready"). Only a signal that already cleared
+the strict bar on 3 batches of new games and was pushed shows the green **"Ready: say go"**.
+
 **Where it lives and why:** one fenced block in `watcher/combo_watcher.py` ("READY TO PROMOTE (report only)"), pure
 (`q(sql, args)` rows, config, time), so the Air's updater ships it with no change to the updater, and the engine has
 zero diff. Reads are read-only SQL with a `LIMIT 50000`. `GET /app/api/promote` returns a cache (15 minutes) rebuilt on

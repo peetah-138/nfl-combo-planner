@@ -150,6 +150,33 @@ def season(seed, nv, games=80, per=2, mu=0.0):
 for nv_, seeds_, bound_ in ((1, 250, 0.03), (3, 120, 0.03)):
     pushed_ = sum(season(1000 + s_, nv_) for s_ in range(seeds_))
     ok(f"C4 zero-edge 80-game season, {nv_} setting(s), {seeds_} seasons: ever pushed {pushed_}/{seeds_} = {100 * pushed_ / seeds_:.1f}% (bound {bound_ * 100:.0f}%)", pushed_ <= bound_ * seeds_)
+# CORRELATED COMBOS: a real game spawns several combos (a bet on the same game from different angles) and they win and lose
+# together. Counting each combo as its own game made three combos from ONE game look like three new games, so the
+# "3 successive batches of newly settled games" streak was beaten by one lucky game (19.7% ever pushed over 1000 seasons
+# on the old code). Here each real game spawns 3 combos sharing the game's result; every combo names its own ticker as
+# `game` (what the old code clustered on) and the real game in `games`; the judge must cluster by the real game.
+def season_corr(seed, nv=1, games=80, combos=3, mu=0.0, shared=True):
+    rg = _r.Random(seed); obs = []; st = None
+    for g in range(games):
+        shock = rg.gauss(mu, 5)
+        for k in range(nv):
+            for c in range(combos):
+                v = shock + rg.gauss(0, 1.5) if shared else rg.gauss(mu, 5)
+                obs.append({"var": f"v{k}", "pos": f"c{g}_{k}_{c}", "game": f"KXMVE-{g}-{c}", "games": (f"G{g}",), "ts": 1000 + g * 100, "v": v, "lag": v + rg.gauss(0, 1)})
+        st = W.promote_streak_step(st, W.promote_judge(obs, nv))
+        if st["n"] >= W.PROMOTE_STREAK:
+            return True
+    return False
+CORR_SEASONS = int(os.environ.get("CORR_SEASONS", "250"))
+corr_ = sum(season_corr(20000 + s_) for s_ in range(CORR_SEASONS))
+ok(f"C5 zero-edge season, 3 correlated combos per real game, {CORR_SEASONS} seasons: ever pushed {corr_}/{CORR_SEASONS} = {100 * corr_ / CORR_SEASONS:.1f}% (bound 3%)", corr_ <= 0.03 * CORR_SEASONS)
+cl_ = W.promote_judge([{"var": "a", "pos": f"p{i}", "game": f"KXMVE-{i}", "games": (f"G{i // 3}",), "ts": 1000 + i, "v": 1.0, "lag": 0.5} for i in range(150)], 1)
+ok("C5 150 combos on 50 real games count as 50 games, not 150", cl_["all_games"] == 50 and cl_["games"] == 50 and cl_["n"] == 150)
+mg_ = W.promote_judge([{"var": "a", "pos": "x", "game": "K1", "games": ("A", "B"), "ts": 1, "v": 1.0}, {"var": "a", "pos": "y", "game": "K2", "games": ("B", "C"), "ts": 2, "v": 1.0},
+                       {"var": "a", "pos": "z", "game": "K3", "games": ("D",), "ts": 3, "v": 1.0}], 1)
+ok("C5 two combos that share any game merge into one cluster (A+B and B+C are one; D is another)", mg_["all_games"] == 2)
+legs_ = {"KXMVE-1": ["KXNBAGAME-26NOV23LALBOS-LAL", "KXNBASPREAD-26NOV23LALBOS-LAL5", "KXNFLGAME-26NOV30CINBAL-CIN"]}
+ok("C5 a combo's real games come from its leg tickers; unknown legs fall back to its own ticker", W.promote_games("KXMVE-1", legs_) == ("26NOV23LALBOS", "26NOV30CINBAL") and W.promote_games("KXMVE-9", legs_) == ("KXMVE-9",) and W.promote_games("KXNBAGAME-26NOV23LALBOS-LAL") == ("26NOV23LALBOS",))
 # a real edge still gets through inside a season (+$4 a bet against noise of 5)
 real_ = sum(season(7000 + s_, 1, mu=4.0) for s_ in range(10))
 ok(f"C4 a real edge still reaches a push inside 80 games ({real_}/10 seasons)", real_ >= 8)
