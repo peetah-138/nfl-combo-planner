@@ -9,7 +9,7 @@ The web app's quote for a pregame single-game Buy idea (act `idea`) now takes it
 `idea_pre_fair`, the same rules as `single_buy_quote`:
 
 - (a) the board's price must have been read within `SINGLE_FAIR_AGE` (12 min); an unknown age counts as too old;
-- (b) a moneyline chance goes through `calib_fair`, so the idea and Buy straight show the same fair and edge;
+- (b) a moneyline chance goes through `calib_fair` but only ever the lower of calibrated and raw (`min`), so it can never move up;
 - (c) a board side with no sportsbook `src` (Kalshi's own normalised price, circular) is never a fair price;
 - (d) the idea's stored `pfair` (up to an hour old, uncalibrated) is never used;
 - (e) the suggested stake is the smaller of the old `edge_stake` and Buy straight's `_size` (never larger).

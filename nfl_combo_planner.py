@@ -19002,7 +19002,7 @@ def idea_pre_fair(tk, side, kind, now=None):
                                 + "; refresh Build for a new one")
         fair = float(side["fair"])
         if kind == "win":
-            return round(calib_fair(ticker_sport(tk) or "", fair, tk), 4), "sportsbooks + your record", None
+            return round(min(calib_fair(ticker_sport(tk) or "", fair, tk), fair), 4), "sportsbooks + your record", None
         return fair, "book line + score model", None
     except Exception:
         return None, None, "the fair price couldn't be worked out"

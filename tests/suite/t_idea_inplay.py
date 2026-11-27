@@ -39,6 +39,9 @@ _cf = E.calib_fair
 E.calib_fair = lambda code, fair, ticker=None, table="closes": fair - 0.03      # a record that pulls the band down
 f = E.idea_single_fair(T, pre_side, 0.71, BOOK)
 ok(f"pregame: the same calibration as Buy straight ({f['fair']})", f["fair"] == 0.77)
+E.calib_fair = lambda code, fair, ticker=None, table="closes": fair + 0.05      # a record that would raise it
+f = E.idea_single_fair(T, pre_side, 0.71, BOOK)
+ok(f"pregame: calibration can only lower the chance, never raise it ({f['fair']})", f["fair"] == 0.80)
 E.calib_fair = _cf
 f = E.idea_single_fair(T, dict(pre_side, fair_at=now - E.SINGLE_FAIR_AGE - 60), 0.71, BOOK)
 ok(f"pregame: a board price older than SINGLE_FAIR_AGE is never used ({f['nofair']})",
