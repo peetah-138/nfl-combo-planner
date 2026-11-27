@@ -27,7 +27,7 @@ LIVE = {"f": 0.3, "err": None}
 E.started = lambda leg: True
 E.combo_live_fair = lambda legs, now=None: ((None, LIVE["err"]) if LIVE["err"] else ([dict(legs[0], fair=LIVE["f"])], None))
 E.leg_start = lambda l, s: None
-E.smart_params = lambda tks: {"loss": 0.45}
+E.smart_params = lambda tks, **kw: {"loss": 0.45}
 
 
 def net(offer):

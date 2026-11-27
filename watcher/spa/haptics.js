@@ -46,7 +46,12 @@ const HAPM=[   // [id, event, name, what it does]
  ['M','click','combo://haptic (the iPhone app only)','Only works inside the Pythonista app, so it says so here.']];
 function hapOff(){if(S.hapOff==null){try{S.hapOff=localStorage.getItem('cw_hapoff')==='1';}catch(e){S.hapOff=false;}}return S.hapOff;}
 function hapSet(on){S.hapOff=!on;try{localStorage.setItem('cw_hapoff',on?'':'1');}catch(e){}hswSync();}
+/* #545: on iPhone an error buzz that comes after an await is outside the user's tap and is ignored. So hap('error') there
+   leaves a short-lived note (8 s); the user's next real tap plays it, right inside that tap (hapOwed, called by the global
+   tap listener). The new berr box and toast already show the reason; the note only makes the buzz arrive too. */
+function hapOwed(){const o=S.hapOwe;S.hapOwe=null;if(o&&Date.now()<o.until)hap(o.k);}
 function hap(k){k=k||'light';const now=performance.now(),fresh=now-(S.hapAt||0)<90;
+ if(k==='error'&&APPLE&&!S.inapp&&performance.now()-(S.tapAt||-1e9)>600)S.hapOwe={k,until:Date.now()+8000};   // outside a tap: iOS will ignore it, owe it to the next tap
  if(!HAPN[k]&&fresh)return;S.hapAt=now;const seq=fresh?HAPN[k].slice(1):(HAPN[k]||[0]);   // the tap's own tick counts as a pattern's first
  const hs=window.__haps=window.__haps||[];hs.push(k);if(hs.length>60)hs.shift();
  if(hapOff())return;

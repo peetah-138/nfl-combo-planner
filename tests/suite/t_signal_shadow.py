@@ -130,6 +130,7 @@ def e_unread():
     ok("E the engine outside the recorder never mentions the new tables", not re.search(r"sig_(sharp|related|state)", outside))
     ok("E inside it the tables are only created, inserted into, pruned and counted, never selected from", not re.search(r"select[^\n\"']*from\s+sig_", src[a:b], re.I) and "select * from" not in src[a:b])
     other = open(os.path.join(REPO, "watcher", "combo_watcher.py")).read()
+    other = re.sub(r"# ===== READY TO PROMOTE \(report only\): begin =====.*?# ===== READY TO PROMOTE \(report only\): end =====", "", other, flags=re.S)   # #541: the report-only scoreboard reads them; t_promote.py checks that block
     ok("E the watcher never mentions them", not re.search(r"sig_(sharp|related|state)", other))
     ok("E the single hook in the panel is one wrapped call after the market-fair log", src.count("signal_shadow(code, games, lc_all)") == 1)
 

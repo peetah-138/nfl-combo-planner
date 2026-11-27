@@ -11,15 +11,17 @@ now = time.time()
 E._mkt_table()
 
 
-def load(truth, n=2500, ids=None, kicks=None):
+def load(truth, n=2500, ids=None, kicks=None, keep_veto=False, at=None, gap=0.08):
     """truth(i, mid, fb) -> chance of yes. Row i's game is the i-th oldest; `kicks(i, t)` may override its kick (None = no kick, the log time is used)."""
     E.store_x("delete from mkt_fair")
     E.MKT_W.update(at=0, w={})
+    if not keep_veto:
+        E.MKT_VETO.clear()                             # (#475) each scenario starts with no veto history
     rng = random.Random(11)
     rows = []
     for i in range(n):
         fb = rng.uniform(0.3, 0.7)
-        mid = min(max(fb + rng.choice((-0.08, 0.08)), 0.05), 0.95)
+        mid = min(max(fb + rng.choice((-gap, gap)), 0.05), 0.95)
         y = rng.random() < truth(i, mid, fb)
         t = now - 40 * 86400 + i * 1300
         kick = kicks(i, t) if kicks else t
@@ -27,7 +29,7 @@ def load(truth, n=2500, ids=None, kicks=None):
         rows.append((rid, (kick or t + 3600) - 3600, "nba", "nba", "win", "pre", f"T{i}", kick, mid, mid, fb, mid, 0.0, 0, 0, 0, 0, 2.0,
                      "yes" if y else "no"))
     E._mkt_insert(rows)
-    return E.mkt_learn().get("nba|win|pre") or {}
+    return E.mkt_learn(now=at).get("nba|win|pre") or {}
 
 
 # 1. the books are right the whole time: the weight is earned and the held-out check agrees
@@ -116,4 +118,77 @@ ok("mkt_hold OFF: a group that never earned the in-sample bar still gets 0 (off 
 E.CFG["mkt_hold"] = True
 E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
 
+
+# 8. #475 no flapping near zero. A group whose recency check sits right at zero must not flip between earned and vetoed
+#    from one run to the next: (a) the check must clear zero by hold_se standard errors; (b) a vetoed group stays vetoed
+#    until the margin has held on every run for hold_wait (2 h). Only ever stricter than before.
+NEAR = lambda i, mid, fb: fb if i < 1750 else mid + 0.7 * (fb - mid)      # the newest 30%: the books are barely better than the mid
+GOOD = lambda i, mid, fb: fb
+BAD = lambda i, mid, fb: fb if i < 1750 else mid
+T0 = now + 1000
+r = load(NEAR)
+ok(f"#475 setup: a near-zero recency gain the OLD rule (hold_gain > 0) would have earned (hold_gain={r['hold_gain']})",
+   0 < r["hold_gain"] < E.MKT["hold_se"] * r["se"], r)
+ok("#475 near zero: not earned, the recency gain must clear zero by a standard-error margin", r["w"] == 0.0 and r["vetoed"], r)
+r = load(GOOD)
+ok("#475 a clearly good group is earned at once when it was never vetoed (no 2 h wait on a fresh start)", r["w"] > 0 and not r["vetoed"], r)
+# vetoed first, then the data turns clearly good: stays vetoed for 2 h of clear runs, then lifts
+r = load(BAD, at=T0)
+ok("#475 vetoed (the books failed in the newest games)", r["w"] == 0.0 and r["vetoed"] and "nba|win|pre" in E.MKT_VETO, r)
+r1 = load(GOOD, keep_veto=True, at=T0 + 60)
+ok("#475 first clear run after a veto: still vetoed", r1["w"] == 0.0 and r1["vetoed"], r1)
+r2 = E.mkt_learn(now=T0 + 60 + 3600)["nba|win|pre"]
+ok("#475 an hour later, still clear but under 2 h: still vetoed", r2["w"] == 0.0 and r2["vetoed"], r2)
+r3 = E.mkt_learn(now=T0 + 60 + 7300)["nba|win|pre"]
+ok("#475 2 h of clear runs: the veto lifts and the weight is earned", r3["w"] > 0 and not r3["vetoed"] and "nba|win|pre" not in E.MKT_VETO, r3)
+# vetoed, one clear run, a near-zero run, then clear again: the clock restarts, so no flicker
+load(BAD, at=T0)
+load(GOOD, keep_veto=True, at=T0 + 60)                       # clear: clock starts
+load(NEAR, keep_veto=True, at=T0 + 3600)                     # near zero: not clear, clock cleared
+rg = load(GOOD, keep_veto=True, at=T0 + 7300)                # clear again: the clock starts over, not 2 h old
+ok("#475 a near-zero run in between restarts the 2 h clock (no flapping)", rg["w"] == 0.0 and rg["vetoed"], rg)
+# repeated runs right at zero never earn a weight
+flips = 0
+for k in range(12):
+    flips += load(NEAR, keep_veto=True, at=T0 + 600 * k)["w"] > 0
+ok("#475 twelve runs on near-zero data never earn the weight", flips == 0, flips)
+# the off switch is untouched: in-sample bar alone, whatever the veto history says
+E.CFG["mkt_hold"] = False
+E.save_json(E.MAIN_SAVED, {"mkt_hold": False})
+E.MKT_VETO["nba|win|pre"] = {"w": 1.0, "since": None}
+r = load(BAD, keep_veto=True)
+ok("#475 mkt_hold OFF still means the in-sample bar alone", r["w"] > 0 and not r["vetoed"] and not E.MKT_VETO, r)
+E.CFG["mkt_hold"] = True
+E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+
+
+# 8. #474: the true out-of-sample test. A weight picked on the OLDEST 70% must also beat the mid on the newest 30% it
+#    never saw. The books are 80% of the way right in the oldest 70% (the 70% pick is the top weight, 1.0) but only 60% of the way
+#    right in the newest 30% (a weight of 1.0 loses there; the all-rows weight, 0.75, still gains). Books and Kalshi's mid
+#    sit 0.2 apart here so the weights are separated clearly rather than by noise. The all-rows weight (what the recency check tests) is lower
+#    and still gains on the newest slice, so the OLD rule kept it; the true holdout takes it away.
+E.CFG["mkt_hold"] = True
+E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+mixed = lambda i, mid, fb: (mid + 0.8 * (fb - mid)) if i < 1750 else mid + 0.6 * (fb - mid)
+r = load(mixed, gap=0.2)
+ok("oos: clears the in-sample bar", r["gain"] >= E.MKT["gain"] and r["gain"] >= E.MKT["se"] * r["se"], r)
+ok("oos: the recency check alone would have kept it (the all-rows weight gains on the newest 30%)", r["hold_gain"] > 0, r)
+ok("oos: the weight picked on the oldest 70% loses on the newest 30%", r["oos_w"] > 0 and r["oos_gain"] <= 0, r)
+ok("oos: so the weight is 0 and it is called vetoed", r["w"] == 0.0 and r["vetoed"], r)
+r = load(lambda i, mid, fb: fb, gap=0.2)
+ok("oos: books right throughout: the oldest-70% weight also wins on the newest 30%", r["w"] > 0 and r["oos_w"] > 0 and r["oos_gain"] > 0 and not r["vetoed"], r)
+# stricter only: with the switch off the in-sample weight comes back, never a different one
+E.CFG["mkt_hold"] = False
+E.save_json(E.MAIN_SAVED, {"mkt_hold": False})
+r_off = load(mixed, gap=0.2)
+ok("oos: switch off = the in-sample bar alone again (the weight the old rule gave)", r_off["w"] > 0 and not r_off["vetoed"], r_off)
+E.CFG["mkt_hold"] = True
+E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+for seed, frac in enumerate((0.0, 0.3, 0.6, 1.0)):
+    f_ = lambda i, mid, fb, f=frac: fb if i < 1750 else mid + f * (fb - mid)
+    E.CFG["mkt_hold"] = False; E.save_json(E.MAIN_SAVED, {"mkt_hold": False})
+    base_w = load(f_, gap=0.2)["w"]                                     # the in-sample weight, no holdout at all
+    E.CFG["mkt_hold"] = True; E.save_json(E.MAIN_SAVED, {"mkt_hold": True})
+    r = load(f_, gap=0.2)
+    ok(f"oos: stricter only (case {seed}): weight is 0 or exactly the in-sample weight, never another", r["w"] in (0.0, base_w))
 shutil.rmtree(TMP, ignore_errors=True)

@@ -1,0 +1,103 @@
+# CHECK: group=engine
+# The cautious default loss cut (12.5%) is applied at READ time only, combos only. It is never written to smart.json or to
+# self-tuning's live values, so turning `loss_cut_default` off fully restores the old behaviour, singles are never cut by it.
+# (The firing record saying src "default" is checked in t_cutloss_default.py.)
+import os, time, tempfile, importlib.util, json
+os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
+spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
+E.SMART_FILE = os.path.join(E.HERE, "smart.json"); E.SMART_CACHE["at"] = 0
+E.MAIN_SAVED = os.path.join(E.HERE, "main.json"); E.KNOBS_FILE = os.path.join(E.HERE, "knobs.json")
+ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+now = time.time()
+T = "KXNBAGAME-26NOV19LALBOS-LAL"
+E.CFG.update(smart_sell=True, ride=2, take_profit=0, lock_trail=True, loss_cut_default=True, knobs_live=True)
+E.save_json(E.MAIN_SAVED, {"knobs_live": True}); E.KNOB_SWITCH["on"] = None; E.KNOB_STATE_CACHE["d"] = None
+ok("self-tuning switch on (the usual case)", E.knob_switch_on() is True)
+
+def add_item(i, code, path):
+    t = f"KX{code.upper()}GAME-26NOV{10 + i % 9:02d}T{i:03d}-AAA"
+    kick = now - 86400 * 3 - i * 600
+    for k, ch in enumerate(path):
+        E.store_x("insert into ticks values(?,?,?,?,?)", (kick + 60 * (k + 1), t, ch, "sim", "active"))
+    return {"id": f"paper:{t}", "kind": "single", "code": code, "legs": [{"ticker": t, "p": .5, "pick": t}], "stake": 5.0,
+            "price": .5, "paid": .5, "kick": kick, "state": "paper", "result": "lost", "pl": -5.0}
+items = [add_item(i, "nba", [.52, .6, .7, .78, .6, .4, .2, 0.0]) for i in range(40)]
+E._panel_table()
+E.store_x("insert or replace into panel values(?,?,?,?,?)", ("2026-11-15", "paper", now - 86400 * 3, "paper", json.dumps({"at": now - 86400 * 3, "items": items})))
+E.smart_tune(force=True)
+d = E.load_json(E.SMART_FILE, {})
+ok("smart_tune ran and saw the league", (d.get("nba") or {}).get("n") == 40)
+ok("nothing moved: smart.json holds no loss value for any league (the default is never saved)",
+   all((e.get("loss") is None) and not e.get("loss_off") for k, e in d.items() if not k.startswith("_")))
+E.SMART_CACHE["at"] = 0
+p = E.smart_params([T])
+ok("...so the combo still gets the default at read time, marked as such", p["loss"] == 0.125 and p.get("loss_src") == "default")
+ok("...and singles never get it", E.smart_params([T], single=True)["loss"] is None)
+ok("exit_settings: a single Smart Buy candidate never gets the default, a combo does",
+   E.exit_settings([T], single=True)["loss"] is None and E.exit_settings([T])["loss"] == 0.125)
+E.CFG["loss_cut_default"] = False
+E.SMART_CACHE["at"] = 0
+ok("switch off after a tune: the old 'never' is back for combos", E.smart_params([T])["loss"] is None)
+E.CFG["loss_cut_default"] = True
+
+E.save_json(E.SMART_FILE, {}); E.SMART_CACHE["at"] = 0
+json.dump({"groups": {"nba": {"lv": {"smart_loss": 0.2}, "lat": {"smart_loss": now - 9}, "lstep_at": now - 9}},
+           "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+ok("before the brake: nba's own 20% applies", E.smart_params([T])["loss"] == 0.2)
+E._knob_brake_sales = lambda st, now_, live: {"nba": [1]}
+E.knob_brake_check = lambda sales: "test: sold under what holding was worth"
+E.knob_brake_pass(now, force=True)
+S = E.knob_state()
+ok("the brake fired for nba", "nba" in S["brake"])
+lv = (S["groups"].get("nba") or {}).get("lv") or {}
+ok("brake puts the league's own loss value to an explicit 'no cut' (None), not the default", "smart_loss" in lv and lv["smart_loss"] is None)
+E.KNOB_STATE_CACHE["d"] = None
+p = E.smart_params([T])
+ok("...so it stays no-cut after the brake, like develop (no default for a league that had its own)", p["loss"] is None)
+ok("...never to singles", E.smart_params([T], single=True)["loss"] is None)
+E.CFG["loss_cut_default"] = False
+ok("switch off after a brake: the old 'never' is back", E.smart_params([T])["loss"] is None)
+E.CFG["loss_cut_default"] = True
+
+# own value in BOTH smart.json (30+ results) and live values: the brake must not let the smart.json value come back
+E.save_json(E.SMART_FILE, {"nba": {"n": 40, "floor": 1.5, "lam": 0.5, "loss": 0.25, "at": now - 100}}); E.SMART_CACHE["at"] = 0
+json.dump({"groups": {"nba": {"lv": {"smart_loss": 0.3}, "lat": {"smart_loss": now - 9}, "lstep_at": now - 9}},
+           "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+ok("before the brake: the live 30% applies", E.smart_params([T])["loss"] == 0.3)
+E.knob_brake_pass(now, force=True)
+E.KNOB_STATE_CACHE["d"] = None
+ok("during the brake: no cut", E.smart_params([T])["loss"] is None)
+later = now + 86400 * 40
+E.KNOB_STATE_CACHE["d"] = None
+_t = E.time.time; E.time.time = lambda: later
+try:
+    E.SMART_CACHE["at"] = 0
+    ok("after the brake ends: still no cut for combos (smart.json's 25% does not come back)", E.smart_params([T])["loss"] is None)
+    ok("...and singles are never cut", E.smart_params([T], single=True)["loss"] is None)
+finally:
+    E.time.time = _t
+
+# a league with NO own value: combos get the 12.5% default at read time, singles never, nothing persisted
+E.save_json(E.SMART_FILE, {}); E.SMART_CACHE["at"] = 0
+json.dump({"groups": {}, "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+E.knob_brake_pass(now + 5000, force=True)
+S = E.knob_state(); E.KNOB_STATE_CACHE["d"] = None
+ok("no own value, brake fires: nothing persisted for the loss cut", "smart_loss" not in ((S["groups"].get("nba") or {}).get("lv") or {}))
+ok("...but during the brake the default is skipped (no cut is the strictest)", E.smart_params([T])["loss"] is None)
+ok("...and the card shows no default while braked", (E._knob_league("nba", E.load_json(E.SMART_FILE, {})).get("smart_loss") or (None,))[0] is None)
+_t = E.time.time; E.time.time = lambda: now + 5000 + 86400 * 40
+try:
+    E.KNOB_STATE_CACHE["d"] = None
+    ok("...and the default returns once the brake ends", E.smart_params([T])["loss"] == 0.125)
+    ok("...and the card shows it again", (E._knob_league("nba", E.load_json(E.SMART_FILE, {})).get("smart_loss") or (None,))[0] == 0.125)
+finally:
+    E.time.time = _t
+    E.KNOB_STATE_CACHE["d"] = None
+ok("...singles never", E.smart_params([T], single=True)["loss"] is None)
+
+json.dump({"groups": {}, "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+E.knob_tune(now, force=True)
+S = E.knob_state()
+ok("stepper with nothing to move saves no default loss value",
+   all((g or {}).get("lv", {}).get("smart_loss") != 0.125 for g in (S.get("groups") or {}).values()))

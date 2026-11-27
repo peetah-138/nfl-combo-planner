@@ -85,7 +85,7 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
   if(planOn(c)&&(d.todo||[]).includes(c.t))items.push({c,kind:'sell',w:(c.offer||0)});
   else if(c.offer_real&&c.overpay&&c.overpay>=1.03)items.push({c,kind:'overpay',w:(c.offer||0)*1.1});
   else if(c.self&&c.verdict!=='hold'&&!c.offer_real)items.push({c,kind:'ask',w:(c.offer||0)*.8});
-  else if(c.hedge&&!c.hedge.done&&c.hedge.locked>c.cost*1.5&&c.legs.filter(l=>!l.res).length===1)items.push({c,kind:'hedge',w:c.hedge.locked});
+  else if(c.hedge&&!c.hedge.done&&!c.hedge_dismissed&&c.hedge.locked>c.cost*1.5&&c.legs.filter(l=>!l.res).length===1)items.push({c,kind:'hedge',w:c.hedge.locked});
  }
  items.sort((a,b)=>b.w-a.w);
  const ib=ideaSection(d);   // Buy ideas (ideas.js): ranked, the top few shown, dismissable, foldable
@@ -95,13 +95,13 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
   const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Let-it-ride line<b>${cents(c.threshold)}+</b></div>`:c.thr_over?`<div>Let-it-ride line<b>No offer can beat waiting</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
   if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn ghost" onclick="act('keep','${c.t}')">Keep</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
+   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn ghost" data-t="${esc(c.t)}" onclick="act('keep',this.dataset.t)">Keep</button><button class="btn yes" data-t="${esc(c.t)}" onclick="sell(this.dataset.t)">Cash out</button></div></div>`;
   if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${money(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${money(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn yes" onclick="sell('${c.t}')">Cash out</button></div></div>`;
+   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn yes" data-t="${esc(c.t)}" onclick="sell(this.dataset.t)">Cash out</button></div></div>`;
   if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${money(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${money(c.hedge.cost)} pays out whichever side wins.</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" onclick="hedge('${c.t}')">Hedge</button></div></div>`;
+   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" data-t="${esc(c.t)}" onclick="hedge(this.dataset.t)">Hedge</button><button class="btn ghost hdis" data-t="${esc(c.t)}" aria-label="Dismiss this hedge suggestion" onclick="hedgeDismiss(this.dataset.t)">Dismiss</button></div></div>`;
   return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" ${S.busy[c.t]?'disabled':''} onclick="ask('${c.t}')">${S.busy[c.t]?'<span class="spin" aria-hidden="true"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+ib;}
+   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" data-t="${esc(c.t)}" ${S.busy[c.t]?'disabled':''} onclick="ask(this.dataset.t)">${S.busy[c.t]?'<span class="spin" aria-hidden="true"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+ib;}
 /* Buy-idea cards say which game they are for (display only): league, matchup, start time or live score, the pick in
    plain words, and what the price means. Every field is optional; one the Mac couldn't tell is simply left out. */
 function ideaWhen(li){if(!li)return '';if(li.score)return li.score;if(li.live)return 'Under way';
@@ -153,12 +153,14 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
  const most=pend.reduce((a,c)=>a+c.pays,0)+sOpen.reduce((a,x)=>a+(x.pays||0),0);const big=Math.max(d.best||0,...sOpen.map(x=>x.pays||0));
  const K=kalshiNow(pend,sOpen),kd=K-St;   /* #413: the big number is Kalshi's own value; our sale estimate (W) sits small beside it */
  const cls=Math.abs(kd)<.005?'flat':kd>0?'up':'down';const est=(d.combos||[]).some(c=>c.group==='pending'&&!c.offer_real);
+ /* #195: only a number that really moves may roll and flash. The big figure and its change pill follow Kalshi's own value (combos at cost, singles at the bid), so they move only with a single's price: with no single open the pill stays still. The 'If sold now' estimate rolls only if some estimated combo was priced live (offer_live); with none it only changes when a leg settles, so it just updates (data-still). */
+ const moves=sOpen.some(x=>x.worth!=null),estC=(d.combos||[]).filter(c=>c.group==='pending'&&!c.offer_real),still=est&&!estC.some(c=>c.offer_live!=null);
  const ring=v=>{const r=9,c=2*Math.PI*r;return `<svg class="ring" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="var(--line)" stroke-width="3"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="${v>=.5?'var(--yes)':'var(--acc)'}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c*Math.max(0,Math.min(1,v))).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 11 11)"/></svg>`;};
  const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
  return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now on Kalshi<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
    <div class="hrow"><b class="big" data-num="h:kalshi" data-v="${K.toFixed(2)}">${money(K)}</b>
-   <span class="hest" aria-label="Our estimate if you sold everything now: ${money(W)}"><small>If sold now</small><b data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}">${est?'≈ ':''}${money(W)}</b></span></div>
-   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(kd,St,true,false)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span></div>
+   <span class="hest" aria-label="Our estimate if you sold everything now: ${money(W)}"><small>If sold now</small><b data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}"${still?' data-still="1"':''}>${est?'≈ ':''}${money(W)}</b></span></div>
+   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(kd,St,moves,false)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span></div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
    <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
    <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
@@ -173,10 +175,13 @@ function singlesLive(d){const all=d.singles||[];
 const cents=x=>'$'+(+x).toFixed(2);   /* sell lines in cents: money() rounds $12.70 up to "$13" (#371) */
 function ssChip(x){const off=S.live&&S.live.auto_sell===false;
  const isC=x.smart_txt!==undefined,at=x.sell_at!=null?x.sell_at:isC?x.smart_at:x.threshold,over=x.sell_at!=null?x.sell_over:isC?x.smart_over:(x.sell_over!=null?x.sell_over:x.thr_over);   /* combos carry threshold/thr_over (#376) */
- const hint=x.self||off?'':(isC&&x.smart_chip)?` · ${esc(x.smart_chip)}`:at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
+ const hint=x.self||off?'':(isC&&(x.smart_profit||x.loss_chip))?'':(isC&&x.smart_chip)?` · ${esc(x.smart_chip)}`:at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" data-t="${esc(x.t)}" onclick="event.stopPropagation();selfSell(this.dataset.t,${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
+function ssLines(x){if(x.self||!(x.smart_profit||x.loss_chip))return '';   /* Smart sell: its two jobs, one block (display only) */
+ const ln=t=>{const i=t.indexOf(':');return `<span><b>${esc(t.slice(0,i+1))}</b>${esc(t.slice(i+1))}</span>`;};
+ return `<div class="sslines">${[x.smart_profit,x.loss_chip].filter(Boolean).map(ln).join('')}</div>`;}
 function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'||x.on?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'||x.phase==='over'?'<span class="tag">Waiting on Kalshi</span>':'';
  const line=x.how||x.score||x.note||(x.starts?'starts '+x.starts:'');
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
@@ -189,7 +194,7 @@ function offNow(c){return(!c.offer_real&&c.offer_live!=null&&c.offer!=null)?c.of
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const oLive=offNow(c);const oEst=!c.offer_real;
  const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${money(oLive)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>${chgHtml('oc:'+c.t,oLive,c.cost,oEst)}`:'<small>—</small>';
- return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" data-t="${esc(c.t)}" onclick="tog(this.dataset.t)"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c):''}<span>${esc(nextLine(c))}</span>${c.group!=='pending'&&c.done_at&&doneWord(c.done_at)?`<span class="sdt">${esc(doneWord(c.done_at))}</span>`:''}</div>
+ return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" data-t="${esc(c.t)}" onclick="tog(this.dataset.t)"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c)+ssLines(c):''}<span>${esc(nextLine(c))}</span>${c.group!=='pending'&&c.done_at&&doneWord(c.done_at)?`<span class="sdt">${esc(doneWord(c.done_at))}</span>`:''}</div>
   <div class="legs">${legTags(c.legs)}</div>
   <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${money(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?`<span data-num="p:${c.t}" data-v="${c.p}" data-f="pct">${pct(c.p)}</span>`:'—'}${c.group==='pending'?`<div class="bar"><i data-bar="pb:${c.t}" style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
@@ -204,9 +209,12 @@ function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
     <button class="btn" ${S.busy[c.t]?'disabled':''} data-t="${esc(c.t)}" onclick="event.stopPropagation();ask(this.dataset.t)">${S.busy[c.t]?'<span class="spin" aria-hidden="true"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
     ${c.offer_real?`<button class="btn yes" data-t="${esc(c.t)}" onclick="event.stopPropagation();sell(this.dataset.t)">Cash out ${money(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
 function tog(t){S.open[t]=!S.open[t];renderLive();}
-function moments(){const seen=new Set();const ev=(S.events||[]).slice().reverse().filter(e=>{if(seen.has(e.text))return false;seen.add(e.text);return true;}).slice(0,8);if(!ev.length)return '';
+/* Moments rows can be cleared (display only): a row's X hides it for today on this phone, kept across reloads. */
+function momGone(){try{const o=JSON.parse(localStorage.getItem('cw_mom_x')||'null');const d=new Date().toDateString();return o&&o.d===d&&Array.isArray(o.t)?o.t:[];}catch(e){return [];}}
+function momClear(i){hap();const e=S._momShown&&S._momShown[i];if(!e)return;const g=momGone();g.push(e.text);try{localStorage.setItem('cw_mom_x',JSON.stringify({d:new Date().toDateString(),t:g.slice(-100)}))}catch(x){}renderLive();}
+function moments(){const seen=new Set(momGone());const ev=(S.events||[]).slice().reverse().filter(e=>{if(seen.has(e.text))return false;seen.add(e.text);return true;}).slice(0,8);S._momShown=ev;if(!ev.length)return '';
  const K={score:'🏟️',swing:'📈',advice:'⚡',settled:'🏁',alert:'🔔'};
- return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map(e=>`<div class="moment" ${e.ticker?`style="cursor:pointer" data-t="${esc(e.ticker)}" onclick="openGame(this.dataset.t)"`:e.kind==='advice'&&comboOk(e.combo)?`style="cursor:pointer" data-t="${esc(e.combo)}" onclick="openCombo(this.dataset.t)"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time></div>`).join('')}</div>`;}
+ return `<div class="card"><h3><span><span class="live-dot"></span>Moments</span><span>live</span></h3>${ev.map((e,i)=>`<div class="moment" ${e.ticker?`style="cursor:pointer" data-t="${esc(e.ticker)}" onclick="openGame(this.dataset.t)"`:e.kind==='advice'&&comboOk(e.combo)?`style="cursor:pointer" data-t="${esc(e.combo)}" onclick="openCombo(this.dataset.t)"`:''}><span class="k" ${e.kind==='score'?`style="color:${e.good?'var(--yes)':'var(--no)'}"`:''}>${K[e.kind]||'•'}</span><span>${esc(e.text)}</span><time>${ago2(e.at)}</time><button class="momx" aria-label="Clear this" onclick="event.stopPropagation();momClear(${i})"><svg viewBox="0 0 24 24" width="26" height="26"><path d="M8 8l8 8M16 8l-8 8"/></svg></button></div>`).join('')}</div>`;}
 function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?Math.round(s/60)+'m':Math.round(s/3600)+'h';}
 function sideLive(d){const gs=d.games||[];const r=d.risk;
  return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" data-t="${esc(g.ticker||'')}" onclick="openGame(this.dataset.t)"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'&&g.phase!=='waiting'?'<span class="tag">LIVE</span>':''}</div>
@@ -217,6 +225,12 @@ function sideLive(d){const gs=d.games||[];const r=d.risk;
 function todayCard(d){const t=d.today;if(!t)return `<div class="card"><h3>Finished <span>recently</span></h3><div class="mini">Won or cashed<b class="up">${money(d.locked)}</b></div><div class="mini">Holding is worth<b>${money(d.hold_value)}</b></div></div>`;
  const n=t.won+t.cashed+t.lost;const bits=[t.won?`${t.won} won`:'',t.cashed?`${t.cashed} cashed`:'',t.lost?`${t.lost} lost`:''].filter(Boolean).join(' · ');
  return `<div class="card"><h3>Today <span>${n?bits:'nothing finished yet'}</span></h3>${n?`<div class="mini">Paid back<b>${money(t.back)}</b></div><div class="mini">They cost<b>${money(t.cost)}</b></div><div class="mini">Profit today<b class="${t.pl>=0?'up':'down'}">${smoney(t.pl)}</b></div>`:''}${d.week_pl!=null?`<div class="mini">Last 7 days<b class="${d.week_pl>=0?'up':'down'}">${smoney(d.week_pl)}</b></div>`:''}<div class="mini">Still riding is worth<b>${money(d.hold_value)}</b></div></div>`;}
+/* Dismiss a hedge card (display only): hides that one suggestion for today on the Mac, so a reload keeps it hidden; it comes
+   back if what it locks in or costs moves 20% and $0.50, or tomorrow. The Hedge button and auto-hedge are not touched. */
+async function hedgeDismiss(t){hap();const c=((S.live&&S.live.combos)||[]).find(x=>x.t===t);if(c)c.hedge_dismissed=true;renderLive();
+ const r=await api('/app/api/act',{a:'hedge_dismiss',t}).catch(()=>null);
+ if(!r||!r.ok){if(c)c.hedge_dismissed=false;renderLive();toast((r&&r.msg)||'Couldn\'t hide that. Try again.');return;}
+ toast(r.msg,3500);}
 async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await api('/app/api/act',{a:'ask',t});S.busy[t]=false;
  hap(r.ok?'success':'error');if(!r.ok)toast(r.msg||'No offer came in.');await load('live',true);}
 function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;

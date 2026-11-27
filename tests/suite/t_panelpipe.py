@@ -7,6 +7,7 @@
 import os, time, tempfile, importlib.util, copy
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E._held_all = lambda: []                  # no singles held: the combo-vs-held-single guard reads the account (money-h)
 import datetime as _dt
 # Pin the clock to noon Pacific (issue: these fixtures put kickoffs at now+3h/+4h, and the panel's "today" ends at 4 a.m.
 # Pacific, so a run between 1 and 4 a.m. Pacific, e.g. CI at 11:54 UTC, saw those games as tomorrow's). Time still moves.

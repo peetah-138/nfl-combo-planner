@@ -32,8 +32,8 @@ GitHub #68). Order of choice:
 1. `$CHECK_PYTHON`, if you set it (a name or path of an interpreter that has `requests pyflakes playwright`; it warns if it is older than 3.10).
 2. `~/combowatch/.venv/bin/python`, only if it is 3.10+ and already has all of those (nothing is ever installed there).
 3. `.venv-tests/` in the repo (git-ignored). **First run builds it by itself** from `python3.13/3.12/3.11/3.10` found on
-   PATH, Homebrew, pyenv or uv (`pip install requests cryptography pyflakes ruff playwright`, then
-   `playwright install chromium`). To do it by hand: `python3.12 -m venv .venv-tests && .venv-tests/bin/pip install requests cryptography pyflakes ruff playwright && .venv-tests/bin/python -m playwright install chromium`.
+   PATH, Homebrew, pyenv or uv (`pip install requests cryptography pyflakes ruff playwright numpy pandas`, then
+   `playwright install chromium`). To do it by hand: `python3.12 -m venv .venv-tests && .venv-tests/bin/pip install requests cryptography pyflakes ruff playwright numpy pandas && .venv-tests/bin/python -m playwright install chromium`.
    Set `CHECK_VENV_NO_CREATE=1` to stop it building, `CHECK_VENV=/some/path` to put it elsewhere (e.g. shared by worktrees).
 4. `python3` on PATH if it is already 3.10+ with those modules (that is how CI runs; tried before step 3 builds the venv), else plain `python3` with a printed warning (expect SQLite crash dialogs on macOS 26.4).
 

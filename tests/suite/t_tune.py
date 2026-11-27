@@ -2,6 +2,7 @@
 import os, time, tempfile, importlib.util, json
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.CFG["loss_cut_default"] = False   # tests the older machinery; the default is tested in t_cutloss_default.py
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SMART_FILE = os.path.join(E.HERE, "smart.json"); E.SMART_CACHE["at"] = 0
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)

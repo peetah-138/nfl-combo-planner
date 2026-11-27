@@ -3,3 +3,5 @@ requests
 pyflakes
 playwright
 ruff==0.17.5
+numpy
+pandas

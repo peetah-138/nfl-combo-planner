@@ -34,9 +34,11 @@ def mac(route):
 
 with sync_playwright() as pw:
     br = pw.chromium.launch()
+    ctx_perm = ["clipboard-read", "clipboard-write"]
     for scheme in ("dark", "light"):
         STATE["on"] = False
-        pg = br.new_page(viewport={"width": 390, "height": 844}, color_scheme=scheme)
+        ctx = br.new_context(viewport={"width": 390, "height": 844}, color_scheme=scheme, permissions=ctx_perm)
+        pg = ctx.new_page()
         errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
         DLG["seen"] = []
@@ -63,6 +65,19 @@ with sync_playwright() as pw:
         if not code.count() or code.text_content() != FAKE:
             print("PROBLEMS: turning it on didn't show the code once")
         pg.screenshot(path=os.path.join(SHOTS, f"logs_code_{scheme}.png"))
+        pg.locator("#lsetup").click(); time.sleep(.5)              # (#379) one paste for the dev Mac
+        cmd = pg.evaluate("navigator.clipboard.readText()")
+        if "\n" in cmd or not cmd.startswith(" security add-generic-password -U") or cmd.count("add-generic-password") != 2:
+            print("PROBLEMS: setup command isn't one line of two keychain saves", repr(cmd[:60]))
+        if "-s nfl-combo-logs-url -w 'http://100.64.0.1:8765'" not in cmd or "-s nfl-combo-logs-token -w '" + FAKE + "'" not in cmd:
+            print("PROBLEMS: setup command doesn't carry the address and the code under the names the tool reads")
+        if pg.evaluate("logSetupCmd(\"a'b\",\"x\")").count("'\\''") != 1:
+            print("PROBLEMS: a quote in a value isn't escaped for the shell")
+        if "copied" not in (pg.locator("#toast, .toast").first.text_content() or "").lower():
+            print("PROBLEMS: no 'copied' toast after Copy setup command")
+        if pg.locator("#lsetup").bounding_box()["height"] < 43.5:
+            print("PROBLEMS: Copy setup command is shorter than 44px")
+        pg.screenshot(path=os.path.join(SHOTS, f"logs_setup_{scheme}.png"))
         pg.locator("button", has_text="Done").click(); time.sleep(1.5)
         row.scroll_into_view_if_needed(); time.sleep(.4)
         txt = row.text_content() or ""

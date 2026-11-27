@@ -205,7 +205,7 @@ def f_card():
     h = mk(0.38)
     before = dict(E.MINE["peak"])
     v = E.smart_trigger(T, h)
-    ok("F low win chance: the text says it won't sell and the chip does not promise a sale", "won't sell while the win chance is 38%, under 50%" in v["smart_txt"] and v["smart_chip"] == "waiting (needs 50%+ win chance)" and v["smart_state"] == "", v)
+    ok("F low win chance: the text says it won't sell and the chip does not promise a sale", "won't sell while the win chance is 38%, under 50%" in v["smart_txt"] and v["smart_chip"] == "waiting, win chance 38% is below the 50% needed" and v["smart_state"] == "", v)
     ok("F it touches no peak", E.MINE["peak"] == before)
     h = mk(0.7)
     v = E.smart_trigger(T, h)
@@ -216,7 +216,7 @@ def f_card():
     ok("F lock-in is said in plain words", "Lock in arms" not in v["smart_txt"] and (v["lock_at"] is None or isinstance(v["lock_at"], float)))
     h = mk(0.7, offer=1.0)
     v = E.smart_trigger(T, h)
-    ok("F an offer under the bar is just reported", v["smart_state"] == "" and "it is $1.00 now" in v["smart_txt"] and v["smart_chip"].startswith("sells at $"), v)
+    ok("F an offer under the bar is just reported", v["smart_state"] == "" and "it is $1.00 now" in v["smart_txt"] and v["smart_chip"].startswith("waiting, offer $1.00 is below the $"), v)
     for name, kw, word in (("Pause", {"paused": True}, "paused"), ("the daily limit", {"cap": True}, "daily limit used")):
         setup_trade(**kw); h = mk(0.7, offer=9.0)
         v = E.smart_trigger(T, h)
@@ -341,5 +341,45 @@ def j_whynot():
     ok("J and the default bar is the constant when nothing is tuned", s_ == "peak<arm", (s_, l_))
 
 
-for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_log), ("d", d_switch_bounds), ("e", e_unread), ("f", f_card), ("g", g_offpath), ("h", h_pend), ("i", i_proc_peak), ("j", j_whynot)):
+def k_loss_chip():
+    """Smart sell is one feature with two plain lines on the card: Take profit and Loss cut (display only, #loss-chip)."""
+    clock([_real_time.time()])
+    keep = (E.smart_params, E.stoploss_params, E.fresh_live_score, E.game_played)
+    try:
+        def cfg(loss, prog=0.5, played=None):
+            E.smart_params = lambda tks: {"floor": 1.5, "lam": 1.0, "loss": loss, "key": None}
+            E.stoploss_params = lambda tks: {"prog": prog, "drop": 0.2, "key": None}
+            E.fresh_live_score = lambda *a, **k: ({"state": "in"}, "") if played is not None else (None, "no score feed")
+            E.game_played = lambda sc: played
+        setup_trade(); h = mk(0.11)
+        cfg(None)
+        v = E.smart_trigger(T, h)
+        ok("K take profit says the live chance and the bar", v["smart_profit"] == "Take profit: waiting, win chance 11% is below the 50% needed", v)
+        ok("K loss cut off: this league hasn't earned it", v["loss_chip"] == "Loss cut: off (this league hasn't earned it yet)", v)
+        cfg(0.2, played=0.2)
+        ok("K loss cut waits for half the game", E.smart_trigger(T, h)["loss_chip"] == "Loss cut: waiting for half the game", E.smart_trigger(T, h))
+        cfg(0.2, played=0.7)
+        ok("K loss cut armed at its win chance", E.smart_trigger(T, h)["loss_chip"] == "Loss cut: armed at 20% win chance")
+        cfg(0.2, prog=0.6, played=0.3)
+        ok("K a learned game share is named", E.smart_trigger(T, h)["loss_chip"] == "Loss cut: waiting for 60% of the game")
+        cfg(0.2, played=0.7); setup_trade(paused=True)
+        ok("K Pause is said on the loss line", "Pause is on" in E.smart_trigger(T, mk(0.11))["loss_chip"])
+        setup_trade(auto=False)
+        v = E.smart_trigger(T, mk(0.7, offer=9.0))
+        ok("K Auto cash-out off: both lines say so, nothing else", "Auto cash-out is off" in v["loss_chip"] and v["smart_profit"].startswith("Take profit: off") and v["smart_txt"] == "", v)
+        setup_trade(self_=True)
+        ok("K I'll sell it: both lines say so", "you sell" in E.smart_trigger(T, mk(0.7))["loss_chip"])
+        setup_trade(); E.CFG["smart_sell"] = False
+        ok("K Smart sell off: the loss line says so", "Smart sell is off" in E.smart_trigger(T, mk(0.7))["loss_chip"])
+        E.CFG["smart_sell"] = True
+        setup_trade(); v = E.smart_trigger(T, mk(0.7, offer=1.0))
+        ok("K the offer, not the chance, is what is short", v["smart_profit"].startswith("Take profit: waiting, offer $1.00 is below the $"), v)
+        ok("K nothing else changed: no peak or sell state", v["smart_state"] == "")
+        js = open(os.path.join(REPO, "watcher", "spa", "live.js")).read()
+        ok("K the card shows both lines under one Smart sell block", "ssLines" in js and "x.smart_profit" in js and "x.loss_chip" in js and "ssChip(c)+ssLines(c)" in js)
+    finally:
+        E.smart_params, E.stoploss_params, E.fresh_live_score, E.game_played = keep
+
+
+for n, f in (("a", a_rows), ("b", b_swallow), ("c", c_log), ("d", d_switch_bounds), ("e", e_unread), ("f", f_card), ("g", g_offpath), ("h", h_pend), ("i", i_proc_peak), ("j", j_whynot), ("k", k_loss_chip)):
     section(n, f)

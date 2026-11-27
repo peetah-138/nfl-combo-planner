@@ -39,7 +39,7 @@ function ssPaint(){const s=S.ss,box=$('#ssx');if(!s||!box)return;
  const pl=q.profit,plp=q.cost?Math.round(pl/q.cost*100):null;
  box.innerHTML=`<div class="sbk">${ICON[q.sport]||''} Sell · ${typeof sbKind==='function'?sbKind(q):''}${q.live?' <span class="tag" style="background:var(--livebg);color:var(--live)">LIVE</span>':''}</div>
   <h3>${esc(q.pick)}</h3>${q.game?`<div class="m" style="font-size:13px">${esc(q.game)}</div>`:''}
-  <div class="sbn"><div><span>Kalshi bid</span><b data-num="ss:bid" data-v="${q.bid}" data-f="cent">${Math.round(q.bid*100)}¢</b><small>${q.gap!=null?Math.round(q.gap*100)+'¢ gap':'no sellers'} · ${q.depth>=1000?Math.round(q.depth/1000)+'k':Math.floor(q.depth||0)} wanted</small></div>
+  <div class="sbn"><div><span>Kalshi bid</span><b data-num="ss:bid" data-v="${q.bid}" data-f="cent">${Math.round(q.bid*100)}¢</b><small>${q.gap!=null?Math.round(q.gap*100)+'¢ gap · ':''}${q.depth>=1000?Math.round(q.depth/1000)+'k':Math.floor(q.depth||0)} contracts wanted</small></div>
    <div><span>You'd get</span><b class="up" data-num="ss:got" data-v="${q.got}">${m2(q.got)}</b><small>after ${m2(q.fee)} fee</small></div>
    <div><span>${pl>=0?'Profit':'Loss'}</span><b class="${pl>=0?'up':'down'}">${smoney(pl)}</b><small>${plp!=null?(pl>=0?'+':'−')+Math.abs(plp)+'% on '+m2(q.cost):'vs what you paid'}</small></div></div>
   <div class="sum">Contracts<b>${q.n}${q.n<Math.floor(q.have)?' of '+Math.floor(q.have):''} at ${Math.round(q.px*100)}¢ or better</b></div>
