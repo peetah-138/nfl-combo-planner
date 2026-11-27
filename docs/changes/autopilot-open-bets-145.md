@@ -27,7 +27,8 @@ Log lines on the full-auto card with Undo, Freeze (`open_slots`) and the master 
 
 ## Not changed / worth a look
 
-- The learned limit can go above Pete's saved number (up to 20). Saving a new "Open bets" number clears what was learned.
+- Pete's saved number is the ceiling: learning goes below it (floor 8) and back up to it, never above. Saving a different "Open bets" number clears what was learned; saving only the cap keeps it.
+- Skipped bets in one pass are replayed in order: each adds one to the open count and uses up room and bankroll, so only bets that would really have fit are counted.
 - Replay biases: skipped bets are held to the end (no early sale), paper `pl` has no fee, and taking one more bet may have
   changed which later bets were available.
 - The skip logging sits in `_full_auto_pass` (the money path) but only records after the decision, inside try/except.

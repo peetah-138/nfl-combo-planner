@@ -24201,8 +24201,9 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
         if on and explicit_on is not True and st.get("on") is not True:
             refused.append(True)                    # re-checked under the lock: only the explicit turn-on may switch it on
             return
+        was_open = _ap_open_base(st)
         st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
-        if "max_open" in clean and isinstance(st.get("lessons"), dict):     # (#145) Pete's own number replaces what autopilot learned
+        if "max_open" in clean and int(clean["max_open"]) != was_open and isinstance(st.get("lessons"), dict):     # (#145) Pete's own number replaces what autopilot learned
             for k in ("vals", "since", "holds"):
                 if isinstance(st["lessons"].get(k), dict):
                     st["lessons"][k].pop("open_slots", None)
@@ -24543,18 +24544,20 @@ def fa_slot_skips(items, level, v, open_at, real, now, log=print):
     try:
         _fa_slot_table()
         day = _panel_day(real.get("at"))
+        room, free, n = float(v["room"]), float(v["free"]), 0       # as if each turned-away bet had been bought, in order
         for c in items:
             normal = float(c.get("stake") or 0)
             s = _fa_scaled(normal, _fa_knob(level, "size"))
-            if s < PANEL_OWN_MIN or s > v["room"] + 0.01 or s > v["free"] + 0.01:
+            if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01:
                 continue
             pays = _fa_slot_pays(c, s)
             tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
             if not pays or not tks:
                 continue
             store_x("insert or ignore into fa_slots values(?,?,?,?,?,?,?,?,?,?)",
-                    (f"{day}|{c['id']}", now, day, "skip", int(open_at), round(s, 2), round(pays, 4),
+                    (f"{day}|{c['id']}", now, day, "skip", int(open_at) + n, round(s, 2), round(pays, 4),
                      json.dumps([c.get("kind")] + tks), None, None))
+            room, free, n = room - s, free - s, n + 1
     except Exception as err:
         log("full auto open-bet evidence:", type(err).__name__, err)
 
@@ -24767,7 +24770,7 @@ def ap_open_limit(st):
         if err or vals is None or not (isinstance(L, dict) and isinstance(L.get("vals"), dict) and "open_slots" in L["vals"]):
             return base                                      # nothing learned: Pete's own number, even outside 8 to 20
         got = ap_clamp("open", vals["open"])
-        return base if got is None else got
+        return base if got is None else min(got, base)       # Pete's own number is the ceiling; learning only goes below it
     except Exception:
         return base
 
@@ -25060,6 +25063,8 @@ def _fal_plan(st, now):
                     continue                                 # frozen by Pete: no new step (a pending revert is still judged)
                 held = _ap_held(L, key, now)
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
+                    if rec == "open" and new > _ap_open_base(st):
+                        continue                             # (#145) never above Pete's saved number
                     if dirn == "looser" and (cautious or held):
                         continue                             # brake priority, or held after Pete's Undo: nothing loosens
                     if rec == "open" and dirn == "looser" and _fal_slow(L, key, rs, now):

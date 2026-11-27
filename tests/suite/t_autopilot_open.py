@@ -79,14 +79,22 @@ ok("one step a week", not stepped(NOW + DAY) or E.fa_state()["lessons"]["vals"][
 reset(); seed_taken(15, 14, n=10)
 ok("thin evidence: no step", not stepped() and "open_slots" not in (lessons().get("vals") or {}))
 
-# 4. loosen slow: sample twice as big and 14 days since the last move
-reset(); seed_skips(15, n=60)
-ok("loosen: starts at 15, skips at 15 would have won: step to 16", stepped() and limit() == 16)
-reset(); E._fa_update(lambda s: s.update(lessons={"vals": {"open_slots": 15}, "since": {"open_slots": NOW - 2 * DAY}}))
-seed_skips(15, n=60)
-ok("loosen: waits 14 days after the last move", not stepped() and limit() == 15)
-reset(); seed_skips(15, n=30)
+# 4. loosen slow: sample twice as big and 14 days since the last move (Pete's 15 is the ceiling)
+def learned(v, since=NOW - 30 * DAY):
+    E._fa_update(lambda s: s.update(lessons={"vals": {"open_slots": v}, "since": {"open_slots": since}}))
+
+
+reset(); learned(14); seed_skips(14, n=60)
+ok("loosen: 14 -> 15, skips at 14 would have won", stepped() and limit() == 15)
+reset(); learned(14, NOW - 2 * DAY); seed_skips(14, n=60)
+ok("loosen: waits 14 days after the last move", not stepped() and limit() == 14)
+reset(); learned(14); seed_skips(14, n=30)
 ok("loosen: needs twice the sample", not stepped())
+reset(); seed_skips(15, n=60)
+ok("ceiling: Pete's 15 is never exceeded by learning", not stepped() and limit() == 15)
+reset(); E._fa_update(lambda s: s.update(max_open=18)); learned(20) 
+ok("a stale learned 20 above Pete's 18 is held to 18", limit() == 18)
+E._fa_update(lambda s: s.update(max_open=15))
 
 # 5. soft brake cautious: nothing loosens, tightening still allowed
 reset(); seed_skips(15, n=60)
@@ -99,8 +107,9 @@ ok("cautious: tightening still fine", tick() and limit() == 14)
 # 6. bounds
 reset(); E._fa_update(lambda s: s.update(lessons={"vals": {"open_slots": 8}})); seed_taken(8, 7)
 ok("floor 8: no step below", not stepped() and limit() == 8)
-reset(); E._fa_update(lambda s: s.update(lessons={"vals": {"open_slots": 20}})); seed_skips(20, n=80)
+reset(); E._fa_update(lambda s: s.update(max_open=20, lessons={"vals": {"open_slots": 20}})); seed_skips(20, n=80)
 ok("ceiling 20: no step above", not stepped() and limit() == 20)
+E._fa_update(lambda s: s.update(max_open=15))
 E._fa_update(lambda s: s.update(lessons={"vals": {"open_slots": 99}}))
 ok("a saved value outside 8-20 is unreadable: falls back to Pete's number and approves nothing", limit() == 15 and E._fal_vals(E.fa_state())[0] is None)
 
@@ -124,11 +133,15 @@ ok("undo puts it back", limit() == 15 and res)
 reset(); seed_taken(15, 14); tick()
 E.fa_set(True, limits={"max_open": 12}, explicit_on=True)
 ok("Pete's edit wins", limit() == 12 and "open_slots" not in (lessons().get("vals") or {}))
+reset(); seed_taken(15, 14); tick(); since0 = lessons()["since"]["open_slots"]
+E.fa_set(True, limits={"max_open": 15, "cap": 25}, explicit_on=True)
+ok("saving the cap alone keeps the learned limit and its clock", limit() == 14 and lessons()["since"]["open_slots"] == since0
+   and E.fa_state()["cap"] == 25)
 
 # 10. the other limits never move; effective limit only changes the slot count
-reset(); E._fa_update(lambda s: s.update(lessons={"vals": {"open_slots": 20}}))
+reset(); E._fa_update(lambda s: s.update(lessons={"vals": {"open_slots": 12}}))
 v = E.fa_check(E.fa_state(), now=NOW)
-ok("slots follow the learned number", v["max_open"] == 20 and v["slots"] == 20 - v["open"])
+ok("slots follow the learned number", v["max_open"] == 12 and v["slots"] == 12 - v["open"])
 ok("cap, bankroll, loss limit are Pete's", v["bank"] == E.fa_state()["bank"])
 
 # 11. skip logging only counts bets that fit everything but a slot
@@ -139,3 +152,11 @@ E.fa_slot_skips([real_c], 0, {"room": 30.0, "free": 100.0}, 15, {"at": NOW}, NOW
 E.fa_slot_skips([dict(real_c, id="c2")], 0, {"room": 1.0, "free": 100.0}, 15, {"at": NOW}, NOW)
 n = E.store_rows("select count(*) n from fa_slots where kind='skip'", ())[0]["n"]
 ok("a skip needs the room and the bankroll", n == 1)
+
+# 12. several skips in one pass: each is replayed as if the ones before it had been bought
+reset()
+E._fa_slot_table()
+cs = [dict(real_c, id=f"m{i}", legs=[{"ticker": f"T{i}"}]) for i in range(6)]
+E.fa_slot_skips(cs, 0, {"room": 12.0, "free": 100.0}, 15, {"at": NOW}, NOW)
+rows = E.store_rows("select open_at from fa_slots where kind='skip' order by open_at", ())
+ok("6 skips with room for 2: only 2 logged, open counts 15 and 16", [r["open_at"] for r in rows] == [15, 16])
