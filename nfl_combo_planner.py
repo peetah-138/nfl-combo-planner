@@ -25430,6 +25430,8 @@ def smart_summary():
             continue
         out.append({"key": k, "name": league_label(k), "floor": e.get("floor", 1.5), "lam": e.get("lam", 1.0),
                     "loss": e.get("loss"), "n": e.get("n", 0), "ret": e.get("ret"), "why": e.get("why", ""),
+                    "loss_default": (LOSS_CUT_DEFAULT if e.get("loss") is None and CFG.get("loss_cut_default", True)
+                                     and not e.get("loss_off") else None),   # display only: the cut a combo here starts on
                     "at": e.get("at"), "own": e.get("n", 0) >= SMART_MIN_N,
                     "sl_prog": e.get("sl_prog", SL_DEFAULT["prog"]), "sl_drop": e.get("sl_drop", SL_DEFAULT["drop"]),
                     "sl_n": e.get("sl_n", 0), "sl_own": e.get("sl_n", 0) >= SL_MIN_N, "sl_why": e.get("sl_why", "")})
