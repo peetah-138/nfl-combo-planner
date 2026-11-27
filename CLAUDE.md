@@ -1248,6 +1248,53 @@ Tests: `t_shadow_e.py` (the `#474` lines).
   - Tests: `t_combo_live_fair.py`, `t_panel_reprice.py` (read only: pause, rules 7 and 8, RFQ dropped, panel and CTX
     unchanged), `test_reprice_ui.py` (390px). `t_inplay_exit.py`'s offer case stubs the book and expects "no fair price".
 
+#### Full auto: the real master switch, OFF by default (issue #7)
+
+**Section:** "The $300 full-auto experiment" (ROADMAP) / "The daily panel"
+
+The one switch that is OFF by default (hard rule 6's exception to "new switches default ON"). Nothing buys on its own until
+Pete turns it on in Settings › Money, after the paper gate shows passed or with an explicit "override the paper gate".
+
+**How it works (no new order code).** Full auto is not a second buyer. `full_auto_pass` runs every minute in the watcher's
+`panel_loop`, just before `panel_exec`, and only does what Pete's two taps do: `panel_approve` on a fresh draft panel, and
+`panel_add(ids, "extra")` for the "New since you approved" extras. Every order is still placed by `panel_exec` through
+`_buy_panel_bet` (`buy_single` / `accept_offer`): the held and opposite-side checks, the fresh price check, Pause, `can_trade()`
+(never the Pi), the unread-balance hold, rule 8 (an unclear outcome is "check", never retried) and the order-block guards are all
+unchanged. Exits are the existing smart sell and loss cut. A failure inside the pass is logged and never holds back bets Pete
+already approved.
+
+**Where the switch lives.** `combo_fullauto.json` in the Mac's home (git-ignored by `combo_*.json`), read by `fa_state()`. It is
+not in `CFG`, `SHARED_KEYS`, `SET_KEYS` or any Pi/phone sync list, so a stray settings post or a synced copy can never turn it
+on. A missing, unreadable or odd file means OFF (only a real `true` counts). Writes use `file_lock` + `save_json(strict=True)`.
+Turning on goes through `fa_set` (web act `full_auto_set`, not an order act): it needs `can_trade()`, and
+`panel_record()["paper"]["ready"]` (recorded as `gate: "passed"`) or `override: true` (recorded as `"overridden"`, with a snapshot
+of the paper numbers and a history line). The page asks for the override as a second, separate confirmation. Turning off is
+always allowed.
+
+**Limits (all clamped, Settings › Money).** Bankroll $300; daily spend cap $30 (2 to 100); max open bets 15 (1 to 30); pause after
+4 losses in a row (2 to 10); daily loss limit $20 (2 to 100). Spend today counts every real panel bet today (any origin), so it is
+conservative. Open bets are panel bets bought, buying or unclear with no result, plus today's scheduled ones. Bankroll free =
+bankroll + full-auto's settled P/L - its stakes still riding. Draft approval picks, in panel order, the bets that fit the cap,
+open slots and free bankroll; extras are added the same way, each also checked against the overlap guard (no "add anyway";
+an unreadable guard adds nothing). Ids it chose are written to the file's ledger before approving.
+
+**Brakes.** `fa_check` trips the streak brake on N consecutive losses among full-auto bets settled after the last reset, and the
+day brake when its settled P/L today is at or under minus the daily loss limit. A trip is saved with a plain-English reason. The
+streak brake stays until Pete taps "Reset the pause" (old losses are not recounted); the day brake ends with the panel day.
+Blockers also include Pause (watcher or app), a computer that can't trade, cap used up, open limit, no free bankroll, today's
+panel cancelled or not built yet, and a failed positions read (`_held_all` raises: nothing is approved). The shared buy path
+blocks again at buy time.
+
+**Status card** (`faCard`, `watcher/spa/fullauto.js`): Settings › Money (with the switch and limits) and Results (read only). Shows
+on/off/waiting, spent today of the cap, open bets, the streak brake, down today, bankroll free and what is blocking it.
+`full_auto` rides on the `/app/api/settings` and results payloads (`full_auto_view`, never raises).
+
+**Tests** (`t_fullauto.py`, Kalshi faked, every call recorded, none sent): off by default and unreadable/odd file means off, so
+nothing is approved, bought or sent; refused without the gate, override needs an explicit `true` and is recorded, Pi refused;
+cap respected, extras added through `panel_add` and bought once; open-bet limit; Pause (watcher flag and app callable) and
+`can_trade` false block; a failed positions read blocks (stubbed and through the real `_held_all`); streak and daily-loss brakes
+trip, say why, stay until reset; a stray `full_auto` setting does nothing.
+
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
@@ -3029,6 +3076,48 @@ changes, nothing is written):
 two lines exist (`ssLines` in `watcher/spa/live.js`, `.sslines` in `app.css`). Tests: section K and the updated F
 checks in `tests/suite/t_mom_shadow.py`.
 
+
+#### Games page: sorted by next game (display order only)
+
+**Section:** Screens > Games
+
+Pete: "The games page should be sorted by next game." Order now (all leagues mixed, no money logic touched):
+
+1. **Playing now** (live) first, earliest start first.
+2. **Coming up**, soonest start first. A game with no known start time goes after the timed ones.
+3. **Finished** at the bottom, most recent first (then "Probably finished", same rule).
+
+Ties break on the ticker, so cards never shuffle between refreshes. The section headings are unchanged.
+The Games page has no league filter or tabs, so there was none to keep working.
+
+How: `api_games` (watcher) adds `start_ts` (epoch seconds from the engine's `start_dt`, the same start the game page uses;
+null when unknown) and sorts by the same rule; `renderGames` (`spa/games.js`) sorts again with `gameOrder`, so the page does
+not depend on the server's order. Test: `tests/suite/test_games_sort.py`.
+
+#### Polish 143: hedge card words and a shorter Settings page (issues #572, #574)
+
+**Section:** Live (Do now hedge card), Settings
+
+Display and wording only: nothing about buying, selling, sizing, hedging or any setting's value changes.
+
+- **#572 hedge card.** The card used to show Offer now, Holding is worth, "Let-it-ride line" and You paid, which read as
+  look-alike dollar figures. The hedge card now shows four named numbers: Hedge costs, Locks in, the cash-out offer (or
+  "Likely cash-out" when it is an estimate) and You paid. It also says plainly: "Dismiss hides this for today. It comes back
+  if the hedge price or the amount it locks in changes by 20% and at least 50¢" (the real rule, `HEDGE_RE_MOVE` and
+  `HEDGE_RE_MIN`, unchanged). The jargon "Let-it-ride line" is gone everywhere on Live: the number is "Sell at" on the Do now
+  cards and "sells once the offer reaches $X" on a combo row.
+- **#574 Settings length.** Every long explanation under a setting (toggles, sliders, Selling at a loss) now shows two lines
+  with a **More** button. The rest of the text is still in the page, so Search finds it, and tapping More never flips the
+  setting. On a phone the default page goes from about 3,900px to about 3,400px, and with every section opened from about
+  12,800px to about 11,000px (Cash out & hedging 4,050px to 2,730px). The sections already fold (#212), and the Haptics test
+  card was left alone.
+- **Already done on develop, no change here:** #195 (the hero pill is `data-still` when only an estimate backs it), #196 (the
+  switch's highlight is drawn 24px tall inside the 44px hit area, #535), #438 (Comebacks panel slides closed), and #518 items
+  1 to 3 (no "recommended" beside a red profit, exit-route log names legs by team, "based on how your past bets did, before
+  fees"). Item 4 of #518 (a single's break episode never closed) is the separate #316 item 1 and is not touched.
+- **Tests.** `test_hedge_dismiss_ui` (numbers named, comes-back sentence, no let-it-ride), `test_settingsfold` (More opens the
+  text and never flips a switch), `t_mom_shadow` and `test_singlesell_ui` (new wording).
+- Screenshots: `~/dev/wt/screens/polish-143/`.
 
 ### Build page
 - Panel on top, sport chips (All = mix board), then **⭐ Best bets today**, "Build your own": the games board (live score,

@@ -47,9 +47,9 @@ Items are grouped by what they're waiting on: **you (Pete)**, **data**, or **jus
   "cut loss" paths and auto-hedge now have the same guards.
 
 ### The $300 full-auto experiment
-- The Mac picks, times, buys and sells on its own with $300. **Only after** the paper panel clears the gate
-  (50+ settled bets, ahead overall, ≥ 55% of days up, CLV ≥ 0), and only when Pete then says go. Results › the
-  paper gate card shows progress. Building the switch itself is small; the decision is Pete's.
+- The Mac picks, times, buys and sells on its own with $300. **Built (#7) and OFF by default** (Settings › Money; see CLAUDE.md,
+  The daily panel). **Waits on** the paper panel clearing the gate (50+ settled bets, ahead overall, ≥ 55% of days up, CLV ≥ 0)
+  and Pete flipping it on. Results › the paper gate card shows progress.
 
 ---
 
@@ -254,7 +254,8 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
   hedge dismiss and clearable Moments (#558); Smart sell two lines (#554); display and wording batches (#547, #552, #557, #560, #561).
 - **Release 2026.11.26.143:** ranking in calibrated dollars and the flip verdict in dollars (#576, #243, #204); loss-cut fix for leagues
   tuned to "never cut" (#577, #556); knob registry card folds by group (#578, #261); plain words on Promote and cut-losses cards (#580);
-  batch order-book read (#225); Smart Buy paper book picks like the panel (#291); offline research tools.
+  batch order-book read (#225); Smart Buy paper book picks like the panel (#291); offline research tools; hedge card words and shorter
+  Settings (#572, #574); Games page sorted by next game; full-auto master switch, OFF by default (#7).
 
 ---
 
