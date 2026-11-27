@@ -99,12 +99,11 @@ tick(NOW)
 ok("unreadable data fails closed", vals() == {})
 E.AP_REG["bar"]["load"] = lambda rec, now: E._fal_load(rec, now)
 
-# skip-only: a borrowed league never loosens a bar from the group's evidence
+# two-way: borrowed bar above the start eases back when the group's evidence says looser would pay
 reset(); seed(rich_win=True)
-E.ap_freeze("bar:nba", True)
-E._fa_update(lambda s: s.update(lessons={"vals": {"bar:nhl": 2.0}, "frozen": {"bar:nba": True}}))
+E._fa_update(lambda s: s.update(lessons={"vals": {"bar:nhl": 1.0}, "frozen": {"bar:nba": True}}))
 tick(NOW)
-ok("a borrowed league is never loosened by borrowed evidence (skip-only)", vals() == {"bar:nhl": 2.0})
+ok("a borrowed bar eases back one step when the group's evidence supports looser", vals() == {"bar:nhl": 0.5})
 ok("the registry range stays 0 to 5, step 0.5", E.AP_REG["bar"]["bounds"] == {"lo": 0.0, "hi": 5.0, "step": 0.5})
 
 # brake: tightening by borrow still allowed while cautious; a losing borrowed step is not walked back to looser
@@ -142,3 +141,59 @@ reset(); seed()
 E._fa_update(lambda s: s.update(fa_lessons=False))
 tick(NOW)
 ok("Autopilot off: no borrowing", vals() == {})
+
+# thin revert path: a borrowed step nobody can check after two weeks goes back
+setup()
+tick(NOW)
+ok("setup: borrowed step", vals() == {"bar:nhl": 0.5})
+tick(NOW + 15 * DAY)
+ok("a borrowed step with too few own bets after two weeks is reverted", vals() == {})
+ok("and the log says why", any("too few bets" in (e.get("text") or "") for e in lessons()["log"]))
+
+# hold scope: a pending borrowed step does not block a rich league's own step
+setup()
+tick(NOW)
+E.ap_freeze("bar:nba", False)
+tick(NOW + 8 * DAY)
+ok("a pending borrowed step holds only its own league", vals().get("bar:nhl") == 0.5 and vals().get("bar:nba") == 0.5)
+
+# ratchet cap: a borrowed bar never adds more than +1.5 in all
+def seed_band(pct):
+    reset()
+    for i in range(80):
+        row(1000 + i, "nba", NOW - 4 * DAY + i * 3600, i % 2 == 0)
+    E.store_x("update league_shadow_q set pct=? where pct=0.951", (pct,))
+    for i in range(6):
+        row(5000 + i, "nhl", NOW - 3 * DAY + i * 3600, i % 2 == 0)
+
+
+def lessons_set(v):
+    E._fa_update(lambda s: s.update(lessons={"vals": {"bar:nhl": v}, "since": {"bar:nhl": round(NOW - 10 * DAY)}, "frozen": {"bar:nba": True}}))
+
+
+seed_band(0.967)                                         # the band just above +1.5 loses: +2.0 would pay, the cap says no
+lessons_set(1.5)
+tick(NOW)
+ok("a borrowed bar stops at +1.5 even when the group would tighten more", vals() == {"bar:nhl": 1.5})
+seed_band(0.962)                                         # the band between +1.0 and +1.5 loses: +1.5 pays
+lessons_set(1.0)
+tick(NOW)
+ok("below the cap, borrowing can still tighten up to it", vals() == {"bar:nhl": 1.5})
+
+# timed ease-back: four weeks with no own data to confirm it
+setup()
+E._fa_update(lambda s: s["lessons"].update(vals={"bar:nhl": 1.0}, since={"bar:nhl": round(NOW - 30 * DAY)}))
+tick(NOW)
+ok("a borrowed bar unconfirmed for four weeks eases back one step", vals() == {"bar:nhl": 0.5})
+setup()
+E._fa_update(lambda s: s["lessons"].update(vals={"bar:nhl": 1.0}, since={"bar:nhl": round(NOW - DAY)}))
+tick(NOW)
+ok("not before four weeks", vals() == {"bar:nhl": 1.0})
+setup()
+E._fa_update(lambda s: s["lessons"].update(vals={"bar:nhl": 1.0}, since={"bar:nhl": round(NOW - 30 * DAY)}))
+E._fa_update(lambda s: s.update(brake={"kind": "streak", "why": "t"}))
+tick(NOW)
+ok("the ease-back waits while the brake is cautious", vals() == {"bar:nhl": 1.0})
+E._fa_update(lambda s: s.update(brake=None)); E.ap_freeze("bar:nhl", True)
+tick(NOW + DAY)
+ok("and while frozen", vals() == {"bar:nhl": 1.0})

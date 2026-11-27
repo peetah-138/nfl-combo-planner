@@ -8,9 +8,12 @@ bar. It rides the autopilot registry (#607) unchanged: the same shared gate (`ap
 - **Who borrows**: a league whose own record is below the bar record's minimum sample (`LGSH["k_roi"]`). Its evidence is the
   pooled rows of every other league, judged by the same gate: the older 70% picks the step, the newest 30% must agree, net
   dollars after fees, bootstrap low end above zero. Negative or thin group evidence means no step.
-- **Skip-only**: same 0.5 point step, range 0 to +5. A borrowed step can only tighten, so full auto skips more bets and never
-  buys more. A borrowed bar is never loosened by borrowed evidence; a bad step is walked back by the existing weekly
-  re-score (a loss, or too few bets in two weeks, reverts it). Once the league has its own data it moves by its own record.
+- **Capped, two-way, never stuck**: same 0.5 point steps. A borrowed bar tightens only up to +1.5 in all (tighten-fast), skipping
+  more bets, never buying more. It eases back one step toward the start when the group's evidence supports looser (same gate), or
+  after four weeks with too little own data to confirm it. Easing back is blocked by the brake, a hold or a freeze, like any
+  loosening. A bad step is also reverted by the weekly re-score (a loss, or too few bets in two weeks). With its own data the
+  league moves by its own record.
+- **Scoped hold**: a borrowed step still being judged holds only its own league; other leagues' steps are not blocked.
 - **Exploration floor**: shadow rows keep being logged against the live cut-off (not the borrowed bar), so a thin league keeps
   collecting the data it needs. The +5 ceiling and one step a record per week still apply.
 - **Brake priority**: no loosening while cautious (a lost borrowed step is not reverted to looser until the brake clears);

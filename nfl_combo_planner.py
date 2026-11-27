@@ -24565,6 +24565,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
 # daily loss limit, the bankroll and the losing-streak brake are never touched. Inert unless full auto is ON; the
 # master switch is st["fa_lessons"] (only an explicit False turns it off). Buying stays in panel_exec.
 FAL = {"week": 7 * 86400, "look": 6 * 3600, "judge_max": 14 * 86400, "days": 60, "log": 30,
+       "borrow_max": 1.5, "stale": 28 * 86400,                # a borrowed bar adds at most this; eases back after this long unconfirmed
        "bar": {"lo": 0.0, "hi": 5.0, "step": 0.5},          # points over the league's combo cut-off
        "sbev": {"lo": 0, "hi": 4, "step": 1},                # SB_DIAL_BARS level: none .. +$0.10 expected on $5
        "game": {"lo": 0.10, "hi": 0.30, "step": 0.025}}      # share of the full-auto bankroll one game may carry
@@ -24846,40 +24847,47 @@ def _fal_plan(st, now):
         try:
             by, passes = spec["load"](rec, now)
             s["n"] = sum(len(v) for v in by.values())
+            skip_key = None                                  # a borrowed step still being judged holds only its own league
             lr = last.get(rec) if isinstance(last.get(rec), dict) else None
             if lr and not lr.get("judged"):                  # the last step is judged before anything new
                 age = now - float(lr["at"])
                 if age < FAL["week"]:
                     s["note"] = "watching its last step"
-                    continue
-                ds = _fal_ds(by.get(lr["key"], []), passes, lr["from"], lr["to"])
-                post = [d for k, d, _ in ds if (k or 0) > lr["at"] and abs(d) > KNOB_EPS]
-                net = sum(post)
-                held = abs(_fal_cur(vals, lr["key"]) - lr["to"]) < 1e-9
-                if not math.isfinite(net) or any(not math.isfinite(d) for _, d, _ in ds):
-                    bad, net = "unreadable", 0.0               # a NaN result is never "kept": back to the prior setting
-                elif len(post) >= KNOB_HOLD_MIN and net < -KNOB_EPS:
-                    bad, net = "lost", round(net, 2)
-                elif len(post) < KNOB_HOLD_MIN and age >= FAL["judge_max"]:
-                    bad, net = "thin", round(net, 2)           # never silently keep a step nobody could check
-                else:
-                    bad, net = None, round(net, 2)
-                if bad and held:
-                    if cautious and _ap_looser(rec, lr["to"], lr["from"]):
-                        s["note"] = "the brake is cautious: nothing loosens"
+                    if not lr.get("borrow"):
+                        continue
+                    skip_key = lr["key"]
+                if skip_key is None:
+                    n_before = len(actions)
+                    ds = _fal_ds(by.get(lr["key"], []), passes, lr["from"], lr["to"])
+                    post = [d for k, d, _ in ds if (k or 0) > lr["at"] and abs(d) > KNOB_EPS]
+                    net = sum(post)
+                    held = abs(_fal_cur(vals, lr["key"]) - lr["to"]) < 1e-9
+                    if not math.isfinite(net) or any(not math.isfinite(d) for _, d, _ in ds):
+                        bad, net = "unreadable", 0.0               # a NaN result is never "kept": back to the prior setting
+                    elif len(post) >= KNOB_HOLD_MIN and net < -KNOB_EPS:
+                        bad, net = "lost", round(net, 2)
+                    elif len(post) < KNOB_HOLD_MIN and age >= FAL["judge_max"]:
+                        bad, net = "thin", round(net, 2)           # never silently keep a step nobody could check
                     else:
-                        actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
-                elif bad:
-                    pass
-                elif len(post) >= KNOB_HOLD_MIN:
-                    actions.append({"do": "kept", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
-                else:
-                    s["note"] = "watching its last step (too few bets yet)"
-                continue
+                        bad, net = None, round(net, 2)
+                    if bad and held:
+                        if cautious and _ap_looser(rec, lr["to"], lr["from"]):
+                            s["note"] = "the brake is cautious: nothing loosens"
+                        else:
+                            actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
+                    elif bad:
+                        pass
+                    elif len(post) >= KNOB_HOLD_MIN:
+                        actions.append({"do": "kept", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
+                    else:
+                        s["note"] = "watching its last step (too few bets yet)"
+                    if not lr.get("borrow") or len(actions) > n_before:
+                        continue
+                    skip_key = lr["key"]
             cands = []
             for key, rs in by.items():
                 found = []
-                if _ap_frozen(L, key):
+                if _ap_frozen(L, key) or key == skip_key:
                     continue                                 # frozen by Pete: no new step (a pending revert is still judged)
                 held = _ap_held(L, key, now)
                 ers, borrow = rs, False
@@ -24887,12 +24895,20 @@ def _fal_plan(st, now):
                     ers = sorted((r for k2, v2 in by.items() if k2 != key for r in v2), key=lambda r: r["k"])
                     borrow = True
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
-                    if dirn == "looser" and (cautious or held or borrow):
-                        continue                             # brake priority, held after Undo, or borrowed (skip-only: tighten only)
+                    if dirn == "looser" and (cautious or held):
+                        continue                             # brake priority, or held after Pete's Undo: nothing loosens
+                    if borrow and dirn == "tighter" and new > FAL["borrow_max"] + 1e-9:
+                        continue                             # a borrowed bar never adds more than +1.5 in all
                     ok, ev, lb = ap_gate(rec, key, ers, passes, _fal_cur(vals, key), new, since.get(key) or 0)
+                    stale = False
+                    if not ok and borrow and dirn == "looser" and now - float(since.get(key) or 0) >= FAL["stale"]:
+                        ok, stale = True, True               # four weeks without its own data to confirm it: ease back toward the start
+                        ev, lb = {"band": 0, "gain": 0.0, "hold_n": 0, "hold": 0.0}, 0.0
                     if ok:
                         found.append({"do": "step", "rec": rec, "key": key, "from": _fal_cur(vals, key), "to": new,
-                                      "dir": dirn, "ev": ev, "lb": lb, "borrow": borrow})
+                                      "dir": dirn, "ev": ev, "lb": lb, "borrow": borrow, "stale": stale})
+                if len(found) > 1:
+                    found = [f for f in found if not f["stale"]]   # a gated lesson beats the timed ease-back
                 if len(found) == 1:                          # both ways at once = no clear lesson
                     cands.append(found[0])
             s["pass"] = bool(cands)
@@ -24942,10 +24958,20 @@ def _fal_apply(s, plan, now):
             if to is None or abs(to - a["to"]) > 1e-9 or _ap_frozen(L, key) \
                     or (_ap_looser(rec, a["from"], to) and (cautious or _ap_held(L, key, now))):
                 continue
-            if now - float(L["steps"].get(rec) or 0) < FAL["week"] or (lr and not lr.get("judged")) \
+            if now - float(L["steps"].get(rec) or 0) < FAL["week"] \
+                    or (lr and not lr.get("judged") and not (lr.get("borrow") and lr.get("key") != key)) \
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
                 continue
             ev = a["ev"]
+            if a.get("stale"):
+                say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: it has had too little data of its own for four weeks "
+                    "to confirm the borrowed bar, so it eases back toward the start.",
+                    ev={"stale": True, "borrow": True, "from": a["from"], "to": a["to"]})
+                _fal_set(L, rec, key, a["to"])
+                L["steps"][rec], L["since"][key] = round(now), round(now)
+                L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False, "borrow": True}
+                L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
+                continue
             src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
             say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets from " + src + " this would have made "
                 f"${ev['gain']:.2f} more after fees." if a.get("borrow") else
@@ -24955,7 +24981,8 @@ def _fal_apply(s, plan, now):
                                                           "borrow": bool(a.get("borrow"))})
             _fal_set(L, rec, key, a["to"])
             L["steps"][rec], L["since"][key] = round(now), round(now)
-            L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
+            L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False,
+                            **({"borrow": True} if a.get("borrow") else {})}
             L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
         elif lr and not lr.get("judged") and lr.get("key") == key:
             if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9 \
