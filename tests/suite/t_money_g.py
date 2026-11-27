@@ -50,6 +50,8 @@ def combo(a, b, pct):
 
 
 def t_push_gate():
+    E.MINE["view"] = {"singles": [], "singles_ok": True, "combos": []}; E.MINE["view_at"] = time.time()   # the page needs a read of what you hold
+    E.LIST_HELD.update(at=time.time() + 3600, held=[])          # ...and combo ideas need a good read of your open bets
     E.save_json(E.MAIN_SAVED, {"smart_buy_gate": True})
     E._exit_shadow_table()
     E.SB_GATE.update(dial=None, dial_at=0)
