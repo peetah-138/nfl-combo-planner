@@ -23996,7 +23996,7 @@ def _fa_note(st, ev, now=None, **kw):
     del h[:-20]
 
 
-def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
+def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explicit_on=True):
     """Pete's switch. (ok, message, extra). Off is always allowed. On needs this Mac able to trade (never the Pi), and
     the paper gate passed or override=True (the 'override the paper gate' confirmation); which one is recorded."""
     now = now or time.time()
@@ -24010,6 +24010,9 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
                     return False, f"The {FA_WHY[k]} must be between {lo} and {hi}.", {}
             except (TypeError, ValueError):
                 return False, f"The {FA_WHY[k]} isn't a number.", {}
+    if on and explicit_on is not True and fa_state()["on"] is not True:
+        # a limits-save or reset from a stale tab must never switch it on: only the explicit turn-on request does
+        return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
     if on and not can_trade():
         return False, "This computer can't place orders (it isn't the Mac that trades), so full auto stays off.", {}
     gate = None
@@ -24054,13 +24057,17 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
     return True, "Full auto is OFF. Bets already approved still go; nothing new is approved.", {}
 
 
-def _fa_rows(now, days=10):
-    """[(day, item)] for every real panel bet of the last `days` panel days (restarted panels included)."""
+def _fa_rows(now, days=None):
+    """[(day, item)] for every real panel bet (restarted panels included): all history, or only the last `days` panel
+    days when given. Bankroll free and the losing streak need all of it, or old losses would quietly drop out."""
     if not STORE["db"]:
         return []
     _panel_table()
-    first = _panel_day(now - days * 86400)
-    rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
+    if days is None:
+        rows = store_rows("select day, body from panel where (mode='real' or mode like 'real#%')", ())
+    else:
+        first = _panel_day(now - days * 86400)
+        rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
     return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
 
 
@@ -24071,16 +24078,20 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     now = now or time.time()
     st = st if st is not None else fa_state()
     day = _panel_day(now)
-    rows = _fa_rows(now)
-    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE]
+    rows = _fa_rows(now)                                  # all history: bankroll free and the streak count every loss
+    recent = _panel_day(now - 10 * 86400)
+    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE and d >= recent]   # spent/open stay a recent view
     spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
     open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
     mine = {}
-    for _ in range(3):                                    # a bet swapped in for one of ours (new id) is ours too, chains included
+    grew = True                                           # a bet swapped in for one of ours (new id) is ours too: follow the whole chain
+    while grew:                                           # (each pass only adds new keys, so it ends; no cap, no cycle can loop)
+        grew = False
         for d, c in rows:
             k = f"{d}|{c.get('id')}"
-            if k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine):
+            if k not in mine and (k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine)):
                 mine[k] = (d, c)
+                grew = True
     settled = sorted((x for x in mine.values() if x[1].get("result")),    # a loss is what it really made (panel_pl), exits included
                      key=lambda x: (x[0], x[1].get("bought_at") or x[1].get("at") or 0))
     pl = round(sum(panel_pl(c) or 0 for d, c in settled), 2)

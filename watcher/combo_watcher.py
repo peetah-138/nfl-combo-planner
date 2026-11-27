@@ -4712,6 +4712,7 @@ def webapp_main():
             if a == "full_auto_set":                # the real full-auto switch (own file; never a setting): on needs the paper gate or an explicit override
                 on = d.get("on") is True
                 ok, msg, extra = A.fa_set(on, override=d.get("override") is True, reset_brake=d.get("reset_brake") is True,
+                                          explicit_on=d.get("turn_on") is True,     # only the Turn on button; Save limits / Reset never switch it on
                                           limits=d.get("limits") if isinstance(d.get("limits"), dict) else None)
                 log("full auto", "ON" if on and ok else "OFF" if ok else "refused", "from the app", ("(override)" if d.get("override") is True and ok and on else ""))
                 return jsonable(dict(extra, ok=ok, msg=msg, full_auto=A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())))
