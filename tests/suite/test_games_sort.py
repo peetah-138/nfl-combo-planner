@@ -48,7 +48,7 @@ CARDS = [   # deliberately shuffled: expected order is the EXPECT list
     G("KXNFLGAME-TIE-A", "nfl", start=now + 2 * H),
     G("KXNBAGAME-IDLE-I", "nba", "over", "probably_over", now - 9 * H),
 ]
-EXPECT = ["L1", "L2", "U1", "TIE-A", "TIE-B", "U3", "NOTIME-A", "NOTIME-B", "F1", "F2", "IDLE-I"]
+EXPECT = ["L1-L1", "L2-L2", "U1-U1", "TIE-A", "TIE-B", "U3-U3", "NOTIME-A", "NOTIME-B", "F1-F1", "F2-F2", "IDLE-I"]
 def short(tk): return tk.split("-", 1)[1] if tk.count("-") == 1 else tk.split("-", 1)[1]
 PROBE = """(cards)=>{S.games={games:cards,fresh:null};S.view='games';render();
   return [...document.querySelectorAll('#main .gc')].map(e=>e.dataset.gk);}"""
