@@ -19,7 +19,7 @@ replay alone (`_sl_replay`), so a step could be justified by a feature that is o
   step, #285) against what the bet cost; singles are not in this judge (loss guards are combos).
 - Out of sample: unchanged `knob_evidence` (only bets after the group's last step, step picked on the older 70%, the newest
   30% must also gain). Brake, one mover per value, borrowed values only stricter, the start while braked: unchanged.
-- New for a **loosened** loss guard (`sl_prog` or `sl_drop` below the live value; the counts can't go below their start): the
+- New for a **loosened** loss guard (also held tighten-only, see below) (`sl_prog` or `sl_drop` below the live value; the counts can't go below their start): the
   bootstrap range of its net gain must be above zero too (the same check `sl_feed_age` and `brk_*` already had).
   A tightening step keeps the ordinary bar.
 - Fail closed: no price record or damaged evidence for a bet raises `KnobJudgeUnreadable`; the stepper marks that knob
@@ -27,6 +27,17 @@ replay alone (`_sl_replay`), so a step could be justified by a feature that is o
 - Untouched: `sl_auto`'s own judge, `_sl_tune` and everything smart_tune does with "Let smart sell tune its own numbers" OFF
   (the old numbers exactly), the guards themselves, Pause, caps, rule 8. No new automatic money movement: it only changes
   which step the existing self-tuning may take. The registry text for the five knobs now names the new judge.
+
+## Tighten-only first run (Pete's call)
+
+Until Pete okays it, the five loss guards can only get **stricter** live. A loosening step the judge would take (`sl_prog`
+or `sl_drop` below the live value) that clears the whole bar is not applied: it is logged in `knob_shadow` with status
+`would have loosened` (and shown in the league's last-run list), and the league takes no live loosening step. Stricter
+steps behave as before. Loosening turns on only when `lg265_loosen_ok` is exactly `true` in `combo_knobs.json`, which Pete
+(or the release owner on his word) sets after reading the log. Fail closed: a missing, damaged, unreadable or non-`true`
+marker keeps it tighten-only. No automatic path sets the marker. Tests: `t_lossguard265.py` (no marker, `false` and a
+non-`true` value; the log row; a stricter step still goes live; marker `true` allows it; the bootstrap range at or below
+0 blocks a loosening even with the marker on and every other check met, above 0 lets it through).
 
 ## Which live numbers can move, and by how much
 

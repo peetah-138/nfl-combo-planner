@@ -27212,6 +27212,16 @@ def _knob_res_feed(r, vals):
     return (r["bid"] - single_fee(r["bid"])) - (r["later"] - single_fee(r["later"]))
 
 
+def _lg265_loosen_ok(st):
+    """#265 tighten-only first run: the five loss guards may LOOSEN live only once Pete has okayed it (the marker
+    `lg265_loosen_ok` is True in combo_knobs.json). Until then a loosening step is logged "would have loosened", never
+    applied. Fail closed: a marker that is missing, unreadable or anything but True keeps it tighten-only."""
+    try:
+        return isinstance(st, dict) and st.get("lg265_loosen_ok") is True
+    except Exception:
+        return False
+
+
 def _guard_bootstrap(ds, last_at, seed):
     """Lower bound (5th percentile of a seeded, deterministic bootstrap of the mean) of the net dollars a loosening step
     gained on the bets after the group's last step. A loosening guard step needs this above 0."""
@@ -27614,7 +27624,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                         ev["ok"] = all(ev["checks"].values())
                     if ev["band"] == 0 and ev["hold_n"] == 0:
                         continue                      # changes nothing: nothing to log
-                    status = "qualifies" if ev["ok"] else ("vetoed" if all(
+                    held_back = (is_live and n_ in KNOB_LOSS_GUARDS and loose_ and ev["ok"]
+                                 and not _lg265_loosen_ok(st))   # #265: tighten-only until Pete okays loosening
+                    status = "would have loosened" if held_back else "qualifies" if ev["ok"] else ("vetoed" if all(
                         x for w, x in ev["checks"].items() if w != "holdout") else "below")
                     row = {"knob": n_, "from": cur[n_], "to": to, "status": status, "n": len(rs), "staked": round(staked, 2),
                            **{x: ev[x] for x in ("gain", "share", "band", "t", "new", "hold", "hold_n")},
@@ -27622,7 +27634,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                            "say": knob_step_say(n_, cur[n_], to, ev, len(rs)) +
                            ("" if ev["ok"] or status == "vetoed" else f" Not yet: {_knob_why_not(ev)}.")}
                     last.append(row)
-                    if ev["ok"]:
+                    if ev["ok"] and not held_back:
                         rank = (-ev["gain"], _knob_dist(n_, cur[n_], to))
                         if is_live:
                             if best_live is None or rank < best_live[0]:
@@ -27657,7 +27669,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             e.update(v=v, why=why, last=last, at=now, lv=lv, lat=lat)
             groups[g] = e
             for r in last:
-                if r.get("status") in ("stepped", "would step", "qualifies", "vetoed", "below", "thin"):
+                if r.get("status") in ("stepped", "would step", "would have loosened", "qualifies", "vetoed", "below",
+                                       "thin"):
                     logrows.append((now, g, r["knob"], json.dumps(r.get("from")), json.dumps(r.get("to")), r["status"],
                                     r.get("gain"), r.get("share"), r.get("band"), r.get("t"), r.get("new"),
                                     r.get("hold"), r.get("hold_n"), r.get("say", "")[:600], r.get("n"),

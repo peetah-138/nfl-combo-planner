@@ -146,6 +146,57 @@ E.knob_judge = real_judge
 ok("every one of the five is judged by the real-driver judge, and still shares nothing with the hedge",
    all(E.KNOB_JUDGED[n] == "sl" and E.KNOB_BY[n]["judge"] == "_knob_res_loss" for n in E.KNOB_LOSS_GUARDS))
 
+# ---- 6b. Pete's call: the first weekly run is TIGHTEN-ONLY. A loosening step is logged "would have loosened", never applied,
+# until the marker lg265_loosen_ok is True in combo_knobs.json (Pete's okay after reading the log). Fail closed.
+def run_once(marker, loosen_to, tighten_to=None):
+    E.save_json(E.KNOBS_FILE, {} if marker is None else {"lg265_loosen_ok": marker}); E.KNOB_STATE_CACHE["d"] = None
+    E.CFG["knobs_live"] = True; E.KNOB_SWITCH["on"] = None
+    def jd(jdn, rows, cur_, name, to, cache=None, **kw):
+        base = [(cc.get("kick"), 0.0, 5.0) for cc, _, _ in rows]
+        if name == "sl_prog" and to == loosen_to or (tighten_to is not None and name == "sl_prog" and to == tighten_to):
+            return [(k, (0.9 if i % 4 == 0 else 0.0), s) for i, (k, _, s) in enumerate(base)]
+        return base
+    E.knob_judge = jd
+    E.knob_tune(now, force=True)
+    E.knob_judge = real_judge
+    g = E.knob_state()["groups"].get("nba") or {}
+    return g, {r["to"]: r["status"] for r in g.get("last", []) if r["knob"] == "sl_prog"}
+for marker, label in ((None, "no marker"), (False, "marker false"), ("yes", "marker not exactly True")):
+    g, st_ = run_once(marker, 0.45)
+    ok("loosening a loss guard (" + label + "): not applied, logged as would have loosened",
+       st_.get(0.45) == "would have loosened" and "sl_prog" not in (g.get("lv") or {}))
+g, st_ = run_once(None, 0.45)
+ok("...and the move log has the row", any(r["status"] == "would have loosened" for r in E.store_rows(
+    "select status from knob_shadow where knob='sl_prog'")))
+g, st_ = run_once(None, 0.45, tighten_to=0.55)
+ok("tighten-only: a stricter step of the same gain still goes live on that first run",
+   st_.get(0.55) == "stepped" and (g.get("lv") or {}).get("sl_prog") == 0.55)
+g, st_ = run_once(True, 0.45)
+ok("once Pete okays it (marker True) the loosening step is allowed again",
+   st_.get(0.45) == "stepped" and (g.get("lv") or {}).get("sl_prog") == 0.45)
+real_load = E.load_json
+E.load_json = lambda path, dflt=None: (_ for _ in ()).throw(OSError("unreadable")) if path == E.KNOBS_FILE else real_load(path, dflt)
+ok("an unreadable marker file reads as tighten-only", E._lg265_loosen_ok({}) is False and E._lg265_loosen_ok(None) is False)
+E.load_json = real_load
+
+# ---- 6c. the reviewer's gap: the bootstrap check blocks a weak loosening gain even with the marker on and every other check met
+ds_weak = [(now - 86400 * i, v, 5.0) for i, v in enumerate([3, -2, -2, -2, 3, -2, 3, -2, 3, -2, 3, -2])]
+ok("a lumpy gain with a positive mean has a bootstrap range that does not clear zero",
+   sum(d for _, d, _ in ds_weak) > 0 and E._guard_bootstrap(ds_weak, None, "sl_prog|nba") <= 0)
+E.save_json(E.KNOBS_FILE, {"lg265_loosen_ok": True}); E.KNOB_STATE_CACHE["d"] = None
+real_boot = E._guard_bootstrap
+def run_boot(lo):
+    E._guard_bootstrap = lambda *a, **k: lo
+    try:
+        return run_once(True, 0.45)
+    finally:
+        E._guard_bootstrap = real_boot
+g, st_ = run_boot(-0.2)
+ok("same steady gain, bootstrap range at or below 0 (marker on): the loosening is NOT applied",
+   st_.get(0.45) != "stepped" and "sl_prog" not in (g.get("lv") or {}))
+g, st_ = run_boot(0.3)
+ok("...and with the range above 0 it is (so the bootstrap alone is what blocked it)", st_.get(0.45) == "stepped")
+
 # ---- 7. what does not change
 ok("_sl_tune (smart_tune's own mover, used with the switch off) is untouched: the old stop-loss-only score",
    "knob_loss_drivers" not in E._sl_tune.__code__.co_names and "_knob_res_loss" not in E._sl_tune.__code__.co_names)
