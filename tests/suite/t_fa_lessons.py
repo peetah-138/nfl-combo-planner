@@ -101,8 +101,9 @@ reset()
 seed_bar()
 ok("a clear lesson takes one step", tick(NOW) is True and vals() == {"bar:nba": 0.5})
 line = (lessons().get("log") or [{}])[-1].get("text", "")
-ok("the step is logged in plain English with before, after and the evidence", line.startswith("Learned: NBA combo bar +0 points -> +0.5 points")
-   and "because" in line and "past bets" in line and "after fees" in line)
+ok("the step is logged in plain English with before, after and the evidence", line.startswith("Raised the NBA combo bar a little: on ")
+   and "past bets this would have made $" in line and line.endswith("more after fees.") and "->" not in line
+   and lessons()["log"][-1]["ev"]["lb"] > 0)
 ok("the view shows it", E.full_auto_view()["lessons"]["log"][0] == line and E.full_auto_view()["lessons"]["learned"][0]["text"] == "+0.5 points")
 ok("one step a week per record: nothing more a day later", tick(NOW + DAY) is True and vals() == {"bar:nba": 0.5})
 before = {k: E.fa_state()[k] for k in E.FA_LIMITS}
@@ -117,7 +118,7 @@ for i in range(6):                                      # bets in the band the s
               (5000 + i, at + 3600 * (i + 1), "nba", "nba", 2, 0.951, 5.0, 5.5, 95.0, 95.0, 1, 1, "won", 3.0))
 tick(NOW + 8 * DAY)
 ok("a step that lost money the week after is reverted", vals() == {} and lessons()["last"]["bar"].get("reverted") is True)
-ok("the revert is logged", "back +0.5 points -> +0 points" in lessons()["log"][-1]["text"])
+ok("the revert is logged", lessons()["log"][-1]["text"].startswith("Put the NBA combo bar back where it was: the ") and "lost $" in lessons()["log"][-1]["text"])
 ok("after a revert only newer bets count: no step the next day", tick(NOW + 9 * DAY) is True and vals() == {})
 
 # ---- kept: the step held up
@@ -241,11 +242,11 @@ ok("manual approvals never touch the lessons file", E.fa_state().get("lessons", 
 reset()
 seed_sb()
 ok("a Smart Buy paper book lesson steps the full-auto bar one level", tick(NOW) and vals() == {"sbev:nba": 1}
-   and "Smart Buy bar no extra bar -> $-0.20 expected on $5" in lessons()["log"][-1]["text"])
+   and lessons()["log"][-1]["text"].startswith("Raised the NBA Smart Buy bar one level: on "))
 reset()
 seed_expo()
 ok("an exposure lesson steps the per-game share one notch", tick(NOW) and vals() == {"game_share": 0.275}
-   and "per-game limit 30% of the bankroll -> 27.5% of the bankroll" in lessons()["log"][-1]["text"])
+   and lessons()["log"][-1]["text"].startswith("Lowered the per-game limit to 27.5% of the bankroll: on "))
 reset()
 seed_bar(); seed_sb(); seed_expo()
 tick(NOW)
