@@ -170,7 +170,7 @@ for i in range(6):
               (8000 + i, at + 3600 * (i + 1), "nba", "nba", 2, 0.951, 5.0, 5.5, 95.0, 95.0, 1, 1, "won", 3.0))
 E.ap_freeze("bar:nba", True)
 tick(NOW + 8 * DAY)
-ok("a frozen setting is left alone even when its step lost", vals() == {"bar:nba": 0.5})
+ok("a frozen setting's pending step is still judged and reverted when it lost", vals() == {})
 
 # ---- brake hook: no loosening anywhere while cautious; tightening still allowed
 ok("the hook is calm with no brake", E.ap_brake_cautious({}) is False)
@@ -237,3 +237,78 @@ plan["actions"][0]["to"] = 9.0                           # a plan that tries to 
 E._fa_update(lambda s: E._fal_apply(s, plan, NOW))
 ok("a plan outside the bounds is not applied", vals() == {})
 ok("limits are never touched", all(E.fa_state()[k] == E.FA[k] for k in E.FA_LIMITS))
+
+
+# ---- review fixes: soft brake (caution level), hold only blocks loosening, undo never loosens, frozen reverts, bad holds
+ok("hook: a soft-brake caution level above 0 is cautious", E.ap_brake_cautious({"caution": {"level": 1}}) is True)
+ok("hook: level 0 or no caution is calm", E.ap_brake_cautious({"caution": {"level": 0}}) is False and E.ap_brake_cautious({}) is False)
+ok("hook fails closed on unreadable state", E.ap_brake_cautious({"caution": "x"}) is True and E.ap_brake_cautious({"caution": {"level": "hi"}}) is True
+   and E.ap_brake_cautious(None) is True and E.ap_brake_cautious({"caution": {"level": float("nan")}}) is True)
+
+
+def seed_loosen():
+    reset(); seed_bar()
+    E._fa_update(lambda s: s.update(lessons={"vals": {"bar:nba": 2.0}}))
+    E.store_x("delete from league_shadow_q", ())
+    for i in range(80):
+        E.store_x("insert into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (2000 + i, NOW - 4 * DAY + i * 3600, "nba", "nba", 2, 0.968 if i % 2 == 0 else 0.99, 5.0, 5.5, 95.0, 95.0, 1, 1, "won", 4.0 if i % 2 == 0 else 0.5))
+
+
+seed_loosen()
+E._fa_update(lambda s: s.update(caution={"level": 1}))
+tick(NOW)
+ok("soft-brake caution blocks loosening", vals() == {"bar:nba": 2.0})
+E._fa_update(lambda s: s.update(caution={"level": 0}))
+tick(NOW + DAY)
+ok("caution at 0: it loosens", vals() == {"bar:nba": 1.5})
+
+# a hold blocks only loosening
+seed_loosen()
+E._fa_update(lambda s: s["lessons"].update(holds={"bar:nba": NOW + 5 * DAY}))
+tick(NOW)
+ok("a hold blocks loosening", vals() == {"bar:nba": 2.0})
+tick(NOW + 6 * DAY)
+ok("the hold over, it loosens", vals() == {"bar:nba": 1.5})
+reset(); seed_bar()
+E._fa_update(lambda s: s.update(lessons={"holds": {"bar:nba": NOW + 5 * DAY}}))
+tick(NOW)
+ok("a hold does not block tightening", vals() == {"bar:nba": 0.5})
+
+# undo never loosens while cautious
+step_bar()
+E._fa_update(lambda s: s.update(caution={"level": 2}))
+okU, msgU = E.ap_undo(NOW + 10)
+ok("undo refuses a loosening undo while cautious", okU is False and vals() == {"bar:nba": 0.5} and "brake" in msgU)
+E._fa_update(lambda s: s.update(caution={"level": 0}))
+ok("undo works once calm", E.ap_undo(NOW + 20)[0] is True and vals() == {})
+
+# undoing a revert never restores a looser value the evidence rejected
+seed_loosen()
+tick(NOW)
+ok("setup: loosened 2.0 -> 1.5", vals() == {"bar:nba": 1.5})
+at = lessons()["last"]["bar"]["at"]
+for i in range(6):
+    E.store_x("insert into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              (9500 + i, at + 3600 * (i + 1), "nba", "nba", 2, 0.968, 5.0, 5.5, 95.0, 95.0, 1, 1, "lost", -4.0))
+tick(NOW + 8 * DAY)
+ok("setup: the losing looser step reverted to 2.0", vals() == {"bar:nba": 2.0} and lessons()["change"]["kind"] == "revert")
+okU, msgU = E.ap_undo(NOW + 8 * DAY + 5)
+ok("undo refuses to restore the looser value the evidence rejected", okU is False and vals() == {"bar:nba": 2.0} and "rejected" in msgU)
+
+# a frozen looser step still reverts (tightening)
+seed_loosen()
+tick(NOW)
+at = lessons()["last"]["bar"]["at"]
+for i in range(6):
+    E.store_x("insert into league_shadow_q values(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+              (9600 + i, at + 3600 * (i + 1), "nba", "nba", 2, 0.968, 5.0, 5.5, 95.0, 95.0, 1, 1, "lost", -4.0))
+E.ap_freeze("bar", True)
+tick(NOW + 8 * DAY)
+ok("a frozen losing looser step still reverts", vals() == {"bar:nba": 2.0})
+
+# a malformed hold doesn't break the card
+step_bar()
+E._fa_update(lambda s: s["lessons"].update(holds={"bar:nba": "soon", "sbev:nba": None}))
+v = E.full_auto_view()["lessons"]
+ok("a malformed hold is no hold and the card still renders", v.get("err") is None and v["holds"] == [] and v["switch"] is True)

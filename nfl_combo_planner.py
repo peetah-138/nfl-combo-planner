@@ -24435,9 +24435,22 @@ def ap_register(rec, label, load, min_n, text, bounds, start, tighter_sign):
 def ap_brake_cautious(st):
     """THE BRAKE HOOK. True while the full-auto brake is in a cautious state, so nothing may loosen anywhere (tightening
     still may). Today: the losing-streak / daily-loss brake is tripped. The soft brake plugs in here later; this function
-    is the only place the autopilot looks at the brake, and it never changes it. Unreadable = cautious."""
+    is the only place the autopilot looks at the brake, and it never changes it. Reads both the hard brake (st["brake"])
+    and the soft brake's confidence level (st["caution"]["level"] > 0; absent before that lands). Unreadable = cautious."""
     try:
-        return isinstance(st.get("brake"), dict) and bool(st["brake"].get("kind"))
+        if not isinstance(st, dict):
+            return True
+        if isinstance(st.get("brake"), dict) and st["brake"].get("kind"):
+            return True
+        c = st.get("caution")
+        if c is None:
+            return False
+        if not isinstance(c, dict):
+            return True
+        lv = c.get("level", 0)
+        if isinstance(lv, bool) or not isinstance(lv, (int, float)) or not math.isfinite(lv):
+            return True
+        return lv > 0
     except Exception:
         return True
 
@@ -24669,9 +24682,7 @@ def _fal_plan(st, now):
                 else:
                     bad, net = None, round(net, 2)
                 if bad and held:
-                    if _ap_frozen(L, lr["key"]):
-                        s["note"] = "frozen by you"
-                    elif cautious and _ap_looser(rec, lr["to"], lr["from"]):
+                    if cautious and _ap_looser(rec, lr["to"], lr["from"]):
                         s["note"] = "the brake is cautious: nothing loosens"
                     else:
                         actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
@@ -24685,11 +24696,12 @@ def _fal_plan(st, now):
             cands = []
             for key, rs in by.items():
                 found = []
-                if _ap_frozen(L, key) or _ap_held(L, key, now):
-                    continue                                 # frozen by Pete, or held after his Undo
+                if _ap_frozen(L, key):
+                    continue                                 # frozen by Pete: no new step (a pending revert is still judged)
+                held = _ap_held(L, key, now)
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
-                    if dirn == "looser" and cautious:
-                        continue                             # brake priority: nothing loosens
+                    if dirn == "looser" and (cautious or held):
+                        continue                             # brake priority, or held after Pete's Undo: nothing loosens
                     ok, ev, lb = ap_gate(rec, key, rs, passes, _fal_cur(vals, key), new, since.get(key) or 0)
                     if ok:
                         found.append({"do": "step", "rec": rec, "key": key, "from": _fal_cur(vals, key), "to": new,
@@ -24736,12 +24748,12 @@ def _fal_apply(s, plan, now):
     for a in plan.get("actions") or []:
         rec, key = a["rec"], a["key"]
         lr = L["last"].get(rec) if isinstance(L["last"].get(rec), dict) else None
-        if rec not in AP_REG or _ap_frozen(L, key):
-            continue                                         # re-checked under the lock: frozen since the look = no change
+        if rec not in AP_REG:
+            continue
         if a["do"] == "step":
             to = ap_clamp(rec, a["to"])                      # the outer fence, once more, right before it is saved
-            if to is None or abs(to - a["to"]) > 1e-9 or _ap_held(L, key, now) \
-                    or (cautious and _ap_looser(rec, a["from"], to)):
+            if to is None or abs(to - a["to"]) > 1e-9 or _ap_frozen(L, key) \
+                    or (_ap_looser(rec, a["from"], to) and (cautious or _ap_held(L, key, now))):
                 continue
             if now - float(L["steps"].get(rec) or 0) < FAL["week"] or (lr and not lr.get("judged")) \
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
@@ -24873,6 +24885,10 @@ def ap_undo(now=None):
         if err or back is None or abs(_fal_cur(vals, key) - ch["to"]) > 1e-9:
             out["r"] = (False, "Nothing to undo: that setting is no longer where autopilot left it.")
             return
+        if _ap_looser(rec, ch["to"], back) and (ap_brake_cautious(s) or ch.get("kind") == "revert"):
+            out["r"] = (False, "Can't undo that: it would loosen a setting " +
+                        ("the evidence just rejected." if ch.get("kind") == "revert" else "while the brake is cautious."))
+            return
         for k in ("vals", "since", "last", "holds"):
             if not isinstance(L.get(k), dict):
                 L[k] = {}
@@ -24950,8 +24966,13 @@ def fal_view(st):
         if ch and vals and ch.get("rec") in AP_REG and abs(_fal_cur(vals, ch["key"]) - ch["to"]) < 1e-9:
             undo = f"{_fal_name(ch['key'])}: {_fal_val_text(ch['rec'], ch['to'])} back to {_fal_val_text(ch['rec'], ch['from'])}"
         frozen = sorted(k for k, v in (L.get("frozen") or {}).items() if v) if isinstance(L.get("frozen"), dict) else []
-        holds = [{"name": _fal_name(k), "until": round(float(t))} for k, t in sorted((L.get("holds") or {}).items())
-                 if isinstance(L.get("holds"), dict) and float(t or 0) > time.time()] if isinstance(L.get("holds"), dict) else []
+        holds = []
+        for k, t in sorted((L.get("holds") or {}).items()) if isinstance(L.get("holds"), dict) else []:
+            try:
+                if float(t) > time.time():
+                    holds.append({"name": _fal_name(k), "until": round(float(t))})
+            except Exception:
+                pass                                         # a malformed hold is no hold
         return {"switch": st.get("fa_lessons") is not False, "active": fal_on(st), "learned": learned, "log": log,
                 "undo": undo, "frozen": frozen, "holds": holds, "cautious": ap_brake_cautious(st),
                 "recs": recs, "not_wired": [{"name": n, "why": w} for n, w in FAL_NOT_WIRED], "err": err}
