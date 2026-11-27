@@ -1,0 +1,2 @@
+# Weather research backtest (issue #494)
+Adds `tools/research/weather_backtest.py`, an offline research script (no trading, no keys, public endpoints only) that backtests Kalshi daily high-temperature markets against the NWS NBS forecast archive from the Iowa Environmental Mesonet. Data is cached outside the repo and never committed. Result of the first run: FAIL (net negative after fee and spread); no app behaviour changes.
