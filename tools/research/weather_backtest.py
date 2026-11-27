@@ -348,7 +348,6 @@ def boot(rows, q_lo, nb=NBOOT, seed=1):
 
 
 def pick(fills, lead, thr, lag, n, lo=None, hi=None, city=None):
-    out = []
     best = {}
     for r in fills:
         if r["lead"] != lead or r["lag"] != lag or r["n"] != n or r["edge"] < thr:
@@ -368,7 +367,6 @@ def stage_analyze():
     days = sorted({d.isoformat() for d in days_range()})
     cut = days[int(len(days) * TRAIN_FRAC)]
     print("fit days <", cut, "| test days >=", cut)
-    rep = {"cut": cut}
     fitres = {}
     for lead, thr in VARIANTS:
         r = pick(fills, lead, thr, LAG, ORDER_N, hi=cut)
