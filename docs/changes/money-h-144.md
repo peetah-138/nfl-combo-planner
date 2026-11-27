@@ -15,6 +15,9 @@ unchanged: strikes below the book total get a lower chance (for example ncaamb w
 above it are unchanged (the `min` makes a higher chance impossible). So totals can only get stricter: a smaller edge, fewer recommendations
 on Build, Best bets and the panel. `line_fairs.fair_old` (the old-vs-new comparison feeding `line_gate`) moves the same way.
 
+Indirect effect: `fair_old` feeds `line_gate`'s live old-vs-new comparison (`line_accuracy`/`line_live_stats`). After 200+ settled games the gate
+could flip either way for a league/kind; worst case is a few cents of edge on a few strikes.
+
 ## #374 Killer skipped deals are scored (measurement only)
 `killer_skipped_summary()` adds `skipped` to `killer_summary()`: how many skipped deals, how many settled, and what they
 would have won or lost in dollars, split into overlap skips (including "couldn't check your open bets") and the rest, so
