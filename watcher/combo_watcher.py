@@ -4729,6 +4729,13 @@ def webapp_main():
                 ok, msg = A.fa_lessons_set(d.get("on") is True)
                 log("full auto lessons", "ON" if d.get("on") is True and ok else "OFF" if ok else "refused", "from the app")
                 return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
+            if a in ("autopilot_undo", "autopilot_freeze"):   # (#144) Undo last change / freeze one setting: own taps, never through full_auto_set
+                if a == "autopilot_undo":
+                    ok, msg = A.ap_undo()
+                else:
+                    ok, msg = A.ap_freeze(str(d.get("key") or ""), d.get("on") is True)
+                log("full auto autopilot", a.split("_")[1], "ok" if ok else "refused", "from the app")
+                return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
