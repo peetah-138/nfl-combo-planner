@@ -158,5 +158,39 @@ def t_held_push():
     E.SB_GATE.update(dial=None, dial_at=0)
 
 
-for n, fn in (("gate", t_gate), ("shadow missing", t_shadow_missing), ("line pass", t_line_pass), ("held push", t_held_push)):
+def t_panel_collect_flush():
+    """End to end: a push held for Smart Buy's verdict goes out when a real panel_collect pass ends (it calls
+    flush_idea_pushes last), once, and only while the page still lists the idea and the game is 15+ minutes away."""
+    sent = []
+    E._alert = lambda alert, msg, *a: sent.append(msg)
+    E.PUSH_WAIT.clear()
+    E.save_json(E.MAIN_SAVED, {"smart_buy_gate": True})
+    E.save_json(E.IDEA_DISMISS, {})
+    E.save_json(E.SB_DIAL_FILE, {"nba": {"n": 40, "level": 1, "own": True}})
+    E.SB_GATE.update(dial=None, dial_at=0)
+    E._exit_shadow_table()
+    E.store_x("delete from exit_shadow")
+    E.MINE["view"] = {"singles": [], "singles_ok": True, "combos": []}; E.MINE["view_at"] = time.time()
+    for k, v in dict(fetch_markets=lambda: [], week_games=lambda markets, loose=False, weeks=1: ({}, {}, None),
+                     attach_fair=lambda games, book: (0, {}), load_book_state=lambda snap: {},
+                     line_candidates=lambda code, everything=False: [], predict_quote=lambda c: None,
+                     thin_legs=lambda legs: False).items():
+        setattr(E, k, v)
+    E.set_league("nba")
+    tk, sid = single("SSSTTT", 7200)
+    E.push_idea("topic", sid, "held1", "value", "/")
+    E.panel_collect(E.empty_snapshot(), "nba", log=lambda *a: None)
+    ok("panel_collect: a held push with no verdict yet is still held after the pass", not sent and sid in E.PUSH_WAIT)
+    E.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",
+              (time.time(), f"idea:idea:{sid}", "idea", json.dumps([tk]), 0.5, 1))
+    E.panel_collect(E.empty_snapshot(), "nba", log=lambda *a: None)
+    ok("panel_collect: ...and goes out, once, at the end of the next pass", sent == ["held1"] and sid not in E.PUSH_WAIT)
+    E.panel_collect(E.empty_snapshot(), "nba", log=lambda *a: None)
+    ok("panel_collect: ...and is never sent a second time", sent == ["held1"])
+    E.save_json(E.SB_DIAL_FILE, {})
+    E.SB_GATE.update(dial=None, dial_at=0)
+
+
+for n, fn in (("gate", t_gate), ("shadow missing", t_shadow_missing), ("line pass", t_line_pass), ("held push", t_held_push),
+              ("panel_collect flush", t_panel_collect_flush)):
     safe(n, fn)
