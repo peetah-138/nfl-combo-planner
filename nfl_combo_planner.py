@@ -24882,13 +24882,17 @@ def _fal_plan(st, now):
                 if _ap_frozen(L, key):
                     continue                                 # frozen by Pete: no new step (a pending revert is still judged)
                 held = _ap_held(L, key, now)
+                ers, borrow = rs, False
+                if rec == "bar" and len(rs) < spec["min_n"](rec):   # too thin for its own step: borrow the group's evidence
+                    ers = sorted((r for k2, v2 in by.items() if k2 != key for r in v2), key=lambda r: r["k"])
+                    borrow = True
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
-                    if dirn == "looser" and (cautious or held):
-                        continue                             # brake priority, or held after Pete's Undo: nothing loosens
-                    ok, ev, lb = ap_gate(rec, key, rs, passes, _fal_cur(vals, key), new, since.get(key) or 0)
+                    if dirn == "looser" and (cautious or held or borrow):
+                        continue                             # brake priority, held after Undo, or borrowed (skip-only: tighten only)
+                    ok, ev, lb = ap_gate(rec, key, ers, passes, _fal_cur(vals, key), new, since.get(key) or 0)
                     if ok:
                         found.append({"do": "step", "rec": rec, "key": key, "from": _fal_cur(vals, key), "to": new,
-                                      "dir": dirn, "ev": ev, "lb": lb})
+                                      "dir": dirn, "ev": ev, "lb": lb, "borrow": borrow})
                 if len(found) == 1:                          # both ways at once = no clear lesson
                     cands.append(found[0])
             s["pass"] = bool(cands)
@@ -24942,9 +24946,13 @@ def _fal_apply(s, plan, now):
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
                 continue
             ev = a["ev"]
-            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets this would have made "
+            src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
+            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets from " + src + " this would have made "
+                f"${ev['gain']:.2f} more after fees." if a.get("borrow") else
+                f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets this would have made "
                 f"${ev['gain']:.2f} more after fees.", ev={"band": ev["band"], "gain": ev["gain"], "hold_n": ev["hold_n"],
-                                                          "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"]})
+                                                          "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"],
+                                                          "borrow": bool(a.get("borrow"))})
             _fal_set(L, rec, key, a["to"])
             L["steps"][rec], L["since"][key] = round(now), round(now)
             L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
