@@ -61,11 +61,8 @@ CFG = {
     "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
     "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
-<<<<<<< HEAD
     "hedge_before_loss_skip": True,   # (#312) auto cash-out weighs a hedge that locks in at least the cost before skipping a below-cost sale
-=======
     "live_bar_learn": True,           # (#287) learn (paper only) the in-play single green bar per league from live_fairs
->>>>>>> origin/develop
     "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
     "loss_cut_default": True,   # the cautious starting loss cut (12.5% win chance, combos) for a league with no record of its own; off = the old "never until a league's own record turns it on". Every loss guard still applies
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
