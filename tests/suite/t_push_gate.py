@@ -111,5 +111,52 @@ def t_line_pass():
     E.save_json(E.IDEA_DISMISS, {})
 
 
-for n, fn in (("gate", t_gate), ("shadow missing", t_shadow_missing), ("line pass", t_line_pass)):
+def t_held_push():
+    sent = []
+    E._alert = lambda alert, msg, *a: sent.append(msg)
+    E.PUSH_WAIT.clear()
+    E.save_json(E.MAIN_SAVED, {"smart_buy_gate": True})
+    E.save_json(E.IDEA_DISMISS, {})
+    E.save_json(E.SB_DIAL_FILE, {"nba": {"n": 40, "level": 1, "own": True}})
+    E.SB_GATE.update(dial=None, dial_at=0)
+    E._exit_shadow_table()
+    E.store_x("delete from exit_shadow")
+
+    def verdict(tk, sid):
+        E.store_x("insert into exit_shadow(ts, cand, source, tickers, ev, new) values(?,?,?,?,?,?)",
+                  (time.time(), f"idea:idea:{sid}", "idea", json.dumps([tk]), 0.5, 1))
+    tk, sid = single("HHHIII", 7200)
+    ok("held: stored before its verdict, not pushed yet", E.push_idea("topic", sid, "m1", "value", "/") is False and not sent)
+    ok("held: ...flush before the verdict sends nothing and keeps it", E.flush_idea_pushes() == 0 and sid in E.PUSH_WAIT)
+    verdict(tk, sid)
+    ok("held: pushed once after the verdict", E.flush_idea_pushes() == 1 and sent == ["m1"] and sid not in E.PUSH_WAIT)
+    ok("held: never pushed twice", E.flush_idea_pushes() == 0 and len(sent) == 1)
+    tk2, sid2 = single("JJJKKK", 7200)
+    E.push_idea("topic", sid2, "m2", "value", "/")
+    E.save_json(E.IDEA_DISMISS, {"day": time.strftime("%Y-%m-%d"), "items": {E.idea_key([tk2]): {"at": time.time(), "edge": 9, "price_c": 1}}, "bought": {}, "unsure": {}})
+    verdict(tk2, sid2)
+    ok("held: dropped, not pushed, if the page hid it meanwhile", E.flush_idea_pushes() == 0 and "m2" not in sent and sid2 not in E.PUSH_WAIT)
+    E.save_json(E.IDEA_DISMISS, {})
+    tk3, sid3 = single("LLLNNN", 7200)
+    E.push_idea("topic", sid3, "m3", "value", "/")
+    E.store_x("update suggestions set kick=? where id=?", (time.time() + 600, sid3))
+    verdict(tk3, sid3)
+    ok("held: dropped if the game is under 15 minutes away", E.flush_idea_pushes() == 0 and "m3" not in sent and sid3 not in E.PUSH_WAIT)
+    tk4, sid4 = single("OOOPPP", 7200)
+    E.push_idea("topic", sid4, "m4", "value", "/")
+    E.PUSH_WAIT[sid4] = (time.time() - 4000,) + E.PUSH_WAIT[sid4][1:]
+    verdict(tk4, sid4)
+    ok("held: dropped when it waited too long", E.flush_idea_pushes() == 0 and "m4" not in sent and sid4 not in E.PUSH_WAIT)
+    tk5, sid5 = single("QQQRRR", 7200)
+    E.push_idea("topic", sid5, "m5", "value", "/")
+    verdict(tk5, sid5)
+    real = E.live_ideas
+    E.live_ideas = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    ok("held: an error fails closed (dropped, no push)", E.flush_idea_pushes() == 0 and "m5" not in sent and sid5 not in E.PUSH_WAIT)
+    E.live_ideas = real
+    E.save_json(E.SB_DIAL_FILE, {})
+    E.SB_GATE.update(dial=None, dial_at=0)
+
+
+for n, fn in (("gate", t_gate), ("shadow missing", t_shadow_missing), ("line pass", t_line_pass), ("held push", t_held_push)):
     safe(n, fn)

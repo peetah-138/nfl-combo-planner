@@ -10,6 +10,11 @@ only the Smart Buy part of the page's filter, failing open when the shadow had n
   low-credit and the top-15 cut all apply), and it must be the very quote the push links to.
 - The game must start at least 15 minutes away (was 5, and absent for line ideas). No kick time on file: no push.
 - Where Smart Buy's dial is active, the shadow's verdict must already be written; before, a missing row let it through.
+  That verdict is written every 10 minutes after the idea is stored, so a push held only for it is not lost: it waits
+  in a small in-memory queue (`push_idea` / `flush_idea_pushes`) and goes out right after the shadow pass writes the
+  verdict, once, and only if the page still lists the idea and the game is still 15+ minutes away. It is dropped if the
+  page hides the idea, the game gets within 15 minutes, it waited over an hour, or anything errors. A restart drops the
+  queue (a held push is lost, never doubled).
 - Anything unreadable or missing: no push (fails closed).
 - `line_pass` pushes a given idea once; it re-stores after 2 hours as before, but only pushes again if the price got
   3+ points better.
