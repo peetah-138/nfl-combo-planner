@@ -34,6 +34,8 @@ def load():
         st = amount or 5.0
         return {"pays": st * 3.1, "price": 1 / 3.1, "min": st * 2.8, "ok": True, "stake": st, "pct": 1.02, "bar": 95}
     A.get_offer = offer
+    # (#286) a pregame idea is priced from the board's fresh sportsbook price (Buy straight's rules); here the board is faked fresh
+    A.idea_pre_fair = lambda tk, side, kind, now=None: (0.45, "sportsbooks + your record", None)
     A.idea_single_buy = lambda t, n, price, paused=False, log=print, key=None: (BUYS.append((t, n, price)) or
                                                                                {"ok": True, "pays": n, "msg": f"Bought {n}."})
     AA["A"] = A

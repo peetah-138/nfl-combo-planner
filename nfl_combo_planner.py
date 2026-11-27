@@ -347,8 +347,11 @@ def cap_msg(spent, add):
     """The Buy tap's answer when `add` would push what's spent over the cap: what it would reach, how much room
     is left, and which setting to change."""
     budget, left = CFG["budget"], max(0.0, CFG["budget"] - spent)
+    need = math.ceil((spent + add) / 10 - 1e-9) * 10     # the Settings cap slider moves in $10 steps (up to $200)
+    if need > 200:
+        need = spent + add
     return (f"That would bring your spending {cap_window()} to {money(spent + add)}, over your {money(budget)} cap. "
-            f"You have {money(left)} left. To go ahead, raise it to at least {money(spent + add)} in "
+            f"You have {money(left)} left. To go ahead, raise it to at least {money(need)} in "
             f"Settings > Money > {cap_label()} (for {LG()['name']}).")
 
 
@@ -5898,7 +5901,7 @@ def _smart_trigger(t, h):
     tp = float(CFG.get("take_profit") or 0) / 100
     lock_on = bool(CFG.get("lock_trail", True))
     if CFG.get("lock_trail", True):
-        arm = max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+        arm = max(knob.get("trail_arm", TRAIL_ARM) * P, knob.get("trail_arm_cost", TRAIL_ARM_COST) * cost)   # #551b: the tuned numbers the sale uses
         if (MINE.get("peak") or {}).get(t, 0.0) < arm and arm <= sell_top(P) + 0.005 and not any(s == "paused" for s, _ in blk):
             out["lock_at"] = round(arm, 2)
     others = [w for w, on in ((f"your take-profit line (${max(tp * P, TP_MIN_GAIN * cost):.2f})", tp > 0),
@@ -5919,7 +5922,7 @@ def _smart_trigger(t, h):
     ro = real["offer"] / max(real.get("frac", 1.0), 0.01) if real and real.get("rfq") != "estimate" else 0.0
     # #525: the asks auto cash-out sends past the back-off (lock-in, a guarded stop-loss) are exempt, so the card must not say
     # "holding off" when one of them could still ask: Lock in counts once it is armed (the peak reached its arm line)
-    lock_armed = lock_on and (MINE.get("peak") or {}).get(t, 0.0) >= max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+    lock_armed = lock_on and (MINE.get("peak") or {}).get(t, 0.0) >= max(knob.get("trail_arm", TRAIL_ARM) * P, knob.get("trail_arm_cost", TRAIL_ARM_COST) * cost)
     ask_exempt = bool((MINE.get("sl_ready") or {}).get(t)) or lock_armed
     if over:
         out["smart_txt"] = "Smart sell's bar is above anything Kalshi can pay for this combo." + \
@@ -16407,7 +16410,31 @@ def killer_summary():
     done = [r for r in rows if r["outcome"] and r["status"] in ("watched", "bought")]
     pl = sum((r["pays"] if r["outcome"] == "won" else 0) - r["stake"] for r in done)
     return {"mode": CFG.get("killer_mode", "watch"), "rows": rows[:12], "settled": len(done), "pl": round(pl, 2),
-            "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER}
+            "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER, "skipped": killer_skipped_summary()}
+
+
+def killer_skipped_summary():
+    """#374 measurement only: what the skipped killer deals WOULD have won or lost (their own stake and payout, once
+    settled), split into overlap skips and every other reason, so the overlap defaults can be tuned from data. Records
+    nothing, buys nothing, changes no skip; any problem = an empty summary."""
+    out = {"n": 0, "settled": 0, "pl": 0.0, "overlap_n": 0, "overlap_settled": 0, "overlap_pl": 0.0}
+    try:
+        for r in store_rows("select status, why, outcome, stake, pays from killer where mode='on' and status='skipped' "
+                            "order by ts desc limit 500"):
+            over = (r["why"] or "").startswith("you already have") or (r["why"] or "").startswith(KILLER_OVERLAP_UNREAD)
+            out["n"] += 1
+            out["overlap_n"] += 1 if over else 0
+            if r["outcome"]:
+                pl = (r["pays"] if r["outcome"] == "won" else 0) - (r["stake"] or 0)
+                out["settled"] += 1
+                out["pl"] += pl
+                if over:
+                    out["overlap_settled"] += 1
+                    out["overlap_pl"] += pl
+        out["pl"], out["overlap_pl"] = round(out["pl"], 2), round(out["overlap_pl"], 2)
+    except Exception:
+        pass
+    return out
 
 
 # ---- spreads and totals: priced from the sportsbook line with a score model
@@ -16548,10 +16575,24 @@ def line_fair(code, kind, line, team_is_home, g):
     if g.get("total") is None:
         return None
     if code in TOTAL_SD:
-        return _phi((g["total"] - line) / TOTAL_SD[code])
+        p = _phi((g["total"] - line) / TOTAL_SD[code])
+        fit = _fitted_total_sd(code, g["total"])
+        if fit and fit > TOTAL_SD[code]:                # #482: the league's fitted width is wider than the old curve's:
+            p = min(p, _phi((g["total"] - line) / fit))   # never the higher chance of the two (stricter only)
+        return p
     if code in ("nhl", "ahl", "soccer"):
         return 1 - _poisson_cdf(math.floor(line), g["total"])
     return None
+
+
+def _fitted_total_sd(code, total):
+    """The league's own fitted total-points width from LINE_TABLES (backtest of real finished games), or None.
+    Used only to make the old total curve stricter (#482); any problem = None = the old width alone."""
+    try:
+        sd = _line_sd(LINE_TABLES["leagues"][code]["total"], float(total))
+        return sd if math.isfinite(sd) and sd > 0 else None
+    except Exception:
+        return None
 
 
 # ---- spreads and totals, the margin-shape model (issue #117, part A). Same sportsbook line, but the chance of a
@@ -18996,6 +19037,30 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
 IDEA_FAIR_SRC = {"live sportsbook line": "live line", "live model": "live model"}
 
 
+def idea_pre_fair(tk, side, kind, now=None):
+    """(fair, how, why-none) for a single-game Buy idea's quote BEFORE the game (#286): the same rules as Buy straight's
+    pricing block in single_buy_quote. The board's side must carry a sportsbook source (a side with none holds Kalshi's
+    own normalised price: circular, never a fair price) and a price read within SINGLE_FAIR_AGE (an unknown age counts
+    as too old); a moneyline's chance is then calibrated by calib_fair, as on Buy straight. The idea's own stored
+    chance (up to an hour old, uncalibrated) is never used. Only ever withholds a fair price: with none there is no edge
+    to show and no green Buy. Never raises."""
+    now = now or time.time()
+    try:
+        if not (side.get("fair") and side.get("src")):
+            return None, None, ("no sportsbook line for this game" if not side.get("fair") else
+                                "the board's price for it isn't a sportsbook line")
+        at = float(side.get("fair_at") or 0)
+        if not at or now - at > SINGLE_FAIR_AGE:
+            return None, None, ("the sportsbook price is " + (f"{int((now - at) / 60)} minutes old" if at else "of unknown age")
+                                + "; refresh Build for a new one")
+        fair = float(side["fair"])
+        if kind == "win":
+            return round(min(calib_fair(ticker_sport(tk) or "", fair, tk), fair), 4), "sportsbooks + your record", None
+        return fair, "book line + score model", None
+    except Exception:
+        return None, None, "the fair price couldn't be worked out"
+
+
 def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=False, now=None):
     """Where a single-game Buy idea's fresh price gets its fair chance (issue #255). Before the game: the board's side
     (else the idea's own model chance for a spread/total), exactly as before. Once the game is under way: only
@@ -19018,7 +19083,14 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
         live = bool(row_live) or bool(kick and float(kick) <= now) or started(x)
     except Exception:
         live = bool(row_live) or bool(kick and float(kick) <= now)
-    if not live:                                       # before the game: unchanged (the board's fair, else the model's)
+    if not live and CFG.get("idea_pre_strict", True):  # (#286) before the game: Buy straight's own pricing rules
+        f, how, why = idea_pre_fair(tk, side, kind, now)
+        if f is not None:
+            out.update(fair=f, how=how, src=how)
+        else:
+            out["nofair"] = why
+        return out
+    if not live:                                       # switch off: the board's fair, else the model's (as before #286)
         f = side.get("fair") or pfair or None
         if f:
             out["fair"] = float(f)
@@ -19135,6 +19207,7 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
         for m in marks:                                 # from here on no second order for a while (cleared below
             taps[m] = now                               # only when Kalshi clearly bought nothing)
         coid = f"cw-ib-{uuid.uuid4().hex[:16]}"
+        mark_app(t, "idea")                             # tag it as a Live idea buy for the scoreboard (#187); label only
         try:
             filled, err = buy_single(t, n, price, coid=coid, exact=True)
         except Exception as err:                       # no clear answer: it may have gone through. Never resent.
@@ -20930,6 +21003,8 @@ def mkt_learn(now=None):
                 MKT_VETO[k] = {"w": w, "since": None}
             if held:
                 MKT_VETO.pop(k, None)
+        elif mkt_hold_on() and k in MKT_VETO:                            # #551a: one not-earned run must not lift a veto; the 2 h clock restarts
+            MKT_VETO[k]["since"] = None
         else:
             MKT_VETO.pop(k, None)
         if not mkt_hold_on():                                            # Settings switch off: the in-sample bar alone (#497)
@@ -24008,7 +24083,7 @@ def _fa_note(st, ev, now=None, **kw):
     del h[:-20]
 
 
-def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
+def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explicit_on=True):
     """Pete's switch. (ok, message, extra). Off is always allowed. On needs this Mac able to trade (never the Pi), and
     the paper gate passed or override=True (the 'override the paper gate' confirmation); which one is recorded."""
     now = now or time.time()
@@ -24022,6 +24097,9 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
                     return False, f"The {FA_WHY[k]} must be between {lo} and {hi}.", {}
             except (TypeError, ValueError):
                 return False, f"The {FA_WHY[k]} isn't a number.", {}
+    if on and explicit_on is not True and fa_state()["on"] is not True:
+        # a limits-save or reset from a stale tab must never switch it on: only the explicit turn-on request does
+        return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
     if on and not can_trade():
         return False, "This computer can't place orders (it isn't the Mac that trades), so full auto stays off.", {}
     gate = None
@@ -24042,7 +24120,12 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
             return False, ("The paper gate hasn't passed yet, so full auto stays off. To turn it on anyway, confirm "
                            "'override the paper gate'."), {"needs_override": True}
 
+    refused = []
+
     def fn(st):
+        if on and explicit_on is not True and st.get("on") is not True:
+            refused.append(True)                    # re-checked under the lock: only the explicit turn-on may switch it on
+            return
         st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
         if on:
             was = st.get("on") is True
@@ -24061,18 +24144,24 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
     _fa_update(fn)
+    if refused:
+        return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
     if on:
         return True, ("Full auto is ON" + (" (paper gate overridden)." if gate == "overridden" else ".")), {}
     return True, "Full auto is OFF. Bets already approved still go; nothing new is approved.", {}
 
 
-def _fa_rows(now, days=10):
-    """[(day, item)] for every real panel bet of the last `days` panel days (restarted panels included)."""
+def _fa_rows(now, days=None):
+    """[(day, item)] for every real panel bet (restarted panels included): all history, or only the last `days` panel
+    days when given. Bankroll free and the losing streak need all of it, or old losses would quietly drop out."""
     if not STORE["db"]:
         return []
     _panel_table()
-    first = _panel_day(now - days * 86400)
-    rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
+    if days is None:
+        rows = store_rows("select day, body from panel where (mode='real' or mode like 'real#%')", ())
+    else:
+        first = _panel_day(now - days * 86400)
+        rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
     return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
 
 
@@ -24083,16 +24172,20 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     now = now or time.time()
     st = st if st is not None else fa_state()
     day = _panel_day(now)
-    rows = _fa_rows(now)
-    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE]
+    rows = _fa_rows(now)                                  # all history: bankroll free and the streak count every loss
+    recent = _panel_day(now - 10 * 86400)
+    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE and d >= recent]   # spent/open stay a recent view
     spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
     open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
     mine = {}
-    for _ in range(3):                                    # a bet swapped in for one of ours (new id) is ours too, chains included
+    grew = True                                           # a bet swapped in for one of ours (new id) is ours too: follow the whole chain
+    while grew:                                           # (each pass only adds new keys, so it ends; no cap, no cycle can loop)
+        grew = False
         for d, c in rows:
             k = f"{d}|{c.get('id')}"
-            if k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine):
+            if k not in mine and (k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine)):
                 mine[k] = (d, c)
+                grew = True
     settled = sorted((x for x in mine.values() if x[1].get("result")),    # a loss is what it really made (panel_pl), exits included
                      key=lambda x: (x[0], x[1].get("bought_at") or x[1].get("at") or 0))
     pl = round(sum(panel_pl(c) or 0 for d, c in settled), 2)
@@ -24516,6 +24609,7 @@ SALE_OUT = {"at": 0}
 BOARD_FEW = 20                 # fewer settled bets than this in a group: shown, but marked "too few to trust"
 SALE_FOLLOW_DAYS = 60          # how long a sale's games are followed for "what holding would have paid"
 LEDGER_FROZEN = 180            # a ledger row closed longer ago than this is never rewritten (Kalshi's fills go back 200 days)
+BOARD_COMBO_MIN = 30           # combos have heavy tails (a few big wins): they need this many settled bets before a verdict
 BOARD_Z = 2.5                  # standard errors before a breakdown's sentence says "more (or worse) than luck explains"
 
 
@@ -24533,11 +24627,12 @@ def _ledger_table():
                 "side text, offer real, cost real, pays real, frac real, chance real, by text, combo text, "
                 "outcome text, held real, done real, primary key(ts, ticker, result))")
         have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
-        for col, typ in (("live", "int"), ("ask", "real")):           # #228 PR4: in play at the sale; a single's ask
+        for col, typ in (("live", "int"), ("ask", "real"), ("disc", "real")):   # #228 PR4: in play at the sale; a single's ask; #300: the combo discount at the sale
             if have and col not in have:
                 store_x(f"alter table sell_log add column {col} {typ}")
         have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
         STORE["sell_live"] = {"live", "ask"} <= have   # else the old columns (a busy file): sales are never lost
+        STORE["sell_disc"] = STORE["sell_live"] and "disc" in have   # #300: only `disc` missing keeps live/ask
         STORE["ledger_ok"] = True
 
 
@@ -24776,11 +24871,15 @@ def sale_store(rec):
            rec.get("kind") or ("combo" if is_combo(rec.get("ticker") or "") else _bet_kind(rec.get("ticker") or "")),
            rec.get("side") or "yes", rec.get("offer"), rec.get("cost"), rec.get("pays"), rec.get("frac") or 1.0,
            rec.get("chance"), rec.get("by"), str(rec.get("combo") or "")[:200])
-    if STORE.get("sell_live"):
+    if STORE.get("sell_live") and STORE.get("sell_disc", STORE.get("sell_live")):
+        store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
+                "by, combo, live, ask, disc) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                row + (None if lv is None else int(bool(lv)), rec.get("ask"), rec.get("disc")))
+    elif STORE.get("sell_live"):                  # only `disc` couldn't be added: live and ask are still kept
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo, live, ask) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 row + (None if lv is None else int(bool(lv)), rec.get("ask")))
-    else:                                         # the new column couldn't be added (a busy file): the sale still counts
+    else:                                         # the new columns couldn't be added (a busy file): the sale still counts
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo) values(?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
@@ -24989,13 +25088,23 @@ def _held_summary(rs):
     return out
 
 
+def _board_bar(k):
+    """How many standard errors a breakdown must clear before its sentence says "more (or worse) than luck explains".
+    BOARD_Z, raised Bonferroni-style when many groups are tested at once (10 leagues give about 2.8): the more groups
+    looked at, the likelier one looks special by luck. Words only; no setting or decision reads it (#187)."""
+    from statistics import NormalDist
+    return max(BOARD_Z, NormalDist().inv_cdf(1 - 0.025 / max(k, 1)))
+
+
 def _board_say(rows, what):
     """One plain sentence on what a breakdown says, judged on enough bets and against luck."""
     big = [r for r in rows if not r["few"] and r["roi"] is not None]
     if not big:
         return f"Too few settled bets to judge any {what} yet ({BOARD_FEW}+ each before reading much into it)."
-    good = [r for r in big if r["z"] is not None and r["z"] >= BOARD_Z]
-    bad = [r for r in big if r["z"] is not None and r["z"] <= -BOARD_Z]
+    bar = _board_bar(len(big))
+    judged = [r for r in big if not (r["k"] == "combo" and r["n"] < BOARD_COMBO_MIN)]
+    good = [r for r in judged if r["z"] is not None and r["z"] >= bar]
+    bad = [r for r in judged if r["z"] is not None and r["z"] <= -bar]
     parts = []
     if good:
         b = max(good, key=lambda r: r["roi"])
@@ -25150,7 +25259,7 @@ BOARD_KINDS = {"combo": "Combos", "win": "Single games", "spread": "Spreads", "t
 BOARD_ENDS = {"smart": "Sold by smart sell", "you": "Sold by you", "won": "Held to the end: won",
               "lost": "Held to the end: lost"}
 BOARD_SRC = {"panel": "Daily panel", "extra": "Panel extras", "manual": "Buy straight",
-             "app": "Build & Live ideas", "before": "Held before tracking began", "own": "You, on Kalshi"}
+             "app": "Build and other app buys", "idea": "Live buy ideas", "before": "Held before tracking began", "own": "You, on Kalshi"}
 
 
 def profit_board(now=None, max_age=120):
@@ -25183,7 +25292,7 @@ def profit_board(now=None, max_age=120):
         r["end"] = ("smart" if r["ticker"] in auto else "you") if r.get("n_sold") else r["status"] \
             if r["status"] in ("won", "lost") else "you"
         r["src"] = ("extra" if c.get("origin") == "extra" else "panel") if c else \
-            {"manual": "manual", "before": "before"}.get(how.get(r["ticker"]), "app" if r["ticker"] in how else
+            {"manual": "manual", "before": "before", "idea": "idea"}.get(how.get(r["ticker"]), "app" if r["ticker"] in how else
                                                          "own" if seeded else "app")
         if r.get("n_sold") and r.get("held") is not None and r.get("outcome") != "void":
             r["sold_net"] = (r["sold_back"] or 0) - (r["sell_fees"] or 0)
@@ -27366,6 +27475,24 @@ def _knob_rows_brk_hedge(now):
     return brk, hed
 
 
+def _knob_game_kick(tks, fallback):
+    """When a cashed combo's first game started, for the stepper's 'after the last step' filter and 70/30 holdout (#309;
+    it used the buy time): the recorded kickoff when known, else the first in-play price the recorder saw on any leg,
+    else `fallback` (the buy time, as before). Read-only; never raises."""
+    try:
+        known = [t for t in (_kick_ts({"event": x.rsplit("-", 1)[0]}) for x in tks) if t]
+        if not known:
+            for x in tks:
+                got = store_rows("select min(ts) t from ticks where ticker=? and state='live'", (x,))
+                if got and got[0].get("t"):
+                    known.append(got[0]["t"])
+        # never earlier than the buy: a combo bought in play must not replay prices from before it existed (_paths and
+        # _sl_paths start from `kick`), so an in-play buy keeps its buy time exactly as before
+        return max(min(known), fallback) if known and fallback else fallback if not known else min(known)
+    except Exception:
+        return fallback
+
+
 def _knob_items(days=KNOB_DAYS):
     """The settled bets the stepper judges: smart_tune's (_tune_items), each bet once (a real panel combo is also in
     the history file's bets table: the panel's copy is kept), plus the real combos that were CASHED OUT, which
@@ -27399,7 +27526,7 @@ def _knob_items(days=KNOB_DAYS):
                 continue
             if tks:
                 out.append({"id": r["combo"], "kind": "combo", "stake": r["cost"], "pays": r["pays"],
-                            "kick": r["first_seen"], "legs": [{"ticker": t} for t in tks], "sold": True,
+                            "kick": _knob_game_kick(tks, r["first_seen"]), "legs": [{"ticker": t} for t in tks], "sold": True,
                             "pl": ((r["pays"] or 0) if got == "won" else 0) - r["cost"]})
     except Exception as err:                          # sold bets unreadable: judged on the rest, as before
         print("knob stepper: sold bets:", type(err).__name__, err)
@@ -27821,6 +27948,10 @@ def knob_sale_expect(r, disc=None):
             lv = r.get("live")
             d = (disc or {}).get(lv is None or bool(lv))
             d = kalshi_discount(lv is None or bool(lv)) if d is None else d   # unknown: in play (most automatic sales)
+            try:                                       # #300: never gentler than today's number: the discount logged AT the sale counts when higher
+                d = max(d, float(r["disc"])) if r.get("disc") is not None and 0.5 <= float(r["disc"]) <= 1.0 else d
+            except (TypeError, ValueError, KeyError):
+                pass
             return offer, d * ch * n
         bid = offer / n
         try:
@@ -27846,7 +27977,7 @@ def _knob_brake_sales(st, now, live=False):
     recorded at the sale (knob_sale_expect); a part with no logged chance doesn't count. Counted as soon as it sells
     (no waiting for the game). Only sales after the league's last brake ENDED and within 30 days; never the Pi's rows."""
     _ledger_table()
-    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {'live, ask' if STORE.get('sell_live') else 'null as live, null as ask'} "
+    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {('live, ask, disc' if STORE.get('sell_disc', STORE.get('sell_live')) else 'live, ask, null as disc') if STORE.get('sell_live') else 'null as live, null as ask, null as disc'} "
                       "from sell_log where result='sold' "
                       "and ts > ? and (\"by\" is null or \"by\" != 'pi') order by ts", (now - KNOB_MONTH,))
     disc = {True: kalshi_discount(True), False: kalshi_discount(False)}
@@ -30760,9 +30891,11 @@ def sb_resolve(now=None, limit=150):
                           "group by tickers order by u, k desc limit ?",   # the gate's own bets first (#137: universe
                           (now - 4 * 3600, now - 7 * 86400, limit))        # rows wait their turn), newest first, a
         if len(rows) >= limit:                                             # week at most (a void is given up on)
-            rows += store_rows("select tickers, max(kick) k from exit_shadow where res is null and kick is not null and "
-                               "kick < ? and kick > ? and source='universe' group by tickers order by k desc limit ?",
-                               (now - 4 * 3600, now - 7 * 86400, limit))
+            have = {r["tickers"] for r in rows}                            # (#309) the second look skips what the first
+            rows += [r for r in store_rows(                                # batch already holds: no repeated rows
+                "select tickers, max(kick) k from exit_shadow where res is null and kick is not null and "
+                "kick < ? and kick > ? and source='universe' group by tickers order by k desc limit ?",
+                (now - 4 * 3600, now - 7 * 86400, limit + len(have))) if r["tickers"] not in have][:limit]
         sets = {}
         for r in rows:
             try:
@@ -30799,6 +30932,33 @@ def _sb_game(tickers):
     return "+".join(sorted({re.sub(r"(SPREAD|TOTAL)-", "GAME-", t.rsplit("-", 1)[0]) for t in tickers or () if t}))
 
 
+SB_READ_CHUNK = 20000
+
+
+def _sb_rows_chunked(sql, since, chunk=None):
+    """`sql` (an exit_shadow select ending `where ts > ?` ... `order by ts`) read in pages of `chunk` rows, oldest first, by
+    (ts, rowid), instead of one 200k-row read under the store lock that the panel buy thread shares (#309). Each page
+    takes the lock on its own, so other threads get in between. The rows and their order are the same as one read. A read error
+    in any page raises (store_rows_strict): a half-read result would silently truncate the evidence."""
+    chunk = chunk or SB_READ_CHUNK
+    head, _, tail = sql.partition(" order by ts")
+    assert not tail, sql
+    last = None
+    while True:
+        if last is None:
+            got = store_rows_strict(head + " order by ts, rowid limit ?", (since, chunk))
+        else:
+            got = store_rows_strict(head.replace("where ts > ?", "where ts > ? and (ts > ? or (ts = ? and rowid > ?))", 1)
+                             + " order by ts, rowid limit ?", (since, last[0], last[0], last[1], chunk))
+        if not got:
+            return
+        for r in got:
+            yield r
+        if len(got) < chunk:
+            return
+        last = (got[-1]["ts"], got[-1]["_rid"])
+
+
 def _sb_results(now=None, wide=False, settled=True, uni=False):
     """One row per checked bet (last 60 days): its last check before its game (or its first check when it was only
     ever seen in play), as {'league', 'sport', 'ev', 'out', 'day', 'tickers', 'price', 'kind', 'skip', 'kick', 'ts',
@@ -30821,9 +30981,9 @@ def _sb_results(now=None, wide=False, settled=True, uni=False):
     first, last_pre, src, fc, gate = {}, {}, {}, {}, {}
     keep = "" if wide else (" and source in ('panel', 'idea', 'universe') and coalesce(grade, 'cand') != 'wide'" if uni
                             else " and source in ('panel', 'idea')")
-    sql = ("select ts, league, kind, tickers, kick, price, fair, ev, outcome, skip, source, grade, new, pays from "
+    sql = ("select rowid _rid, ts, league, kind, tickers, kick, price, fair, ev, outcome, skip, source, grade, new, pays from "
            "exit_shadow where ts > ?" + (" and outcome is not null" if settled else "") + keep + " order by ts")
-    for r in store_rows(sql, (now - SB_LEARN_DAYS * 86400,)):
+    for r in _sb_rows_chunked(sql, now - SB_LEARN_DAYS * 86400):
         k = r["tickers"]
         first.setdefault(k, r)
         if r["kick"] is None or r["ts"] <= r["kick"]:

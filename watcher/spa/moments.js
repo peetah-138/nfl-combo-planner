@@ -59,6 +59,9 @@ function streakNote(r){const s=+r.streak||0;if(s<1)return '';
 function okSheet(title,amt,sub,bad){hap(bad?'error':'success');modal(`<div class="okcard ${bad?'bad':''}"><svg viewBox="0 0 84 84"><circle cx="42" cy="42" r="38"/>${bad?'<path d="M30 30 L54 54 M54 30 L30 54"/>':'<path d="M27 43 L37 53 L58 32"/>'}</svg>
  <h3>${esc(title)}</h3>${amt!=null?`<div class="amt">${esc(amt)}</div>`:''}<p>${esc(sub||'')}</p>${niceBtn(bad?'OK':'Nice')}</div>`);
  clearTimeout(S.okT);}   // #140: no auto-close: a good result ends on a big Nice button, so a real tap lands the buzz
+/* #453: a buy whose reply was lost (or came back unclear) leaves a note that stays until tapped, not a 6 second toast.
+   Shown as a sheet when none is open, else as a long toast. Display only; it sends nothing. */
+function checkLive(msg,title){if(!$('#modal').classList.contains('on'))okSheet(title||'Check Live',null,msg,true);else{hap('error');toast((title||'Check Live')+': '+msg,9000,'bad');}}
 function celebrate(){hap('success');const box=document.createElement('div');box.className='confetti';const cols=['#4f8cff','#3ecf8e','#ffb020','#ff6b9a','#b48cff'];
  for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
  document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}

@@ -47,3 +47,5 @@ main.ptrd{transition:none!important}
 .btn.arm{position:relative;overflow:hidden;background:var(--live)!important;color:#1b1203!important}
 .btn.arm:after{content:"";position:absolute;left:0;bottom:0;height:3px;width:100%;background:rgba(255,255,255,.75);transform-origin:left;animation:qdrain 4s linear forwards}
 @keyframes qdrain{from{transform:scaleX(1)}to{transform:scaleX(0)}}
+/* #140: a visible keyboard focus ring on every button, link and field (screens with their own ring keep it) */
+button:focus-visible,a:focus-visible,[role=button]:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
