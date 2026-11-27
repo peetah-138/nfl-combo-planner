@@ -346,8 +346,11 @@ def cap_msg(spent, add):
     """The Buy tap's answer when `add` would push what's spent over the cap: what it would reach, how much room
     is left, and which setting to change."""
     budget, left = CFG["budget"], max(0.0, CFG["budget"] - spent)
+    need = math.ceil((spent + add) / 10 - 1e-9) * 10     # the Settings cap slider moves in $10 steps (up to $200)
+    if need > 200:
+        need = spent + add
     return (f"That would bring your spending {cap_window()} to {money(spent + add)}, over your {money(budget)} cap. "
-            f"You have {money(left)} left. To go ahead, raise it to at least {money(spent + add)} in "
+            f"You have {money(left)} left. To go ahead, raise it to at least {money(need)} in "
             f"Settings > Money > {cap_label()} (for {LG()['name']}).")
 
 

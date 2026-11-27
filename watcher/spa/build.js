@@ -392,11 +392,11 @@ async function buy(i,custom,btn){if(S.buying)return;
  if(!custom){S.bpend=S.bpend||{};S.bpend[i]={t:Date.now(),sig:ccSig((S.build&&S.build.combos||[]).find(x=>x.i===i))};const cc=btn&&btn.closest('.ccard');if(cc)cc.dataset.ph='buy';const sc=btn&&btn.parentNode&&btn.parentNode.querySelector('.sec');if(sc)sc.disabled=true;}
  hap();const named=legSummary(custom?S.slip.map(sideBy).filter(Boolean):((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs);if(btn){btn.disabled=true;btn.innerHTML='<span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi';}
  const lgs=custom?S.slip.slice():(((S.build&&S.build.combos||[]).find(x=>x.i===i)||{}).legs||[]).map(l=>l.ticker);   // rule 7: the Mac checks the offer is for these picks
- let r;try{r=await api('/app/api/act',{a:'buy',i,legs:lgs.length?lgs:undefined});}catch(e){r={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
+ let r;try{r=await api('/app/api/act',{a:'buy',i,legs:lgs.length?lgs:undefined});}catch(e){r={ok:false,lost:true,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
  S.buying=false;if(S.bpend)delete S.bpend[i];if(r.ok&&S.stk)delete S.stk[custom?'slip:c':'cc:'+i];if(r.ok){okSheet('Bought',`${money(r.pays||0)} if it hits`,(named?named+'. ':'')+'It shows on Live within a minute. Smart sell watches it from there.');}else{S.failMsg=r.msg||'Didn\'t go through.';}
  if(custom)S.custom=null;else if(S.quotes)delete S.quotes[i];if(r.ok&&custom)S.slip=[];
  if(r.ok&&!custom&&S.build){const c=S.build.combos.find(x=>x.i===i);if(c)c.bought=true;}renderBuild();
- if(!r.ok){const m=S.failMsg;S.failMsg=null;if(r.check)toast(m,9000,'bad');else btnFail(custom?'#main .qb, #main .ccard':'.ccard[data-i="'+i+'"]',m);}}
+ if(!r.ok){const m=S.failMsg;S.failMsg=null;if(r.check)checkLive(m,'Check Kalshi');else if(r.lost)checkLive(m);else btnFail(custom?'#main .qb, #main .ccard':'.ccard[data-i="'+i+'"]',m);}}
 
 // A bet the auto-buy skipped or couldn't place: what it was and why, read-only, from the panel data already on the page.
 function panelClosed(id){const its=(S.panel&&S.panel.panel&&S.panel.panel.items)||[];const c=its.find(x=>x.id===id);if(!c)return;
