@@ -1864,6 +1864,10 @@ def panel_loop(odds, conf, every=60):
             with odds.lock:
                 H = odds.engine()
                 H.buy_asked()                             # this pass covers anything asked for so far
+                try:                                      # full auto (OFF unless Pete turned it on): approves/adds like his taps do
+                    H.full_auto_pass(paused=bool(conf.get("paused")), may_trade=H.can_trade(), log=log)
+                except Exception as err:                  # never lets it hold back bets he already approved
+                    log("full auto:", type(err).__name__, err)
                 out = H.panel_exec(log=log, paused=bool(conf.get("paused")), may_trade=H.can_trade())
                 if time.time() - settled >= 5 * 60:       # results, exits and game-time prices: every 5 minutes
                     settled = time.time()
@@ -3741,7 +3745,8 @@ def webapp_main():
                              "killer": A.killer_summary() if A.STORE.get("db") else None,
                              "cover": A.cover_summary() if A.STORE.get("db") else None,
                              "mkt": paper_part("mkt_fair_summary"), "carry": paper_part("carry_summary"),
-                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board()})
+                             "panel": A.panel_record() if A.STORE.get("db") else None, "board": board(),
+                             "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
 
     CLOSED_WHY = {"smart": "smart sell took the profit", "take profit": "took the profit", "lock in": "locked in a profit",
                   "checkpoint": "checkpoint sale", "cut loss": "cut the loss", "stop loss": "stop-loss"}
@@ -4090,10 +4095,22 @@ def webapp_main():
                         "league": x.get("league")})
         for g in out:                                    # the chance line: what the Mac recorded for this pick lately
             tk = g.get("ticker")
+            g["start_ts"] = None                         # when the game starts (epoch seconds), for the display order only
+            try:
+                st = A.start_dt(A.game_event(str(tk or "").rsplit("-", 1)[0]), tk) if tk else None
+                g["start_ts"] = round(st.timestamp()) if st else None
+            except Exception:
+                pass
             hist = A.store_rows("select ts, chance from ticks where ticker=? and ts > ? order by ts",
                                 (tk, time.time() - 8 * 3600)) if tk and A.STORE.get("db") else []
             g["spark"] = [[round(r["ts"]), r["chance"]] for r in hist if r["chance"] is not None][-240:]
-        out.sort(key=lambda g: (g.get("state") != "live", -(g.get("combos") or 0) - len(g.get("singles") or [])))
+        def shown_order(g):                              # live first, upcoming soonest first (no start = last), finished newest first
+            ts = g.get("start_ts")
+            done = g.get("phase") == "over" or g.get("state") == "over" or g.get("phase") == "probably_over"
+            live = g.get("state") == "live" and not done and g.get("phase") != "waiting"
+            b = 0 if live else 2 if done else 1
+            return (b, ts is None, (-ts if b == 2 else ts) if ts is not None else 0, str(g.get("ticker") or g.get("name") or ""))
+        out.sort(key=shown_order)
         return jsonable({"games": out, "at": d.get("at"), "fresh": freshness()})
 
     SET_KEYS = ("stake", "budget", "accept_pct", "size_auto", "full_count", "upsets_min", "upsets_max",
@@ -4190,6 +4207,7 @@ def webapp_main():
             return jsonable({"ok": True, "lg": A.LEAGUE["code"], "name": A.LG()["name"], "mode": mode,
                              "full": bool(A.LG().get("full")), "synced": synced,
                              "values": {k: A.CFG.get(k) for k in SET_KEYS if k in A.CFG},
+                             "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade()),
                              "keys": {"kalshi": bool(A.CFG.get("kalshi_key_id")) or bool(A.hub_conf()),
                                       "odds": bool(A.CFG.get("odds_key"))},
                              "ride": [n for n, _ in A.RIDE], "windows": A.MIX_WINDOWS, "version": A.VERSION,
@@ -4691,6 +4709,12 @@ def webapp_main():
                     return {"ok": False, "msg": "That move isn't open any more."}
                 log("pot move cleared from Settings")
                 return {"ok": True, "msg": "Cleared. Moves between pots can go again; the unclear one is never resent."}
+            if a == "full_auto_set":                # the real full-auto switch (own file; never a setting): on needs the paper gate or an explicit override
+                on = d.get("on") is True
+                ok, msg, extra = A.fa_set(on, override=d.get("override") is True, reset_brake=d.get("reset_brake") is True,
+                                          limits=d.get("limits") if isinstance(d.get("limits"), dict) else None)
+                log("full auto", "ON" if on and ok else "OFF" if ok else "refused", "from the app", ("(override)" if d.get("override") is True and ok and on else ""))
+                return jsonable(dict(extra, ok=ok, msg=msg, full_auto=A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())))
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}

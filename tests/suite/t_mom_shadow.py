@@ -245,7 +245,7 @@ def f_card():
     ok("F and with those off too it says so", "Nothing else sells this combo" in v["smart_txt"], v)
     E.CFG.update(lock_trail=True, smart_sell=True)
     js = open(os.path.join(REPO, "watcher", "spa", "live.js")).read()
-    ok("F the card calls the old number the let-it-ride line and has plain lock-in words", "let-it-ride line" in js and "Let-it-ride line" in js and "wait line" not in js.lower() and "Protects a profit once the offer has reached" in js and "Lock in arms once" not in js)
+    ok("F the card calls the old number plain words (Sell at / sells once the offer reaches), not the let-it-ride line, and has plain lock-in words", "let-it-ride line" not in js.lower() and "<div>Sell at<b>" in js and "sells once the offer reaches" in js and "wait line" not in js.lower() and "Protects a profit once the offer has reached" in js and "Lock in arms once" not in js)
     ok("F the card hides the smart text when selling is off or yours, and the badge follows the bar", "smart_txt&&!c.self&&S.live.auto_sell!==false" in js and "SET TO SELL" in js and "Ready to sell" in js and "x.smart_chip" in js)
     setup_trade(); E.hands_off = lambda t: bool(t) and t in E.self_sell_set(); E.auto_cap_reached = E.auto_cap_reached
 
