@@ -24674,7 +24674,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
     fa_slot_taken(items, ids, book, v["open"], day, now, log)     # (#145) evidence for the open-bet limit; never blocks the buy
     if skipped:
-        fa_slot_skips(skipped, caut["level"], v, v["open"] + len(ids), real, now)
+        fa_slot_skips(skipped, caut["level"], {"room": room, "free": free}, v["open"] + len(ids), real, now)
     if status == "draft":
         ok, msg = panel_approve(ids, "all", at=real.get("at"), stakes=own or None)
     else:

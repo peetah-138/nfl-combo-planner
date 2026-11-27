@@ -160,3 +160,21 @@ cs = [dict(real_c, id=f"m{i}", legs=[{"ticker": f"T{i}"}]) for i in range(6)]
 E.fa_slot_skips(cs, 0, {"room": 12.0, "free": 100.0}, 15, {"at": NOW}, NOW)
 rows = E.store_rows("select open_at from fa_slots where kind='skip' order by open_at", ())
 ok("6 skips with room for 2: only 2 logged, open counts 15 and 16", [r["open_at"] for r in rows] == [15, 16])
+
+# 13. a pass that buys one and turns away the rest: skips are replayed from the room left AFTER the buy
+reset()
+E._fa_slot_table()
+_saved = (E.fa_check, E.panel_get, E._fa_candidates, E.panel_approve, E.fa_slot_taken)
+mix = [dict(real_c, id=f"x{i}", legs=[{"ticker": f"X{i}"}]) for i in range(3)]
+E.fa_check = lambda *a, **k: {"brake": None, "caution": {"changed": False, "level": 0, "events": []}, "blockers": [],
+                              "room": 12.0, "slots": 1, "free": 100.0, "open": 15}
+E.panel_get = lambda *a, **k: {"at": NOW, "status": "draft"}
+E._fa_candidates = lambda *a, **k: list(mix)
+E.panel_approve = lambda *a, **k: (True, "ok")
+E.fa_slot_taken = lambda *a, **k: None
+try:
+    E._full_auto_pass(now=NOW, log=lambda *a: None)
+finally:
+    E.fa_check, E.panel_get, E._fa_candidates, E.panel_approve, E.fa_slot_taken = _saved
+rows = E.store_rows("select open_at from fa_slots where kind='skip' order by open_at", ())
+ok("1 bought, room 12 -> 7 left: only 1 of the 2 turned-away bets is logged, open count 16", [r["open_at"] for r in rows] == [16])
