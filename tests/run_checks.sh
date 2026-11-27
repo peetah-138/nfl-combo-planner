@@ -5,6 +5,7 @@
 # One PASS/FAIL line per check, then ALL CHECKS PASSED or SOME CHECKS FAILED. Takes about 4 minutes.
 # By default it runs everything. CI splits it into parallel jobs with these (see tests/README.md):
 #   CHECK_GROUPS="static engine sim pages"   which parts to run (space or comma separated; default all four)
+#   CHECK_ENGINE_SHARD=i/N                    only engine-test shard i of N (same split as CHECK_SHARD)
 #   CHECK_SHARD=i/N                           only page-test shard i of N (tests/suite/checklist.py splits them)
 #   CHECK_RETRY=1                             rerun a page test listed in checklist.RETRY once if it fails (CI only)
 R="$(cd "$(dirname "$0")/.." && pwd)"
@@ -47,10 +48,12 @@ G=" $(echo "${CHECK_GROUPS:-static engine sim pages}" | tr ',' ' ') "
 for g in $G; do case "$g" in static|engine|sim|pages) ;; *) echo "CHECK_GROUPS: unknown group '$g' (use static engine sim pages)"; exit 2;; esac; done
 on(){ case "$G" in *" $1 "*) return 0;; esac; return 1; }
 case "$CHECK_SHARD" in ""|[1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;; *) echo "CHECK_SHARD must look like 2/5"; exit 2;; esac
+case "$CHECK_ENGINE_SHARD" in ""|[1-9]/[1-9]|[1-9]/[1-9][0-9]|[1-9][0-9]/[1-9][0-9]) ;; *) echo "CHECK_ENGINE_SHARD must look like 2/4"; exit 2;; esac
+[ -n "$CHECK_ENGINE_SHARD" ] && ! on engine && { echo "CHECK_ENGINE_SHARD splits the engine tests: add engine to CHECK_GROUPS"; exit 2; }
 [ -n "$CHECK_SHARD" ] && ! on pages && { echo "CHECK_SHARD splits the page tests: add pages to CHECK_GROUPS"; exit 2; }
 keep(){ local t; for t in $1; do case " $CHECK_ONLY " in *" $t "*) echo "$t";; esac; done; }   # CHECK_ONLY filter
 PARTIAL=""; [ "$G" != " static engine sim pages " ] && PARTIAL="groups:$G"
-[ -n "$CHECK_SHARD" ] && PARTIAL="$PARTIAL shard $CHECK_SHARD"; [ -n "$CHECK_ONLY" ] && PARTIAL="$PARTIAL only: $CHECK_ONLY"
+[ -n "$CHECK_SHARD" ] && PARTIAL="$PARTIAL shard $CHECK_SHARD"; [ -n "$CHECK_ENGINE_SHARD" ] && PARTIAL="$PARTIAL engine shard $CHECK_ENGINE_SHARD"; [ -n "$CHECK_ONLY" ] && PARTIAL="$PARTIAL only: $CHECK_ONLY"
 fail=0
 ok(){ echo "PASS $1"; }; bad(){ echo "FAIL $1"; echo "$2" | head -12 | sed 's/^/     /'; fail=1; }
 need(){ command -v "$1" >/dev/null 2>&1 || { bad "setup: $1 is missing" "$2"; }; }
@@ -105,7 +108,7 @@ fi   # static
 
 # the test lists and their split come from suite/checklist.py, which finds every test by its "# CHECK:" header (t_shards.py checks each is in exactly one shard)
 if on engine; then
-  ENG=$("$PY" checklist.py engine) || bad "engine test list" "checklist.py engine failed"
+  ENG=$("$PY" checklist.py engine "$CHECK_ENGINE_SHARD") || bad "engine test list" "checklist.py engine failed"
   [ -n "$CHECK_ONLY" ] && ENG=$(keep "$ENG")
   # netguard/sitecustomize.py refuses every real (non-local) connection in an engine test and prints a FAIL line
   # naming the host, so a test that slips past its stubs fails at once instead of depending on ESPN (GitHub #189)

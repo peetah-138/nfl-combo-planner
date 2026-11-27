@@ -37,8 +37,8 @@ async function lsQuote(id,b){if(S.lsBusy||S.buying)return;hap();const r=lsFind(i
  renderBuild();clearInterval(S.qT);S.qT=setInterval(qTick,1000);}
 async function lsBuy(id,btn){if(S.buying||S.lsBusy)return;const r=lsFind(id),o=r&&S.quotes&&S.quotes[lsKey(r)];if(!o||Date.now()/1000-o.at>=20){renderBuild();return;}
  S.buying=true;S.lsBusy=id;S.lsBuying=true;hap();if(btn){btn.disabled=true;btn.innerHTML='<span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi';}
- let res;try{res=await api('/app/api/act',{a:'buy',i:o.i,legs:r.legs.map(l=>l.ticker)});}catch(e){res={ok:false,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
+ let res;try{res=await api('/app/api/act',{a:'buy',i:o.i,legs:r.legs.map(l=>l.ticker)});}catch(e){res={ok:false,lost:true,msg:'Couldn\'t reach your Mac ('+(e&&e.message||e)+'). Check Live before trying again, so you don\'t buy twice.'};}
  S.buying=false;S.lsBusy=null;S.lsBuying=false;delete S.quotes[lsKey(r)];if(res.check){r.check=true;S.lsChecked=S.lsChecked||{};S.lsChecked[r.id]=true;}   // unknown outcome: the card says so, and keeps saying so when Build refreshes (#353)
  if(res.ok){r.bought=true;okSheet('Bought',`${money(res.pays||0)} if it hits`,legSummary(r.legs)+'. It shows on Live within a minute. Smart sell watches it from there.');}
  else S.lsFail=res.msg||'Didn\'t go through.';
- renderBuild();if(!res.ok){const m=S.lsFail;S.lsFail=null;if(res.check)toast(m,9000,'bad');else btnFail('[data-lsid="'+id+'"]',m);}}
+ renderBuild();if(!res.ok){const m=S.lsFail;S.lsFail=null;if(res.check)checkLive(m,'Check Kalshi');else if(res.lost)checkLive(m);else btnFail('[data-lsid="'+id+'"]',m);}}

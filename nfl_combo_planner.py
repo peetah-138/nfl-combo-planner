@@ -61,8 +61,6 @@ CFG = {
     "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
     "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
-    "total_fit_sd": True,     # (#482) the old totals curve is never narrower than the league's fitted width (only lowers an Over's chance)
-    "pregame_idea_fair": True,        # (#286) a pregame single Buy idea's fair follows Buy straight's rules (fresh, calibrated, sportsbook-backed)
     "live_bar_learn": True,           # (#287) learn (paper only) the in-play single green bar per league from live_fairs
     "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
     "loss_cut_default": True,   # the cautious starting loss cut (12.5% win chance, combos) for a league with no record of its own; off = the old "never until a league's own record turns it on". Every loss guard still applies
@@ -349,8 +347,11 @@ def cap_msg(spent, add):
     """The Buy tap's answer when `add` would push what's spent over the cap: what it would reach, how much room
     is left, and which setting to change."""
     budget, left = CFG["budget"], max(0.0, CFG["budget"] - spent)
+    need = math.ceil((spent + add) / 10 - 1e-9) * 10     # the Settings cap slider moves in $10 steps (up to $200)
+    if need > 200:
+        need = spent + add
     return (f"That would bring your spending {cap_window()} to {money(spent + add)}, over your {money(budget)} cap. "
-            f"You have {money(left)} left. To go ahead, raise it to at least {money(spent + add)} in "
+            f"You have {money(left)} left. To go ahead, raise it to at least {money(need)} in "
             f"Settings > Money > {cap_label()} (for {LG()['name']}).")
 
 
@@ -5900,7 +5901,7 @@ def _smart_trigger(t, h):
     tp = float(CFG.get("take_profit") or 0) / 100
     lock_on = bool(CFG.get("lock_trail", True))
     if CFG.get("lock_trail", True):
-        arm = max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+        arm = max(knob.get("trail_arm", TRAIL_ARM) * P, knob.get("trail_arm_cost", TRAIL_ARM_COST) * cost)   # #551b: the tuned numbers the sale uses
         if (MINE.get("peak") or {}).get(t, 0.0) < arm and arm <= sell_top(P) + 0.005 and not any(s == "paused" for s, _ in blk):
             out["lock_at"] = round(arm, 2)
     others = [w for w, on in ((f"your take-profit line (${max(tp * P, TP_MIN_GAIN * cost):.2f})", tp > 0),
@@ -5921,7 +5922,7 @@ def _smart_trigger(t, h):
     ro = real["offer"] / max(real.get("frac", 1.0), 0.01) if real and real.get("rfq") != "estimate" else 0.0
     # #525: the asks auto cash-out sends past the back-off (lock-in, a guarded stop-loss) are exempt, so the card must not say
     # "holding off" when one of them could still ask: Lock in counts once it is armed (the peak reached its arm line)
-    lock_armed = lock_on and (MINE.get("peak") or {}).get(t, 0.0) >= max(TRAIL_ARM * P, TRAIL_ARM_COST * cost)
+    lock_armed = lock_on and (MINE.get("peak") or {}).get(t, 0.0) >= max(knob.get("trail_arm", TRAIL_ARM) * P, knob.get("trail_arm_cost", TRAIL_ARM_COST) * cost)
     ask_exempt = bool((MINE.get("sl_ready") or {}).get(t)) or lock_armed
     if over:
         out["smart_txt"] = "Smart sell's bar is above anything Kalshi can pay for this combo." + \
@@ -16398,7 +16399,31 @@ def killer_summary():
     done = [r for r in rows if r["outcome"] and r["status"] in ("watched", "bought")]
     pl = sum((r["pays"] if r["outcome"] == "won" else 0) - r["stake"] for r in done)
     return {"mode": CFG.get("killer_mode", "watch"), "rows": rows[:12], "settled": len(done), "pl": round(pl, 2),
-            "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER}
+            "staked": round(sum(r["stake"] for r in done), 2), "rules": KILLER, "skipped": killer_skipped_summary()}
+
+
+def killer_skipped_summary():
+    """#374 measurement only: what the skipped killer deals WOULD have won or lost (their own stake and payout, once
+    settled), split into overlap skips and every other reason, so the overlap defaults can be tuned from data. Records
+    nothing, buys nothing, changes no skip; any problem = an empty summary."""
+    out = {"n": 0, "settled": 0, "pl": 0.0, "overlap_n": 0, "overlap_settled": 0, "overlap_pl": 0.0}
+    try:
+        for r in store_rows("select status, why, outcome, stake, pays from killer where mode='on' and status='skipped' "
+                            "order by ts desc limit 500"):
+            over = (r["why"] or "").startswith("you already have") or (r["why"] or "").startswith(KILLER_OVERLAP_UNREAD)
+            out["n"] += 1
+            out["overlap_n"] += 1 if over else 0
+            if r["outcome"]:
+                pl = (r["pays"] if r["outcome"] == "won" else 0) - (r["stake"] or 0)
+                out["settled"] += 1
+                out["pl"] += pl
+                if over:
+                    out["overlap_settled"] += 1
+                    out["overlap_pl"] += pl
+        out["pl"], out["overlap_pl"] = round(out["pl"], 2), round(out["overlap_pl"], 2)
+    except Exception:
+        pass
+    return out
 
 
 # ---- spreads and totals: priced from the sportsbook line with a score model
@@ -16516,20 +16541,6 @@ def espn_line_prices(odds, spread_home=None, total=None):
     return out
 
 
-def total_sd_fit(code):
-    """(#482) The league's own fitted width of total points (LINE_TABLES, from real past seasons), or None when the switch
-    `total_fit_sd` (default ON) is off or the table has none. The old curve's hand-set TOTAL_SD is narrower for some
-    leagues (men's college basketball 14.0 vs 16.5 fitted), which overstates the chance of a strike away from the
-    book total. line_fair uses it only to LOWER a chance (the Over is the only side offered), so it can never loosen."""
-    if not CFG.get("total_fit_sd", True):
-        return None
-    try:
-        sd = float((line_params(code, "total") or {}).get("sd", [0])[0])
-    except (TypeError, ValueError, IndexError, AttributeError):
-        return None
-    return sd if 3.0 <= sd <= 40.0 else None
-
-
 def line_fair(code, kind, line, team_is_home, g):
     """Model chance for 'team wins by more than line' (spread) or 'total over line' (total)."""
     if kind == "spread":
@@ -16553,14 +16564,24 @@ def line_fair(code, kind, line, team_is_home, g):
     if g.get("total") is None:
         return None
     if code in TOTAL_SD:
-        fair = _phi((g["total"] - line) / TOTAL_SD[code])
-        fit = total_sd_fit(code)
-        if fit and fit > TOTAL_SD[code]:                # (#482) the league's fitted width is wider: never above it
-            fair = min(fair, _phi((g["total"] - line) / fit))
-        return fair
+        p = _phi((g["total"] - line) / TOTAL_SD[code])
+        fit = _fitted_total_sd(code, g["total"])
+        if fit and fit > TOTAL_SD[code]:                # #482: the league's fitted width is wider than the old curve's:
+            p = min(p, _phi((g["total"] - line) / fit))   # never the higher chance of the two (stricter only)
+        return p
     if code in ("nhl", "ahl", "soccer"):
         return 1 - _poisson_cdf(math.floor(line), g["total"])
     return None
+
+
+def _fitted_total_sd(code, total):
+    """The league's own fitted total-points width from LINE_TABLES (backtest of real finished games), or None.
+    Used only to make the old total curve stricter (#482); any problem = None = the old width alone."""
+    try:
+        sd = _line_sd(LINE_TABLES["leagues"][code]["total"], float(total))
+        return sd if math.isfinite(sd) and sd > 0 else None
+    except Exception:
+        return None
 
 
 # ---- spreads and totals, the margin-shape model (issue #117, part A). Same sportsbook line, but the chance of a
@@ -19013,6 +19034,30 @@ def single_sell(qid, ticker, anyway=False, paused=False, now=None, log=print):
 IDEA_FAIR_SRC = {"live sportsbook line": "live line", "live model": "live model"}
 
 
+def idea_pre_fair(tk, side, kind, now=None):
+    """(fair, how, why-none) for a single-game Buy idea's quote BEFORE the game (#286): the same rules as Buy straight's
+    pricing block in single_buy_quote. The board's side must carry a sportsbook source (a side with none holds Kalshi's
+    own normalised price: circular, never a fair price) and a price read within SINGLE_FAIR_AGE (an unknown age counts
+    as too old); a moneyline's chance is then calibrated by calib_fair, as on Buy straight. The idea's own stored
+    chance (up to an hour old, uncalibrated) is never used. Only ever withholds a fair price: with none there is no edge
+    to show and no green Buy. Never raises."""
+    now = now or time.time()
+    try:
+        if not (side.get("fair") and side.get("src")):
+            return None, None, ("no sportsbook line for this game" if not side.get("fair") else
+                                "the board's price for it isn't a sportsbook line")
+        at = float(side.get("fair_at") or 0)
+        if not at or now - at > SINGLE_FAIR_AGE:
+            return None, None, ("the sportsbook price is " + (f"{int((now - at) / 60)} minutes old" if at else "of unknown age")
+                                + "; refresh Build for a new one")
+        fair = float(side["fair"])
+        if kind == "win":
+            return round(min(calib_fair(ticker_sport(tk) or "", fair, tk), fair), 4), "sportsbooks + your record", None
+        return fair, "book line + score model", None
+    except Exception:
+        return None, None, "the fair price couldn't be worked out"
+
+
 def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=False, now=None):
     """Where a single-game Buy idea's fresh price gets its fair chance (issue #255). Before the game: the board's side
     (else the idea's own model chance for a spread/total), exactly as before. Once the game is under way: only
@@ -19035,26 +19080,14 @@ def idea_single_fair(tk, side=None, pfair=None, book=None, kick=None, row_live=F
         live = bool(row_live) or bool(kick and float(kick) <= now) or started(x)
     except Exception:
         live = bool(row_live) or bool(kick and float(kick) <= now)
-    if not live and kind == "win" and CFG.get("pregame_idea_fair", True):
-        # (#286) a moneyline idea before the game follows Buy straight's pricing block: only a sportsbook-backed board
-        # price (never Kalshi's own price: circular), read no more than SINGLE_FAIR_AGE ago (unknown age = stale), and
-        # on the corrected chance (calib_fair). No such price = no fair price, never the idea's own hour-old chance.
-        f, at = side.get("fair"), side.get("fair_at")
-        if not f:
-            out["nofair"] = "no sportsbook line for this game on the board right now"
-        elif not side.get("src"):
-            out["nofair"] = "the board only has Kalshi's own price for this game, not a sportsbook line"
-        elif not at or now - float(at) > SINGLE_FAIR_AGE:
-            out["nofair"] = "the sportsbook price is " + (f"{int((now - float(at)) / 60)} minutes old" if at else "of unknown age") \
-                            + "; refresh Build for a new one"
+    if not live and CFG.get("idea_pre_strict", True):  # (#286) before the game: Buy straight's own pricing rules
+        f, how, why = idea_pre_fair(tk, side, kind, now)
+        if f is not None:
+            out.update(fair=f, how=how, src=how)
         else:
-            out["fair"] = round(min(float(f), calib_fair(ticker_sport(tk) or "", float(f), tk)), 4)   # never above the books'
-            out["how"] = out["src"] = "sportsbooks + your record"
-        if out["fair"] is None:
-            out["warn"].append({"k": "nofair", "t": f"No fair price ({out['nofair']}), so there's no edge to show. "
-                                                    "You'd be going on Kalshi's price alone."})
+            out["nofair"] = why
         return out
-    if not live:                                       # before the game: unchanged (the board's fair, else the model's)
+    if not live:                                       # switch off: the board's fair, else the model's (as before #286)
         f = side.get("fair") or pfair or None
         if f:
             out["fair"] = float(f)
@@ -19214,6 +19247,7 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
         for m in marks:                                 # from here on no second order for a while (cleared below
             taps[m] = now                               # only when Kalshi clearly bought nothing)
         coid = f"cw-ib-{uuid.uuid4().hex[:16]}"
+        mark_app(t, "idea")                             # tag it as a Live idea buy for the scoreboard (#187); label only
         try:
             filled, err = buy_single(t, n, price, coid=coid, exact=True)
         except Exception as err:                       # no clear answer: it may have gone through. Never resent.
@@ -21009,6 +21043,8 @@ def mkt_learn(now=None):
                 MKT_VETO[k] = {"w": w, "since": None}
             if held:
                 MKT_VETO.pop(k, None)
+        elif mkt_hold_on() and k in MKT_VETO:                            # #551a: one not-earned run must not lift a veto; the 2 h clock restarts
+            MKT_VETO[k]["since"] = None
         else:
             MKT_VETO.pop(k, None)
         if not mkt_hold_on():                                            # Settings switch off: the in-sample bar alone (#497)
@@ -24087,7 +24123,7 @@ def _fa_note(st, ev, now=None, **kw):
     del h[:-20]
 
 
-def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
+def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explicit_on=True):
     """Pete's switch. (ok, message, extra). Off is always allowed. On needs this Mac able to trade (never the Pi), and
     the paper gate passed or override=True (the 'override the paper gate' confirmation); which one is recorded."""
     now = now or time.time()
@@ -24101,6 +24137,9 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
                     return False, f"The {FA_WHY[k]} must be between {lo} and {hi}.", {}
             except (TypeError, ValueError):
                 return False, f"The {FA_WHY[k]} isn't a number.", {}
+    if on and explicit_on is not True and fa_state()["on"] is not True:
+        # a limits-save or reset from a stale tab must never switch it on: only the explicit turn-on request does
+        return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
     if on and not can_trade():
         return False, "This computer can't place orders (it isn't the Mac that trades), so full auto stays off.", {}
     gate = None
@@ -24121,7 +24160,12 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
             return False, ("The paper gate hasn't passed yet, so full auto stays off. To turn it on anyway, confirm "
                            "'override the paper gate'."), {"needs_override": True}
 
+    refused = []
+
     def fn(st):
+        if on and explicit_on is not True and st.get("on") is not True:
+            refused.append(True)                    # re-checked under the lock: only the explicit turn-on may switch it on
+            return
         st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
         if on:
             was = st.get("on") is True
@@ -24140,18 +24184,24 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None):
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
     _fa_update(fn)
+    if refused:
+        return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
     if on:
         return True, ("Full auto is ON" + (" (paper gate overridden)." if gate == "overridden" else ".")), {}
     return True, "Full auto is OFF. Bets already approved still go; nothing new is approved.", {}
 
 
-def _fa_rows(now, days=10):
-    """[(day, item)] for every real panel bet of the last `days` panel days (restarted panels included)."""
+def _fa_rows(now, days=None):
+    """[(day, item)] for every real panel bet (restarted panels included): all history, or only the last `days` panel
+    days when given. Bankroll free and the losing streak need all of it, or old losses would quietly drop out."""
     if not STORE["db"]:
         return []
     _panel_table()
-    first = _panel_day(now - days * 86400)
-    rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
+    if days is None:
+        rows = store_rows("select day, body from panel where (mode='real' or mode like 'real#%')", ())
+    else:
+        first = _panel_day(now - days * 86400)
+        rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
     return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
 
 
@@ -24162,16 +24212,20 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     now = now or time.time()
     st = st if st is not None else fa_state()
     day = _panel_day(now)
-    rows = _fa_rows(now)
-    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE]
+    rows = _fa_rows(now)                                  # all history: bankroll free and the streak count every loss
+    recent = _panel_day(now - 10 * 86400)
+    live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE and d >= recent]   # spent/open stay a recent view
     spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
     open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
     mine = {}
-    for _ in range(3):                                    # a bet swapped in for one of ours (new id) is ours too, chains included
+    grew = True                                           # a bet swapped in for one of ours (new id) is ours too: follow the whole chain
+    while grew:                                           # (each pass only adds new keys, so it ends; no cap, no cycle can loop)
+        grew = False
         for d, c in rows:
             k = f"{d}|{c.get('id')}"
-            if k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine):
+            if k not in mine and (k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine)):
                 mine[k] = (d, c)
+                grew = True
     settled = sorted((x for x in mine.values() if x[1].get("result")),    # a loss is what it really made (panel_pl), exits included
                      key=lambda x: (x[0], x[1].get("bought_at") or x[1].get("at") or 0))
     pl = round(sum(panel_pl(c) or 0 for d, c in settled), 2)
@@ -24595,6 +24649,7 @@ SALE_OUT = {"at": 0}
 BOARD_FEW = 20                 # fewer settled bets than this in a group: shown, but marked "too few to trust"
 SALE_FOLLOW_DAYS = 60          # how long a sale's games are followed for "what holding would have paid"
 LEDGER_FROZEN = 180            # a ledger row closed longer ago than this is never rewritten (Kalshi's fills go back 200 days)
+BOARD_COMBO_MIN = 30           # combos have heavy tails (a few big wins): they need this many settled bets before a verdict
 BOARD_Z = 2.5                  # standard errors before a breakdown's sentence says "more (or worse) than luck explains"
 
 
@@ -24612,11 +24667,12 @@ def _ledger_table():
                 "side text, offer real, cost real, pays real, frac real, chance real, by text, combo text, "
                 "outcome text, held real, done real, primary key(ts, ticker, result))")
         have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
-        for col, typ in (("live", "int"), ("ask", "real")):           # #228 PR4: in play at the sale; a single's ask
+        for col, typ in (("live", "int"), ("ask", "real"), ("disc", "real")):   # #228 PR4: in play at the sale; a single's ask; #300: the combo discount at the sale
             if have and col not in have:
                 store_x(f"alter table sell_log add column {col} {typ}")
         have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
         STORE["sell_live"] = {"live", "ask"} <= have   # else the old columns (a busy file): sales are never lost
+        STORE["sell_disc"] = STORE["sell_live"] and "disc" in have   # #300: only `disc` missing keeps live/ask
         STORE["ledger_ok"] = True
 
 
@@ -24855,11 +24911,15 @@ def sale_store(rec):
            rec.get("kind") or ("combo" if is_combo(rec.get("ticker") or "") else _bet_kind(rec.get("ticker") or "")),
            rec.get("side") or "yes", rec.get("offer"), rec.get("cost"), rec.get("pays"), rec.get("frac") or 1.0,
            rec.get("chance"), rec.get("by"), str(rec.get("combo") or "")[:200])
-    if STORE.get("sell_live"):
+    if STORE.get("sell_live") and STORE.get("sell_disc", STORE.get("sell_live")):
+        store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
+                "by, combo, live, ask, disc) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                row + (None if lv is None else int(bool(lv)), rec.get("ask"), rec.get("disc")))
+    elif STORE.get("sell_live"):                  # only `disc` couldn't be added: live and ask are still kept
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo, live, ask) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 row + (None if lv is None else int(bool(lv)), rec.get("ask")))
-    else:                                         # the new column couldn't be added (a busy file): the sale still counts
+    else:                                         # the new columns couldn't be added (a busy file): the sale still counts
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo) values(?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
@@ -25068,13 +25128,23 @@ def _held_summary(rs):
     return out
 
 
+def _board_bar(k):
+    """How many standard errors a breakdown must clear before its sentence says "more (or worse) than luck explains".
+    BOARD_Z, raised Bonferroni-style when many groups are tested at once (10 leagues give about 2.8): the more groups
+    looked at, the likelier one looks special by luck. Words only; no setting or decision reads it (#187)."""
+    from statistics import NormalDist
+    return max(BOARD_Z, NormalDist().inv_cdf(1 - 0.025 / max(k, 1)))
+
+
 def _board_say(rows, what):
     """One plain sentence on what a breakdown says, judged on enough bets and against luck."""
     big = [r for r in rows if not r["few"] and r["roi"] is not None]
     if not big:
         return f"Too few settled bets to judge any {what} yet ({BOARD_FEW}+ each before reading much into it)."
-    good = [r for r in big if r["z"] is not None and r["z"] >= BOARD_Z]
-    bad = [r for r in big if r["z"] is not None and r["z"] <= -BOARD_Z]
+    bar = _board_bar(len(big))
+    judged = [r for r in big if not (r["k"] == "combo" and r["n"] < BOARD_COMBO_MIN)]
+    good = [r for r in judged if r["z"] is not None and r["z"] >= bar]
+    bad = [r for r in judged if r["z"] is not None and r["z"] <= -bar]
     parts = []
     if good:
         b = max(good, key=lambda r: r["roi"])
@@ -25229,7 +25299,7 @@ BOARD_KINDS = {"combo": "Combos", "win": "Single games", "spread": "Spreads", "t
 BOARD_ENDS = {"smart": "Sold by smart sell", "you": "Sold by you", "won": "Held to the end: won",
               "lost": "Held to the end: lost"}
 BOARD_SRC = {"panel": "Daily panel", "extra": "Panel extras", "manual": "Buy straight",
-             "app": "Build & Live ideas", "before": "Held before tracking began", "own": "You, on Kalshi"}
+             "app": "Build and other app buys", "idea": "Live buy ideas", "before": "Held before tracking began", "own": "You, on Kalshi"}
 
 
 def profit_board(now=None, max_age=120):
@@ -25262,7 +25332,7 @@ def profit_board(now=None, max_age=120):
         r["end"] = ("smart" if r["ticker"] in auto else "you") if r.get("n_sold") else r["status"] \
             if r["status"] in ("won", "lost") else "you"
         r["src"] = ("extra" if c.get("origin") == "extra" else "panel") if c else \
-            {"manual": "manual", "before": "before"}.get(how.get(r["ticker"]), "app" if r["ticker"] in how else
+            {"manual": "manual", "before": "before", "idea": "idea"}.get(how.get(r["ticker"]), "app" if r["ticker"] in how else
                                                          "own" if seeded else "app")
         if r.get("n_sold") and r.get("held") is not None and r.get("outcome") != "void":
             r["sold_net"] = (r["sold_back"] or 0) - (r["sell_fees"] or 0)
@@ -25669,16 +25739,19 @@ def _sl_held(c, path, prog, drop, also=None, cf=None):
             yield ts, cur
 
 
-def _sl_replay(c, path, prog, drop, cf=None, hair=False):
+def _sl_replay(c, path, prog, drop, cf=None, hair=False, when=None):
     """What the stop-loss switch, with these settings and the same guards as live (late enough, not at a break,
     far below the pregame chance, held 3+ checks over 3+ minutes), would have got for this combo: the loss when
     it would have sold, None when it would have held. hair: the sale price cut to KNOB_HAIRCUT['combo'] of the
-    estimate (#285: a step that has it sell more is judged on a pessimistic price)."""
+    estimate (#285: a step that has it sell more is judged on a pessimistic price). `when`, if a dict, gets "ts" = the
+    moment the guards held (#265: the loss-guard judge needs to know which of two drivers would have sold first)."""
     P, stake = c.get("pays") or 0, c["stake"]
     tks = [l["ticker"] for l in c["legs"]]
     if not P or len(path) < (cf or (SL_CHECKS,))[0]:
         return None
     for ts, cur in _sl_held(c, path, prog, drop, cf=cf):
+        if when is not None:
+            when["ts"] = ts
         est = kalshi_discount(True) * math.prod(cur[t][0] for t in tks) * P * (KNOB_HAIRCUT["combo"] if hair else 1.0)
         return round(est - stake, 2) if est < stake else None
     return None
@@ -25979,12 +26052,12 @@ KNOBS = (
      "what": "Selling at a loss waits until this share of the game is played.",
      "owner": "stop_loss_leg (via stoploss_params)", "src": "SL_DEFAULT.prog", "start": 0.5, "min": 0.35,
      "max": 0.9, "step": 0.05, "unit": "share", "stricter": "up", "borrow": "chain-stricter", "learned": "smart_tune",
-     "metric": "return on stake of combos, selling at a loss vs holding", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_drop", "group": "loss", "cls": "tunable", "label": "Fall from the pregame chance",
      "what": "Selling at a loss needs the pick this many points under its chance before the game.",
      "owner": "stop_loss_leg (via stoploss_params)", "src": "SL_DEFAULT.drop", "start": 0.2, "min": 0.1,
      "max": 0.45, "step": 0.05, "unit": "pts", "stricter": "up", "borrow": "chain-stricter", "learned": "smart_tune",
-     "metric": "return on stake of combos, selling at a loss vs holding", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_under", "group": "loss", "cls": "tunable", "label": "Pick must be under",
      "what": "Selling at a loss needs the pick under this chance right now.",
      "owner": "stop_loss_leg, _sl_held", "src": "SL_UNDER", "start": 0.5, "min": 0.3, "max": 0.55, "step": 0.05,
@@ -25994,17 +26067,17 @@ KNOBS = (
      "what": "A loss sale waits until its reason held on this many checks in a row (a hedge has its own count).",
      "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_CHECKS", "start": 3, "min": 3, "max": 6, "step": 1,
      "unit": "count", "stricter": "up", "borrow": "chain-stricter", "learned": None,
-     "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_span", "group": "loss", "cls": "tunable", "label": "Held for at least",
      "what": "...over at least this long.",
      "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_SPAN", "start": 180, "min": 180, "max": 600, "step": 30,
      "unit": "secs", "stricter": "up", "borrow": "chain-stricter", "learned": None,
-     "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_gap", "group": "loss", "cls": "tunable", "label": "Checks no further apart than",
      "what": "...with no two checks further apart than this (a longer gap starts the count again).",
      "owner": "_sl_confirm, _sl_held (via sl_confirm_params)", "src": "SL_GAP", "start": 300, "min": 120, "max": 300, "step": 30,
      "unit": "secs", "stricter": "down", "borrow": "chain-stricter", "learned": None,
-     "metric": "dollars from confirmed vs unconfirmed turns", "judge": "_sl_replay"},
+     "metric": "return on stake of combos on the loss decisions that really run (the loss cut, the stop-loss, whichever sells first)", "judge": "_knob_res_loss"},
     {"name": "sl_auto", "group": "loss", "cls": "tunable", "label": "Sells at a loss by itself",
      "what": "With \"Selling at a loss\" on \"Let it tune itself\": off until this league's own record shows that selling "
              "a combo that turned against you late in a game (every guard holding) beats holding it.",
@@ -27030,7 +27103,7 @@ def _knob_replay_cfg():
     return tp, bool(CFG.get("lock_trail", True))
 
 
-def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp=0, ex=None, mk=None):
+def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp=0, ex=None, mk=None, when=None):
     """_replay against the bet's REAL market record, for self-tuning's judge (#228 PR4, #285). Same decision
     (exit_policy, the same inputs), but a sale is priced the way live smart sell really sells:
       - a combo: exit_policy sees the real Kalshi offer recorded within an offer's life before that moment (`real`, as
@@ -27040,7 +27113,8 @@ def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp
       - a single: valued and sold at its recorded bid on the pick's side (read within SINGLES_SELL_AGE), never into a
         gap wider than LIVE_SPREAD; with no recorded bid, at the chance after the fee less 1 cent, as _replay.
     mk = {"offers": [(ts, whole-combo offer)], "book": [(ts, bid, ask)], "hair": True for a loosening step}: with
-    `hair`, a price that is not a real recorded one is cut (KNOB_HAIRCUT). Returns (profit, why) or None (rides on)."""
+    `hair`, a price that is not a real recorded one is cut (KNOB_HAIRCUT). Returns (profit, why) or None (rides on).
+    `when`, if a dict, gets "ts" = the moment of the sale (#265: which of two loss drivers would have sold first)."""
     mk = mk or {}
     ex = ex or {}
     stake = c["stake"]
@@ -27100,17 +27174,21 @@ def _replay_real(c, path, fl=1.5, lm=1.0, loss=None, trail=True, cut_at=None, tp
                 got = est * (KNOB_HAIRCUT["combo"] if hair else 1.0)
             if got < slip * thr - 1e-9 or (got < stake - 1e-9 and d["reason"] != "cut loss"):
                 continue                              # under the line, or under cost (live skips both)
+            if when is not None:
+                when["ts"] = ts
             return round(got - stake, 2), d["reason"]
         if wide or value < thr - 1e-9:
             continue
+        if when is not None:
+            when["ts"] = ts
         return round(value - stake, 2), d["reason"]
     return None
 
 
-def _knob_res_replay(c, path, slp, vals, cache, hair=False):
-    """One bet's result under the values `vals`: smart sell's replay against the bet's real market record
-    (_replay_real: real offers, recorded bids, the slip), with the loosening haircut when `hair`; riding to the end =
-    the bet's settled result (for a bet the app sold, what holding paid, from sale_outcomes)."""
+def _knob_replay_at(c, path, slp, vals, cache, hair=False):
+    """(result, moment of the sale or None) of one bet under the values `vals`: smart sell's replay against the bet's real
+    market record (_replay_real: real offers, recorded bids, the slip), with the loosening haircut when `hair`; riding to
+    the end = the bet's settled result (for a bet the app sold, what holding paid, from sale_outcomes)."""
     ex = {pk: vals[n] for n, pk in KNOB_EXIT_PRM.items() if n in vals and vals[n] is not None}
     if vals.get("auto_slip") is not None:
         ex["cash_slip"] = vals["auto_slip"]
@@ -27122,10 +27200,16 @@ def _knob_res_replay(c, path, slp, vals, cache, hair=False):
         loss = vals["smart_loss"]
         cut_at = _cut_guard_ts(c, slp, loss, vals["sl_prog"], vals["sl_drop"], cf) if loss else None
         mk = dict(c.get("_mk") or {}, hair=bool(hair))
+        w = {}
         r = _replay_real(c, path, vals["smart_floor"], vals["smart_lam"], loss, trail=trail, cut_at=cut_at, tp=tp,
-                         ex=ex, mk=mk)
-        cache[key] = r[0] if r else c["pl"]
+                         ex=ex, mk=mk, when=w)
+        cache[key] = (r[0], w.get("ts")) if r else (c["pl"], None)
     return cache[key]
+
+
+def _knob_res_replay(c, path, slp, vals, cache, hair=False):
+    """One bet's result under the values `vals` (see _knob_replay_at)."""
+    return _knob_replay_at(c, path, slp, vals, cache, hair)[0]
 
 
 def knob_loosens(name, frm, to):
@@ -27136,16 +27220,74 @@ def knob_loosens(name, frm, to):
     return knob_stricter_of(name, frm, to) == frm
 
 
-def _knob_res_sl(c, slp, vals, cache, hair=False):
-    """One combo's result under the loss guards' values: what the stop-loss would have got with them (as if it were
-    on; knob_judge holds a combo at its settled result for sl_auto off), with the haircut on a loosening step's sale
-    price (#285)."""
+def _knob_sl_at(c, slp, vals, cache, hair=False):
+    """(result, moment of the sale or None) of one combo under the loss guards' values: what the stop-loss would have
+    got with them (as if it were on; knob_judge holds a combo at its settled result for sl_auto off), with the haircut
+    on a loosening step's sale price (#285)."""
     cf = (vals.get("sl_checks", SL_CHECKS), vals.get("sl_span", SL_SPAN), vals.get("sl_gap", SL_GAP))
     key = (id(c), "sl", vals["sl_prog"], vals["sl_drop"], cf, bool(hair))
     if key not in cache:
-        r = _sl_replay(c, slp, vals["sl_prog"], vals["sl_drop"], cf, hair)
-        cache[key] = r if r is not None else c["pl"]
+        w = {}
+        r = _sl_replay(c, slp, vals["sl_prog"], vals["sl_drop"], cf, hair, when=w)
+        cache[key] = (r, w.get("ts")) if r is not None else (c["pl"], None)
     return cache[key]
+
+
+def _knob_res_sl(c, slp, vals, cache, hair=False):
+    """One combo's result under the loss guards' values (see _knob_sl_at)."""
+    return _knob_sl_at(c, slp, vals, cache, hair)[0]
+
+
+class KnobJudgeUnreadable(Exception):
+    """The evidence a judge needs for one bet could not be read: that step is not judged at all (fail closed, #265)."""
+
+
+KNOB_LOSS_GUARDS = ("sl_prog", "sl_drop", "sl_checks", "sl_span", "sl_gap")   # the guards BOTH loss decisions share
+
+
+def knob_loss_drivers(vals):
+    """(cut_on, stop_loss_on): which loss decisions really run for a group whose numbers are `vals` (#265). The learned
+    loss cut runs when smart sell is on and a cut-off is set (the cautious default included); the stop-loss switch runs
+    under Settings > Selling at a loss = Allow, or under Let it tune itself when this group's own `sl_auto` is on. A
+    guard step is judged on these, not on a feature that is off."""
+    cut_on = bool(CFG.get("smart_sell", True)) and bool(vals.get("smart_loss")) and \
+        "smart_floor" in vals and "smart_lam" in vals
+    sl_on = sl_mode() == "allow" or bool(vals.get("sl_auto"))
+    return cut_on, sl_on
+
+
+def _knob_res_loss(c, path, slp, vals, cache, hair=False):
+    """(#265) One combo's result under the loss guards' values `vals`, on the decisions that really run (see
+    knob_loss_drivers). Only the cut: the cut's replay (smart sell's whole decision against the bet's real market
+    record, the guards gating its loss cut). Only the stop-loss: the stop-loss's replay. Both: whichever would have sold
+    FIRST (on a tie, the lower result), because both would sell the same bet once. Neither: the bet's settled result
+    (the step changes nothing live). The replays are net dollars from the real or estimated sale price against what the
+    bet cost (fees are in the cost and in the offers; a single's bid is taken after its fee). Report/judge side only."""
+    cut_on, sl_on = knob_loss_drivers(vals)
+    if not (cut_on or sl_on):
+        return c["pl"]
+    try:
+        if cut_on and not path:
+            raise KnobJudgeUnreadable("no price record")
+        a = _knob_replay_at(c, path, slp, vals, cache, hair) if cut_on else None
+        b = _knob_sl_at(c, slp, vals, cache, hair) if sl_on else None
+    except KnobOutOfTime:
+        raise
+    except Exception as err:
+        raise KnobJudgeUnreadable(f"{type(err).__name__}: {err}") from err
+    if a is None:
+        return b[0]
+    if b is None:
+        return a[0]
+    if a[1] is None and b[1] is None:
+        return c["pl"]
+    if a[1] is None:
+        return b[0]
+    if b[1] is None:
+        return a[0]
+    if abs(a[1] - b[1]) <= 1e-9:
+        return min(a[0], b[0])
+    return a[0] if a[1] < b[1] else b[0]
 
 
 def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
@@ -27190,6 +27332,8 @@ def knob_judge(judge, rows, cur, name, to, cache=None, deadline=None):
         if judge == "sl" and name == "sl_auto":      # the stop-loss's own switch: on = what it would have got, off = held
             d = (_knob_res_sl(c, slp, new, cache, hair) if new[name] else c["pl"]) - \
                 (_knob_res_sl(c, slp, cur, cache, hair) if cur[name] else c["pl"])
+        elif judge == "sl" and name in KNOB_LOSS_GUARDS:   # #265: on the decisions that really run, not the switch alone
+            d = _knob_res_loss(c, path, slp, new, cache, hair) - _knob_res_loss(c, path, slp, cur, cache, hair)
         elif judge == "sl":
             d = _knob_res_sl(c, slp, new, cache, hair) - _knob_res_sl(c, slp, cur, cache, hair)
         else:
@@ -27227,6 +27371,16 @@ def _knob_res_feed(r, vals):
     if r["age"] > tol + 1e-9:
         return 0.0
     return (r["bid"] - single_fee(r["bid"])) - (r["later"] - single_fee(r["later"]))
+
+
+def _lg265_loosen_ok(st):
+    """#265 tighten-only first run: the five loss guards may LOOSEN live only once Pete has okayed it (the marker
+    `lg265_loosen_ok` is True in combo_knobs.json). Until then a loosening step is logged "would have loosened", never
+    applied. Fail closed: a marker that is missing, unreadable or anything but True keeps it tighten-only."""
+    try:
+        return isinstance(st, dict) and st.get("lg265_loosen_ok") is True
+    except Exception:
+        return False
 
 
 def _guard_bootstrap(ds, last_at, seed):
@@ -27361,6 +27515,24 @@ def _knob_rows_brk_hedge(now):
     return brk, hed
 
 
+def _knob_game_kick(tks, fallback):
+    """When a cashed combo's first game started, for the stepper's 'after the last step' filter and 70/30 holdout (#309;
+    it used the buy time): the recorded kickoff when known, else the first in-play price the recorder saw on any leg,
+    else `fallback` (the buy time, as before). Read-only; never raises."""
+    try:
+        known = [t for t in (_kick_ts({"event": x.rsplit("-", 1)[0]}) for x in tks) if t]
+        if not known:
+            for x in tks:
+                got = store_rows("select min(ts) t from ticks where ticker=? and state='live'", (x,))
+                if got and got[0].get("t"):
+                    known.append(got[0]["t"])
+        # never earlier than the buy: a combo bought in play must not replay prices from before it existed (_paths and
+        # _sl_paths start from `kick`), so an in-play buy keeps its buy time exactly as before
+        return max(min(known), fallback) if known and fallback else fallback if not known else min(known)
+    except Exception:
+        return fallback
+
+
 def _knob_items(days=KNOB_DAYS):
     """The settled bets the stepper judges: smart_tune's (_tune_items), each bet once (a real panel combo is also in
     the history file's bets table: the panel's copy is kept), plus the real combos that were CASHED OUT, which
@@ -27394,7 +27566,7 @@ def _knob_items(days=KNOB_DAYS):
                 continue
             if tks:
                 out.append({"id": r["combo"], "kind": "combo", "stake": r["cost"], "pays": r["pays"],
-                            "kick": r["first_seen"], "legs": [{"ticker": t} for t in tks], "sold": True,
+                            "kick": _knob_game_kick(tks, r["first_seen"]), "legs": [{"ticker": t} for t in tks], "sold": True,
                             "pl": ((r["pays"] or 0) if got == "won" else 0) - r["cost"]})
     except Exception as err:                          # sold bets unreadable: judged on the rest, as before
         print("knob stepper: sold bets:", type(err).__name__, err)
@@ -27609,24 +27781,31 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     except KnobOutOfTime:
                         done = False
                         break
+                    except KnobJudgeUnreadable as err:    # #265: evidence it needs can't be read: no step for this knob
+                        last.append({"knob": n_, "from": cur[n_], "to": to, "status": "unread",
+                                     "say": f"{k['label']}: not judged, its record could not be read ({err})"})
+                        break
                     is_live = live and n_ in knob_live_names()
                     if is_live and g in ("all", "soccer") and (k.get("borrow") == "own" or knob_stricter(n_, to) != to):
                         is_live = False               # leagues borrow only stricter, never the loss cut: a step here
                     #                                   that no league would take stays a test
                     guard = n_ in GUARD_KNOBS and guards_on()
                     loose_ = knob_loosens(n_, cur[n_], to)
+                    boot_ = guard or n_ in KNOB_LOSS_GUARDS   # #265: a loosened loss guard needs the bootstrap range above 0 too
                     last_at_ = e.get("lstep_at") if is_live else e.get("step_at")
                     ev = knob_evidence(ds, staked, last_at_,
                                        KNOB_EVIDENCE_STRICT if n_ in KNOB_STRICT_BAR and to != k["start"] else
                                        (GUARD_TIGHT if guard and not loose_ else None))
-                    if guard and loose_:               # loosening a guard: the bootstrap range must be above 0 too
+                    if boot_ and loose_:               # loosening a guard: the bootstrap range must be above 0 too
                         lo_ = _guard_bootstrap(ds, last_at_, f"{n_}|{g}")
                         ev["checks"]["bootstrap"] = lo_ > 0
                         ev["boot"] = round(lo_, 4) if math.isfinite(lo_) else None
                         ev["ok"] = all(ev["checks"].values())
                     if ev["band"] == 0 and ev["hold_n"] == 0:
                         continue                      # changes nothing: nothing to log
-                    status = "qualifies" if ev["ok"] else ("vetoed" if all(
+                    held_back = (is_live and n_ in KNOB_LOSS_GUARDS and loose_ and ev["ok"]
+                                 and not _lg265_loosen_ok(st))   # #265: tighten-only until Pete okays loosening
+                    status = "would have loosened" if held_back else "qualifies" if ev["ok"] else ("vetoed" if all(
                         x for w, x in ev["checks"].items() if w != "holdout") else "below")
                     row = {"knob": n_, "from": cur[n_], "to": to, "status": status, "n": len(rs), "staked": round(staked, 2),
                            **{x: ev[x] for x in ("gain", "share", "band", "t", "new", "hold", "hold_n")},
@@ -27634,7 +27813,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                            "say": knob_step_say(n_, cur[n_], to, ev, len(rs)) +
                            ("" if ev["ok"] or status == "vetoed" else f" Not yet: {_knob_why_not(ev)}.")}
                     last.append(row)
-                    if ev["ok"]:
+                    if ev["ok"] and not held_back:
                         rank = (-ev["gain"], _knob_dist(n_, cur[n_], to))
                         if is_live:
                             if best_live is None or rank < best_live[0]:
@@ -27669,7 +27848,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             e.update(v=v, why=why, last=last, at=now, lv=lv, lat=lat)
             groups[g] = e
             for r in last:
-                if r.get("status") in ("stepped", "would step", "qualifies", "vetoed", "below", "thin"):
+                if r.get("status") in ("stepped", "would step", "would have loosened", "qualifies", "vetoed", "below",
+                                       "thin"):
                     logrows.append((now, g, r["knob"], json.dumps(r.get("from")), json.dumps(r.get("to")), r["status"],
                                     r.get("gain"), r.get("share"), r.get("band"), r.get("t"), r.get("new"),
                                     r.get("hold"), r.get("hold_n"), r.get("say", "")[:600], r.get("n"),
@@ -27808,6 +27988,10 @@ def knob_sale_expect(r, disc=None):
             lv = r.get("live")
             d = (disc or {}).get(lv is None or bool(lv))
             d = kalshi_discount(lv is None or bool(lv)) if d is None else d   # unknown: in play (most automatic sales)
+            try:                                       # #300: never gentler than today's number: the discount logged AT the sale counts when higher
+                d = max(d, float(r["disc"])) if r.get("disc") is not None and 0.5 <= float(r["disc"]) <= 1.0 else d
+            except (TypeError, ValueError, KeyError):
+                pass
             return offer, d * ch * n
         bid = offer / n
         try:
@@ -27833,7 +28017,7 @@ def _knob_brake_sales(st, now, live=False):
     recorded at the sale (knob_sale_expect); a part with no logged chance doesn't count. Counted as soon as it sells
     (no waiting for the game). Only sales after the league's last brake ENDED and within 30 days; never the Pi's rows."""
     _ledger_table()
-    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {'live, ask' if STORE.get('sell_live') else 'null as live, null as ask'} "
+    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {('live, ask, disc' if STORE.get('sell_disc', STORE.get('sell_live')) else 'live, ask, null as disc') if STORE.get('sell_live') else 'null as live, null as ask, null as disc'} "
                       "from sell_log where result='sold' "
                       "and ts > ? and (\"by\" is null or \"by\" != 'pi') order by ts", (now - KNOB_MONTH,))
     disc = {True: kalshi_discount(True), False: kalshi_discount(False)}
@@ -30747,9 +30931,11 @@ def sb_resolve(now=None, limit=150):
                           "group by tickers order by u, k desc limit ?",   # the gate's own bets first (#137: universe
                           (now - 4 * 3600, now - 7 * 86400, limit))        # rows wait their turn), newest first, a
         if len(rows) >= limit:                                             # week at most (a void is given up on)
-            rows += store_rows("select tickers, max(kick) k from exit_shadow where res is null and kick is not null and "
-                               "kick < ? and kick > ? and source='universe' group by tickers order by k desc limit ?",
-                               (now - 4 * 3600, now - 7 * 86400, limit))
+            have = {r["tickers"] for r in rows}                            # (#309) the second look skips what the first
+            rows += [r for r in store_rows(                                # batch already holds: no repeated rows
+                "select tickers, max(kick) k from exit_shadow where res is null and kick is not null and "
+                "kick < ? and kick > ? and source='universe' group by tickers order by k desc limit ?",
+                (now - 4 * 3600, now - 7 * 86400, limit + len(have))) if r["tickers"] not in have][:limit]
         sets = {}
         for r in rows:
             try:
@@ -30786,6 +30972,33 @@ def _sb_game(tickers):
     return "+".join(sorted({re.sub(r"(SPREAD|TOTAL)-", "GAME-", t.rsplit("-", 1)[0]) for t in tickers or () if t}))
 
 
+SB_READ_CHUNK = 20000
+
+
+def _sb_rows_chunked(sql, since, chunk=None):
+    """`sql` (an exit_shadow select ending `where ts > ?` ... `order by ts`) read in pages of `chunk` rows, oldest first, by
+    (ts, rowid), instead of one 200k-row read under the store lock that the panel buy thread shares (#309). Each page
+    takes the lock on its own, so other threads get in between. The rows and their order are the same as one read. A read error
+    in any page raises (store_rows_strict): a half-read result would silently truncate the evidence."""
+    chunk = chunk or SB_READ_CHUNK
+    head, _, tail = sql.partition(" order by ts")
+    assert not tail, sql
+    last = None
+    while True:
+        if last is None:
+            got = store_rows_strict(head + " order by ts, rowid limit ?", (since, chunk))
+        else:
+            got = store_rows_strict(head.replace("where ts > ?", "where ts > ? and (ts > ? or (ts = ? and rowid > ?))", 1)
+                             + " order by ts, rowid limit ?", (since, last[0], last[0], last[1], chunk))
+        if not got:
+            return
+        for r in got:
+            yield r
+        if len(got) < chunk:
+            return
+        last = (got[-1]["ts"], got[-1]["_rid"])
+
+
 def _sb_results(now=None, wide=False, settled=True, uni=False):
     """One row per checked bet (last 60 days): its last check before its game (or its first check when it was only
     ever seen in play), as {'league', 'sport', 'ev', 'out', 'day', 'tickers', 'price', 'kind', 'skip', 'kick', 'ts',
@@ -30808,9 +31021,9 @@ def _sb_results(now=None, wide=False, settled=True, uni=False):
     first, last_pre, src, fc, gate = {}, {}, {}, {}, {}
     keep = "" if wide else (" and source in ('panel', 'idea', 'universe') and coalesce(grade, 'cand') != 'wide'" if uni
                             else " and source in ('panel', 'idea')")
-    sql = ("select ts, league, kind, tickers, kick, price, fair, ev, outcome, skip, source, grade, new, pays from "
+    sql = ("select rowid _rid, ts, league, kind, tickers, kick, price, fair, ev, outcome, skip, source, grade, new, pays from "
            "exit_shadow where ts > ?" + (" and outcome is not null" if settled else "") + keep + " order by ts")
-    for r in store_rows(sql, (now - SB_LEARN_DAYS * 86400,)):
+    for r in _sb_rows_chunked(sql, now - SB_LEARN_DAYS * 86400):
         k = r["tickers"]
         first.setdefault(k, r)
         if r["kick"] is None or r["ts"] <= r["kick"]:

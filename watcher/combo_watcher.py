@@ -4506,8 +4506,9 @@ def webapp_main():
                     if BUILD.get("lg") != row["lg"]:
                         api_build(row["lg"], rebuild=True)
                     side = next((x for sd in (A.CTX.get("all_games") or {}).values() for x in sd if x["ticker"] == tk), None)
-                    if side is not None:                    # (#286) when the board's price was read, as Buy straight knows it
-                        side = dict(side, fair_at=BUILD.get("at") or 0)
+                    ps = single_side(tk, row["lg"])      # (#286) the same board side Buy straight prices from, with its age
+                    if ps.get("fair_at") is not None:
+                        side = ps
                     dpt = A.book_depth(tk, max_age=0)
                     if not dpt or dpt.get("ask") is None:
                         return {"ok": False, "gone": True, "msg": "Kalshi isn't listing that game right now."}
@@ -4532,12 +4533,11 @@ def webapp_main():
                     pct = (fair / (ask + fee) if ask else 0) if fair is not None else None
                     rec = (A.edge_stake(pct, A.CFG.get("size_min", 3), A.CFG.get("size_max", 10), fair) if fair is not None else
                            max(A.OWN_MIN, 2.0))                # no fair price: Buy straight's smallest bet, no edge claimed
-                    if fair is not None and not fi["live"] and A.CFG.get("pregame_idea_fair", True) and A.single_kind(tk) == "win":
-                        try:                                # (#286) never above the panel's own sizing (quarter Kelly on a shrunk edge)
-                            rec = min(rec, round(min(max(A._size({"kind": "single", "chance": fair, "price": ask}, A._manual_base()),
-                                                         1.0), A.SINGLE_MAX), 2))
-                        except Exception:
-                            rec = max(A.OWN_MIN, 2.0)
+                    if fair is not None and not fi["live"] and A.CFG.get("idea_pre_strict", True):
+                        sk = fi["how"] == "sportsbooks + your record"   # (#286) never above Buy straight's own sizing
+                        sf = fair if sk else ask + fee + (fair - ask - fee) * 0.7
+                        rec = min(rec, round(min(max(A._size({"kind": "single", "chance": sf, "price": ask},
+                                                              A._manual_base()), 1.0), A.SINGLE_MAX), 2))
                     stake = own if own is not None else rec
                     n = int(stake / (ask + fee) + 1e-9) if own is not None else max(1, int(stake / (ask + fee)))
                     note = None
@@ -4721,6 +4721,7 @@ def webapp_main():
             if a == "full_auto_set":                # the real full-auto switch (own file; never a setting): on needs the paper gate or an explicit override
                 on = d.get("on") is True
                 ok, msg, extra = A.fa_set(on, override=d.get("override") is True, reset_brake=d.get("reset_brake") is True,
+                                          explicit_on=d.get("turn_on") is True,     # only the Turn on button; Save limits / Reset never switch it on
                                           limits=d.get("limits") if isinstance(d.get("limits"), dict) else None)
                 log("full auto", "ON" if on and ok else "OFF" if ok else "refused", "from the app", ("(override)" if d.get("override") is True and ok and on else ""))
                 return jsonable(dict(extra, ok=ok, msg=msg, full_auto=A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())))

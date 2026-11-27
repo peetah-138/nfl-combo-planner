@@ -1,7 +1,6 @@
 # CHECK: group=engine
-# rank-e-144: #482 (totals curve never narrower
-# than the league's fitted width), #287 (learned in-play green bar, paper only), #286/#243 (pregame idea fair, Best bets
-# board age and dollar pre-cut). Every Kalshi call is faked; nothing is sent.
+# rank-e-144: #287 (learned in-play green bar, paper only) and #243 (Best bets board age).
+# Every Kalshi call is faked; nothing is sent.
 # Combo cost floor counts Kalshi's selling fee (issues #382, #383), the way singles net it (`single_fee`): a combo
 # cash-out offer exactly at cost no longer passes the floor, on the first offer or on a retry's fresh offer, and an
 # unreadable offer (no contracts) is no sale. 20 contracts at $10 cost = 50 cents each: the fee is 35 cents.
@@ -88,22 +87,6 @@ def run(offs, mode=None, script=("executed",), dt_=0, contracts=20, why="smart")
 
 
 
-# ---- #482: the old totals curve is never narrower than the league's fitted width, and never raises a chance
-g = {"total": 172.5}
-E.CFG["total_fit_sd"] = True
-old = E._phi((172.5 - 163.5) / E.TOTAL_SD["ncaamb"])
-new = E.line_fair("ncaamb", "total", 163.5, True, g)
-ok(f"#482: CBB over a strike 9 below the book total is priced lower on the fitted width ({old:.3f} -> {new:.3f})", new < old - 0.01)
-old2 = E._phi((172.5 - 185.5) / E.TOTAL_SD["ncaamb"])
-ok("#482: a strike ABOVE the book total keeps the old (lower) chance: never loosened", E.line_fair("ncaamb", "total", 185.5, True, g) == old2)
-E.CFG["total_fit_sd"] = False
-ok("#482: switch off = exactly the old curve", E.line_fair("ncaamb", "total", 163.5, True, g) == old)
-E.CFG["total_fit_sd"] = True
-ok("#482: a league whose fitted width is not wider (NFL 12.8 vs 10 is wider; NBA 17.8 vs 17) only ever goes down",
-   all(E.line_fair(c, "total", k, True, {"total": 150.0}) <= E._phi((150.0 - k) / E.TOTAL_SD[c]) + 1e-12
-       for c in E.TOTAL_SD for k in (120.0, 140.0, 150.0, 160.0, 180.0)))
-ok("#482: no table / junk = no fitted width", E.total_sd_fit("nope") is None)
-
 # ---- #287: the learned in-play bar is paper: flat without a record, and never below the flat bar
 b = E.live_single_bar("KXNBAGAME-26NOV19LALBOS-LAL")
 ok("#287: no record = the flat bar (1.5 cents)", abs(b["v"] - E.SINGLE_MIN_EDGE * 0.6) < 1e-9 and b["src"] == "start")
@@ -121,19 +104,6 @@ E.CFG["live_bar_learn"] = True
 ok("#287: paper only: nothing but the quote's live_bar field reads it",
    open("wahome/engine.py", encoding="utf-8").read().count("live_single_bar(") == 2)
 
-# ---- #286 / #243
-T = "KXNBAGAME-26NOV30DENLAL-DEN"
-side = {"ticker": T, "pick": "Denver", "event": "KXNBAGAME-26NOV30DENLAL", "fair": 0.80, "src": "pinnacle", "fair_at": now - 60}
-E.started = lambda s: False
-ok("#286: a fresh sportsbook price: used, never above the books", 0 < E.idea_single_fair(T, side, 0.9, {})["fair"] <= 0.80)
-ok("#286: a 13-minute-old board price: no fair", E.idea_single_fair(T, dict(side, fair_at=now - 780), 0.9, {})["fair"] is None)
-ok("#286: unknown board age: no fair", E.idea_single_fair(T, dict(side, fair_at=None), 0.9, {})["fair"] is None)
-ok("#286: Kalshi's own price (no src): no fair", E.idea_single_fair(T, dict(side, src=None), 0.9, {})["fair"] is None)
-ok("#286: no board side: never the idea's stored chance", E.idea_single_fair(T, None, 0.9, {})["fair"] is None)
-E.CFG["pregame_idea_fair"] = False
-ok("#286: switch off = the old pregame fair", E.idea_single_fair(T, None, 0.9, {})["fair"] == 0.9)
-E.CFG["pregame_idea_fair"] = True
+# ---- #243
 W = open("wtest/combo_watcher.py", encoding="utf-8").read()
-blk = W[W.index('if a == "idea":'):W.index('if a == "singlequote":')]
-ok("#286: the idea quote's suggested stake never exceeds the panel's own sizing", "A._size({" in blk and "rec = min(rec," in blk)
 ok("#243: Best bets gets the board's age", "fair_at=BUILD.get(\"at\")" in W)

@@ -28,17 +28,14 @@ def load():
     A.book_depth = lambda t, max_age=60: {"bid": .31, "ask": .32, "spread": .01, "ask_size": 240, "thin": False}
     A.single_cap_block = lambda t, cost, now=None: (None, 10.0, 100.0)
     A.week_spend = lambda: 10.0
-    # (#286) a pregame idea now needs a fresh sportsbook-backed price from the board; this page test is about the amount row,
-    # so the board price is stubbed (the rules themselves are tested in t_idea_inplay / t_rank_e144)
-    A.idea_single_fair = lambda tk, side=None, pfair=None, book=None, **k: {
-        "fair": .45, "src": "sportsbooks + your record", "how": "sportsbooks + your record", "live": False,
-        "nofair": None, "warn": [], "over": False}
 
     def offer(i, amount=None, check_cap=True):        # Kalshi's combo price, faked: records the amount asked for
         OFFERS.append(amount)
         st = amount or 5.0
         return {"pays": st * 3.1, "price": 1 / 3.1, "min": st * 2.8, "ok": True, "stake": st, "pct": 1.02, "bar": 95}
     A.get_offer = offer
+    # (#286) a pregame idea is priced from the board's fresh sportsbook price (Buy straight's rules); here the board is faked fresh
+    A.idea_pre_fair = lambda tk, side, kind, now=None: (0.45, "sportsbooks + your record", None)
     A.idea_single_buy = lambda t, n, price, paused=False, log=print, key=None: (BUYS.append((t, n, price)) or
                                                                                {"ok": True, "pays": n, "msg": f"Bought {n}."})
     AA["A"] = A
