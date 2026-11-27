@@ -131,7 +131,7 @@ for i in range(6):
               (6000 + i, at + 3600 * (i + 1), "nba", "nba", 2, 0.951, 5.0, 5.5, 95.0, 95.0, 1, 1, "lost", -4.0))
 tick(NOW + 8 * DAY)
 ok("a step that held up is kept", vals() == {"bar:nba": 0.5} and lessons()["last"]["bar"]["judged"] is True
-   and "kept" in lessons()["log"][-1]["text"])
+   and lessons()["log"][-1]["text"].startswith("Kept the NBA combo bar change"))
 
 # ---- fail closed
 reset()
