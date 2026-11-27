@@ -25056,6 +25056,15 @@ def ap_undo(now=None):
     it. (ok, message). Never raises."""
     now = now or time.time()
     out = {}
+    try:                                                     # #145: a knob step newer than the last setting change is the "last change"
+        kx = ap_knob_last(knob_state())
+        if kx:
+            st0 = fa_state()
+            ch0 = (st0.get("lessons") or {}).get("change") if isinstance(st0.get("lessons"), dict) else None
+            if not (isinstance(ch0, dict) and not ch0.get("undone") and float(ch0.get("at") or 0) > kx["at"]):
+                return _ap_undo_knob(kx, now)
+    except Exception as err:
+        return False, "Couldn't undo that (" + type(err).__name__ + ")."
 
     def go(s):
         L = s.get("lessons")
@@ -25097,11 +25106,69 @@ def ap_undo(now=None):
     return out.get("r") or (False, "Couldn't undo that.")
 
 
+def _ap_undo_knob(kx, now):
+    """Undo of the newest live knob step: the group's own value goes back to what it was (or to none, if it had none),
+    the test value follows, the group's next step waits for bets after now, and that knob is held two weeks in that
+    group (no looser step). Only while the knob is still where the step left it; never loosens while the brake is
+    cautious. (ok, message). Never raises."""
+    g, h = kx["g"], kx["h"]
+    name, frm, to = h["knob"], h["from"], h["to"]
+    k = KNOB_BY[name]
+    if not kx.get("ok"):
+        return False, "Nothing to undo: that setting is no longer where autopilot left it."
+    if knob_loosens(name, to, frm) and ap_brake_cautious(fa_state()):
+        return False, "Can't undo that: it would loosen a setting while the brake is cautious."
+    done = {}
+
+    def go(d):
+        e = d["groups"].get(g)
+        lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else None
+        hh = next((x for x in (e.get("hist") or []) if isinstance(x, dict) and x.get("at") == h.get("at")
+                   and x.get("knob") == name and x.get("live") and not x.get("undone")), None) if lv is not None else None
+        if hh is None or lv.get(name) != to:
+            return
+        lat = e["lat"] if isinstance(e.get("lat"), dict) else {}
+        v = e["v"] if isinstance(e.get("v"), dict) else {}
+        if hh.get("prev_own"):
+            lv[name], lat[name] = frm, now
+        else:
+            lv.pop(name, None)
+            lat.pop(name, None)
+        v[name] = frm
+        if isinstance(e.get("why"), dict):
+            e["why"].pop(name, None)
+        e.update(lat=lat, v=v, lstep_at=now)
+        hh["undone"] = True
+        done["ok"] = True
+    try:
+        _knob_save(go)
+        if not done.get("ok"):
+            return False, "Nothing to undo: that setting is no longer where autopilot left it."
+        u = k["unit"]
+        txt = (f"Autopilot: you undid {league_label(g)} {k['label']}: {knob_say(u, to)} -> {knob_say(u, frm)}. "
+               f"It stays there for 2 weeks.")
+
+        def note(s):
+            L = s.get("lessons")
+            if not isinstance(L, dict):
+                L = s["lessons"] = {}
+            for kk, tp in (("holds", dict), ("log", list)):
+                if not isinstance(L.get(kk), tp):
+                    L[kk] = tp()
+            L["holds"][f"knob:{g}:{name}"] = round(now + AP_HOLD)
+            L["log"].append({"at": round(now), "kind": "undo", "key": f"knob:{g}:{name}", "text": txt})
+            del L["log"][:-FAL["log"]]
+        _fa_update(note)
+        return True, txt
+    except Exception as err:
+        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+
+
 def ap_freeze(key, on):
     """Freeze or unfreeze one setting (a key like "bar:nba", or a whole record: "bar", "sbev", "game"). A frozen setting
     takes no automatic step or revert. Works with Autopilot off. (ok, message)."""
     try:
-        if key not in AP_REG:
+        if key not in AP_REG and not (ap_knob_name(key) and key.count(":") <= 1):   # #145: "knobs" or "knob:<name>" too
             _fal_split(key)
     except Exception:
         return False, "That isn't one of autopilot's settings."
@@ -25122,7 +25189,7 @@ def ap_freeze(key, on):
         _fa_update(go)
     except Exception as err:
         return False, "Couldn't save that (" + type(err).__name__ + ")."
-    name = FAL_NAMES.get(key) or _fal_name(key)
+    name = FAL_NAMES.get(key) or ap_knob_name(key) or _fal_name(key)
     return True, f"{name} is {'frozen: autopilot leaves it alone' if on else 'unfrozen'}."
 
 
@@ -25144,17 +25211,31 @@ def fal_view(st):
             recs.append({"rec": rec, "name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", AP_REG[rec]["min_n"](rec)),
                          "state": "not checked yet" if not x else ("has a clear lesson" if x.get("pass") else "no clear lesson"),
                          "note": x.get("note") or ""})
-        log = [e.get("text") for e in (L.get("log") or [])[-5:] if isinstance(e, dict)][::-1]
+        kst = knob_state()                                   # #145: the exit knobs share this log and this Undo
+        kx = ap_knob_last(kst)
+        ents = [(e.get("at") or 0, i, e.get("text")) for i, e in enumerate(L.get("log") or []) if isinstance(e, dict)]
+        ents += [(x["at"], -1, x["text"]) for x in ap_knob_entries(kst)]
+        log = [t for _, _, t in sorted(ents, key=lambda x: (x[0], x[1]))[-6:]][::-1]
         ch = L.get("change") if isinstance(L.get("change"), dict) and not L["change"].get("undone") else None
         undo = None
         if ch and vals and ch.get("rec") in AP_REG and abs(_fal_cur(vals, ch["key"]) - ch["to"]) < 1e-9:
             undo = f"{_fal_name(ch['key'])}: {_fal_val_text(ch['rec'], ch['to'])} back to {_fal_val_text(ch['rec'], ch['from'])}"
+        if kx and (not ch or kx["at"] >= float(ch.get("at") or 0)):      # the newer of the two is "the last change" (as ap_undo)
+            hh, kb = kx["h"], KNOB_BY[kx["h"]["knob"]]
+            undo = (f"{league_label(kx['g'])} {kb['label']}: {knob_say(kb['unit'], hh['to'])} "
+                    f"back to {knob_say(kb['unit'], hh['from'])}") if kx["ok"] else None
+        fz = L.get("frozen") if isinstance(L.get("frozen"), dict) else {}
+        kfz = bool(fz.get("knobs")) or any(k.startswith("knob:") and v for k, v in fz.items())
+        recs.append({"rec": "knobs", "name": "Smart sell's numbers (exit knobs)", "n": None, "min": None,
+                     "state": "paused" if (st.get("fa_lessons") is False or fz.get("knobs")) else "on",
+                     "note": ("frozen one by one" if kfz and not fz.get("knobs") else "") or
+                             "steps come from the weekly stepper's own evidence; this card only shows them and takes them back"})
         frozen = sorted(k for k, v in (L.get("frozen") or {}).items() if v) if isinstance(L.get("frozen"), dict) else []
         holds = []
         for k, t in sorted((L.get("holds") or {}).items()) if isinstance(L.get("holds"), dict) else []:
             try:
                 if float(t) > time.time():
-                    holds.append({"name": _fal_name(k), "until": round(float(t))})
+                    holds.append({"name": ap_knob_name(k) or _fal_name(k), "until": round(float(t))})
             except Exception:
                 pass                                         # a malformed hold is no hold
         return {"switch": st.get("fa_lessons") is not False, "active": fal_on(st), "learned": learned, "log": log,
@@ -28472,6 +28553,180 @@ def _knob_why_not(ev):
     return ", ".join(miss)
 
 
+# ---- #145: the exit knobs in the Autopilot log. Wiring and display plus Pete's controls only: WHEN and HOW MUCH a knob
+# moves is knob_tune's own evidence gate, untouched. Pete's controls can only stop or take back a step, never add one.
+#   Master switch (fa_lessons explicitly False) and Freeze ("knobs", or "knob:<name>") pause the live steps; an Undo holds
+#   that knob in that group for two weeks (no looser step, as for the other settings). Any unreadable control = paused.
+AP_KNOB_REVIEW_AFTER = 7 * 86400                      # a step is looked at again on full-auto bets after a week
+AP_KNOB_REVIEW_MIN = 5                                # ...once at least this many full-auto bets settled after it
+
+
+def ap_knob_ctl(now):
+    """Pete's Autopilot controls as knob_tune reads them: {'paused': master switch off or anything unreadable,
+    'frozen': {keys}, 'holds': {key: until}}. Fail closed: a damaged control file pauses the live steps."""
+    out = {"paused": False, "frozen": set(), "holds": {}, "why": ""}
+    try:
+        p = _fa_path()
+        raw = load_json(p, None) if os.path.exists(p) else {}
+        if not isinstance(raw, dict):
+            raise ValueError("full-auto file")
+        L = raw.get("lessons")
+        L = {} if L is None else L
+        if not isinstance(L, dict):
+            raise ValueError("lessons")
+        if raw.get("fa_lessons") is False:
+            out.update(paused=True, why="Autopilot is off")
+        for k in ("frozen", "holds"):
+            if L.get(k) is not None and not isinstance(L.get(k), dict):
+                raise ValueError(k)
+        out["frozen"] = {k for k, v in (L.get("frozen") or {}).items() if v}
+        out["holds"] = dict(L.get("holds") or {})
+    except Exception as err:
+        out.update(paused=True, why="Autopilot's controls couldn't be read (" + type(err).__name__ + ")")
+    return out
+
+
+def ap_knob_stopped(ctl, name):
+    return bool(ctl["paused"] or "knobs" in ctl["frozen"] or f"knob:{name}" in ctl["frozen"])
+
+
+def ap_knob_held(ctl, g, name, now):
+    """True while Pete's Undo holds this knob in this group (a malformed hold counts as held)."""
+    k = f"knob:{g}:{name}"
+    if k not in ctl["holds"]:
+        return False
+    try:
+        return float(ctl["holds"][k] or 0) > now
+    except (TypeError, ValueError):
+        return True
+
+
+def ap_knob_hist_extra(row, e):
+    """What the live step's history entry records beyond the stepper's own: the evidence in dollars after fees, and
+    whether the group already had its own value (so Undo can put things back exactly)."""
+    out = {"prev_own": row["knob"] in (e.get("lv") if isinstance(e.get("lv"), dict) else {})}
+    for k in ("gain", "share", "n", "band"):
+        if isinstance(row.get(k), (int, float)) and not isinstance(row.get(k), bool) and math.isfinite(row[k]):
+            out[k] = row[k]
+    return out
+
+
+def _ap_fa_tickers(now):
+    """The panel tickers of every full-auto bet (the ones full auto placed, plus bets swapped in for them), or None when
+    they can't be read. Read-only."""
+    try:
+        st = fa_state()
+        rows = _fa_rows(now)
+        mine, grew = set(), True
+        while grew:
+            grew = False
+            for d, c in rows:
+                k = f"{d}|{c.get('id')}"
+                if k not in mine and (k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine)):
+                    mine.add(k)
+                    grew = True
+        return {_panel_ticker(c) for d, c in rows if f"{d}|{c.get('id')}" in mine} - {None}
+    except Exception:
+        return None
+
+
+def ap_knob_review(e, g, rows, cur, cache, now, deadline):
+    """DISPLAY ONLY. A week or more after a live step, judge that same step again on the full-auto bets settled since,
+    by the same replay (fees included), and keep it on the history entry (`fa`: bets, net dollars). Nothing is moved or
+    undone by it. No full-auto bets (or too few, or unreadable) = no review, and the card keeps the all-bets evidence."""
+    todo = [h for h in (e.get("hist") or []) if isinstance(h, dict) and h.get("live") and not h.get("brake")
+            and not h.get("undone") and "fa" not in h and h.get("knob") in KNOB_BY
+            and now - float(h.get("at") or now) >= AP_KNOB_REVIEW_AFTER]
+    if not todo:
+        return
+    mine = _ap_fa_tickers(now)
+    if not mine:
+        return
+    for h in todo:
+        jd = KNOB_JUDGED.get(h["knob"])
+        if jd not in ("replay", "sl"):
+            continue
+        rs = [r for r in (rows.get(jd) or {}).get(g) or [] if _panel_ticker(r[0]) in mine
+              and (r[0].get("kick") or 0) > h["at"]]
+        if len(rs) < AP_KNOB_REVIEW_MIN:
+            continue
+        try:
+            ds = knob_judge(jd, rs, dict(cur, **{h["knob"]: h["from"]}), h["knob"], h["to"], cache, deadline=deadline)
+        except Exception:
+            continue                                      # unreadable = no review
+        net = sum(d for _, d, _ in ds)
+        if math.isfinite(net):
+            h["fa"] = {"n": len(rs), "net": round(net, 2), "at": int(now)}
+
+
+def _ap_money(x):
+    return f"{'+' if x >= 0 else '−'}${abs(x):,.2f}"
+
+
+def ap_knob_entries(kst):
+    """[{at, text, g, h}] for what the knob stepper really changed (live steps and brake resets), in plain words:
+    from/to, why, dollars after fees. Display only; never raises."""
+    out = []
+    try:
+        for g, e in (kst.get("groups") or {}).items():
+            if not isinstance(e, dict):
+                continue
+            for h in (e.get("hist") or []):
+                if not isinstance(h, dict) or not h.get("live"):
+                    continue
+                try:
+                    if h.get("brake"):
+                        txt = f"Autopilot: {league_label(g)}: smart sell went back to its starting numbers. {str(h.get('why') or '')[:200]}".strip()
+                    else:
+                        k = KNOB_BY[h["knob"]]
+                        u = k["unit"]
+                        txt = f"Autopilot: {league_label(g)} {k['label']}: {knob_say(u, h['from'])} → {knob_say(u, h['to'])}."
+                        if isinstance(h.get("gain"), (int, float)) and h.get("n"):
+                            txt += (f" Why: {h.get('band', '?')} of {h['n']} past bets would have ended differently, "
+                                    f"{_ap_money(h['gain'])} in all after fees.")
+                        elif h.get("why"):
+                            txt += " Why: " + str(h["why"]).split(": ", 1)[-1][:300]
+                        fa = h.get("fa") if isinstance(h.get("fa"), dict) else None
+                        if h.get("undone"):
+                            txt += " You undid this."
+                        elif fa:
+                            txt += f" On {fa['n']} full-auto bets since: {_ap_money(fa['net'])} after fees."
+                        else:
+                            txt += " Judged on all bets; not enough full-auto bets since to check it."
+                    out.append({"at": int(h.get("at") or 0), "text": txt, "g": g, "h": h})
+                except Exception:
+                    continue                              # one odd entry never hides the rest
+    except Exception:
+        return []
+    return out
+
+
+def ap_knob_last(kst):
+    """The newest live knob step (not a brake, not already undone, recorded with what was there before) across every
+    group, with `ok`: the group's own value is still where the step left it, so Undo may put it back. None = nothing."""
+    best = None
+    for x in ap_knob_entries(kst):
+        h = x["h"]
+        if h.get("brake") or h.get("undone") or "prev_own" not in h or h.get("knob") not in KNOB_BY:
+            continue
+        if best is None or x["at"] > best["at"]:
+            best = x
+    if best:
+        lv = kst["groups"][best["g"]].get("lv")
+        best["ok"] = isinstance(lv, dict) and lv.get(best["h"]["knob"]) == best["h"]["to"]
+    return best
+
+
+def ap_knob_name(key):
+    """Plain name of a knob freeze/hold key ('knobs', 'knob:smart_floor', 'knob:nba:smart_floor'), else None."""
+    if key == "knobs":
+        return "smart sell's numbers"
+    p = key.split(":") if isinstance(key, str) else []
+    if p and p[0] == "knob" and p[-1] in KNOB_BY and len(p) in (2, 3):
+        return (f"{league_label(p[1])} " if len(p) == 3 else "") + KNOB_BY[p[-1]]["label"]
+    return None
+
+
 def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
     """Weekly: for each group (everyone, each sport, each league) and each tunable knob the registry names a judge for,
     replay one step either way and hold it to Pete's bar (knob_evidence). Every knob starts from the value live uses
@@ -28491,6 +28746,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
         live = knob_switch_on()
         if not force and now < KNOB_RUN["tune_next"]:
             return []
+        ctl = ap_knob_ctl(now)                        # #145: Pete's Autopilot controls (switch, freeze, hold); unreadable = paused
         st = knob_state()
         if not force and now < float(st.get("_next") or 0):
             return []
@@ -28566,6 +28822,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 if not jd:                            # its own test isn't built yet (PR3+)
                     last.append({"knob": n_, "status": "waits"})
                     continue
+                if live and n_ in knob_live_names() and ap_knob_stopped(ctl, n_):
+                    last.append({"knob": n_, "status": "paused" if ctl["paused"] else "frozen"})   # #145: Pete's control
+                    continue
                 rs = rows[jd].get(g) or []
                 if len(rs) < globals()[KNOB_MIN_N[jd]]:
                     last.append({"knob": n_, "status": "thin", "n": len(rs),
@@ -28579,6 +28838,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 for to in knob_candidates(n_, cur[n_]):
                     if jd == "sb" and to > top and to > cur[n_]:
                         continue                      # Smart Buy's soft top until 100 results (as smart_buy_learn)
+                    if live and n_ in knob_live_names() and ap_knob_held(ctl, g, n_, now) and knob_loosens(n_, cur[n_], to):
+                        last.append({"knob": n_, "from": cur[n_], "to": to, "status": "held"})   # #145: held after Pete's Undo
+                        continue
                     blk = _knob_blocked(n_, to, cur)
                     if blk:
                         last.append({"knob": n_, "from": cur[n_], "to": to, "status": "blocked",
@@ -28649,10 +28911,14 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 lat[row["knob"]] = now
                 why[row["knob"]] = row["say"]
                 e["lstep_at"] = now
-                e["hist"] = (list(e.get("hist") or []) + [{"at": int(now), "knob": row["knob"], "from": row["from"],
-                                                           "to": row["to"], "live": True,
-                                                           "why": row["say"][:600]}])[-12:]
+                e["hist"] = (list(e.get("hist") or []) + [dict(
+                    {"at": int(now), "knob": row["knob"], "from": row["from"], "to": row["to"], "live": True,
+                     "why": row["say"][:600]}, **ap_knob_hist_extra(row, e))])[-12:]
                 said.append(f"changed {league_label(g)}: {row['say']}")
+            try:                                      # #145: a week on, judge each earlier step on full-auto bets (display only)
+                ap_knob_review(e, g, rows, cur, cache, now, t0 + budget)
+            except Exception as err:
+                print("knob stepper: full-auto review:", type(err).__name__, err)
             e.update(v=v, why=why, last=last, at=now, lv=lv, lat=lat)
             groups[g] = e
             for r in last:

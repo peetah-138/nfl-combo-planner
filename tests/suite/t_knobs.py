@@ -139,7 +139,9 @@ LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view",
            # the learned selling guards (feed/break episodes, behind their own switch)
            "KNOB_SHADOW_ROWS", "knob_live_names",
            # (#144) the full-auto lessons reuse the stepper's judging maths (evidence, minimums) for their own full-auto-only numbers
-           "KNOB_EPS", "KNOB_HOLD_MIN", "knob_evidence"]
+           "KNOB_EPS", "KNOB_HOLD_MIN", "knob_evidence",
+           # (#145) the Autopilot card shows, undoes and freezes the live exit knob steps (display and Pete's controls only)
+           "KNOB_BY", "_knob_save", "knob_loosens", "knob_say", "knob_state"]
 LIVE_OK = sorted(LIVE_OK)
 ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"
    + (f" {uses}" if uses != LIVE_OK else ""), uses == LIVE_OK)
