@@ -10,9 +10,9 @@
 - #309 bullets 1 (labels, #564) and the `ideas.js` NaN check (`pct(null)` already returns a dash, `common.js`).
 
 **Done (#309 nits, read/record side):**
-- `_knob_items`: a cashed combo's `kick` is now its game start (`_knob_game_kick`: recorded kickoff, else the first in-play tick, else the buy time as before), so the stepper's "after the last step" filter and 70/30 holdout place it right.
+- `_knob_items`: a cashed combo's `kick` is now its game start (`_knob_game_kick`: recorded kickoff, else the first in-play tick, else the buy time as before; never earlier than the buy, so a combo bought in play replays from its buy as before), so the stepper's "after the last step" filter and 70/30 holdout place it right.
 - `sb_resolve`: the second (universe) look skips rows the first batch already holds, so a full batch no longer wastes its second look on repeats (more universe results resolve per pass; nothing else changes).
-- `_sb_results` reads `exit_shadow` in pages of 20,000 by (ts, rowid) (`_sb_rows_chunked`) instead of one read of up to 200k rows under the store lock the panel buy thread shares. Same rows, same order.
+- `_sb_results` reads `exit_shadow` in pages of 20,000 by (ts, rowid) (`_sb_rows_chunked`) instead of one read of up to 200k rows under the store lock the panel buy thread shares. Same rows, same order; a read error in any page raises (`store_rows_strict`) instead of truncating.
 - Test gap: `t_knobfloor_309.py` runs `auto_sell_now` with `auto_slip` at its lowest allowed value (0.90) and shows a profit sale under cost is not made and the daily cap still stops the next sale; it also pins that `cut_accept` 0 and values below a knob's minimum are refused.
 
 **Live numbers that could move:** none directly (no buy, sell, size, price or cut-off is changed). Indirectly, the knob stepper's judgement of the cashed combos moves with the corrected start time (which bets count as before/after a step and which fall in the newest 30%), so a knob step could land one round earlier or later; the stepper's own bounds and stricter-only rules are unchanged. `sb_resolve` may settle more Smart Buy universe rows per pass, which feeds only the stricter-only early look.

@@ -27281,7 +27281,9 @@ def _knob_game_kick(tks, fallback):
                 got = store_rows("select min(ts) t from ticks where ticker=? and state='live'", (x,))
                 if got and got[0].get("t"):
                     known.append(got[0]["t"])
-        return min(known) if known else fallback
+        # never earlier than the buy: a combo bought in play must not replay prices from before it existed (_paths and
+        # _sl_paths start from `kick`), so an in-play buy keeps its buy time exactly as before
+        return max(min(known), fallback) if known and fallback else fallback if not known else min(known)
     except Exception:
         return fallback
 
@@ -30719,16 +30721,17 @@ SB_READ_CHUNK = 20000
 def _sb_rows_chunked(sql, since, chunk=None):
     """`sql` (an exit_shadow select ending `where ts > ?` ... `order by ts`) read in pages of `chunk` rows, oldest first, by
     (ts, rowid), instead of one 200k-row read under the store lock that the panel buy thread shares (#309). Each page
-    takes the lock on its own, so other threads get in between. The rows and their order are the same as one read."""
+    takes the lock on its own, so other threads get in between. The rows and their order are the same as one read. A read error
+    in any page raises (store_rows_strict): a half-read result would silently truncate the evidence."""
     chunk = chunk or SB_READ_CHUNK
     head, _, tail = sql.partition(" order by ts")
     assert not tail, sql
     last = None
     while True:
         if last is None:
-            got = store_rows(head + " order by ts, rowid limit ?", (since, chunk))
+            got = store_rows_strict(head + " order by ts, rowid limit ?", (since, chunk))
         else:
-            got = store_rows(head.replace("where ts > ?", "where ts > ? and (ts > ? or (ts = ? and rowid > ?))", 1)
+            got = store_rows_strict(head.replace("where ts > ?", "where ts > ? and (ts > ? or (ts = ? and rowid > ?))", 1)
                              + " order by ts, rowid limit ?", (since, last[0], last[0], last[1], chunk))
         if not got:
             return

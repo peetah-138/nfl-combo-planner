@@ -23,6 +23,11 @@ ok("first in-play tick is used when no kickoff is known", abs(E._knob_game_kick(
 E.KICKOFF["KXNBAGAME-26NOV19LALBOS"] = (E.dt.datetime.fromtimestamp(now - 2.5 * 3600, E.dt.timezone.utc)).isoformat()
 ok("a recorded kickoff wins", abs(E._knob_game_kick([T], buy) - (now - 2.5 * 3600)) < 1)
 
+# bought in play (buy time after the game start): the replay must start at the buy, as before
+ok("a combo bought in play keeps its buy time as kick (replay never starts before the bet)",
+   E._knob_game_kick([T], now - 1.5 * 3600) == now - 1.5 * 3600)
+ok("a combo bought before the game gets the later game start", abs(E._knob_game_kick([T], now - 6 * 3600) - (now - 2.5 * 3600)) < 1)
+
 # --- chunked read: same rows, same order, as one read
 E._exit_shadow_table()
 for i in range(25):
@@ -59,3 +64,18 @@ E.sb_resolve(now, limit=3)
 ok("full first batch (3 of 5): the second look adds the other 2, not the same 3 again (all 5 looked up)",
    asked and len(asked[0]) == 5 and len(set(asked[0])) == 5)
 E.store_rows = real
+
+# --- a read error partway through paging fails closed (raises), never a silent short result
+real_strict, calls = E.store_rows_strict, [0]
+def flaky(sql, args=()):
+    calls[0] += 1
+    if calls[0] == 3:
+        raise RuntimeError("disk")
+    return real_strict(sql, args)
+E.store_rows_strict = flaky
+try:
+    list(E._sb_rows_chunked("select rowid _rid, ts, tickers from exit_shadow where ts > ? order by ts", 0, 1)); raised = False
+except RuntimeError:
+    raised = True
+E.store_rows_strict = real_strict
+ok("a page that fails to read raises instead of truncating the evidence", raised)
