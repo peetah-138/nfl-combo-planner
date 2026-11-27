@@ -3427,7 +3427,7 @@ Tests: `t_money_h.py` (fails on the old code).
   profit, ROI, fees, days up/down, best/worst day, a running total (scrubbable), open bets as a separate **estimate**
   (last `pulse` row ≤ 30 min), Smart Sell vs holding (scorecard), Smart Buy skips (from `analytics()["smart_buy"]`'s
   gate, paper at $5), and breakdowns: bet type (paper beside it), league, how it ended (smart sell / you / held won /
-  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build & Live ideas
+  lost, with "vs holding"), source (panel, panel extras via the item's new `origin`, Buy straight, Build and other app buys, Live buy ideas
   together, held before tracking, you on Kalshi), price quality (panel items: expected edge band vs actual ROI,
   predicted chance of profit vs actual per league, CLV, time before start; real and paper), stake. Groups under
   `BOARD_FEW` (20) say "too few to trust"; `_board_say` writes one sentence per breakdown using a ratio-estimator ROI

@@ -19164,6 +19164,7 @@ def idea_single_buy(t, n, price, paused=False, log=print, key=None):
         for m in marks:                                 # from here on no second order for a while (cleared below
             taps[m] = now                               # only when Kalshi clearly bought nothing)
         coid = f"cw-ib-{uuid.uuid4().hex[:16]}"
+        mark_app(t, "idea")                             # tag it as a Live idea buy for the scoreboard (#187); label only
         try:
             filled, err = buy_single(t, n, price, coid=coid, exact=True)
         except Exception as err:                       # no clear answer: it may have gone through. Never resent.
@@ -24565,6 +24566,7 @@ SALE_OUT = {"at": 0}
 BOARD_FEW = 20                 # fewer settled bets than this in a group: shown, but marked "too few to trust"
 SALE_FOLLOW_DAYS = 60          # how long a sale's games are followed for "what holding would have paid"
 LEDGER_FROZEN = 180            # a ledger row closed longer ago than this is never rewritten (Kalshi's fills go back 200 days)
+BOARD_COMBO_MIN = 30           # combos have heavy tails (a few big wins): they need this many settled bets before a verdict
 BOARD_Z = 2.5                  # standard errors before a breakdown's sentence says "more (or worse) than luck explains"
 
 
@@ -25043,13 +25045,23 @@ def _held_summary(rs):
     return out
 
 
+def _board_bar(k):
+    """How many standard errors a breakdown must clear before its sentence says "more (or worse) than luck explains".
+    BOARD_Z, raised Bonferroni-style when many groups are tested at once (10 leagues give about 2.8): the more groups
+    looked at, the likelier one looks special by luck. Words only; no setting or decision reads it (#187)."""
+    from statistics import NormalDist
+    return max(BOARD_Z, NormalDist().inv_cdf(1 - 0.025 / max(k, 1)))
+
+
 def _board_say(rows, what):
     """One plain sentence on what a breakdown says, judged on enough bets and against luck."""
     big = [r for r in rows if not r["few"] and r["roi"] is not None]
     if not big:
         return f"Too few settled bets to judge any {what} yet ({BOARD_FEW}+ each before reading much into it)."
-    good = [r for r in big if r["z"] is not None and r["z"] >= BOARD_Z]
-    bad = [r for r in big if r["z"] is not None and r["z"] <= -BOARD_Z]
+    bar = _board_bar(len(big))
+    judged = [r for r in big if not (r["k"] == "combo" and r["n"] < BOARD_COMBO_MIN)]
+    good = [r for r in judged if r["z"] is not None and r["z"] >= bar]
+    bad = [r for r in judged if r["z"] is not None and r["z"] <= -bar]
     parts = []
     if good:
         b = max(good, key=lambda r: r["roi"])
@@ -25204,7 +25216,7 @@ BOARD_KINDS = {"combo": "Combos", "win": "Single games", "spread": "Spreads", "t
 BOARD_ENDS = {"smart": "Sold by smart sell", "you": "Sold by you", "won": "Held to the end: won",
               "lost": "Held to the end: lost"}
 BOARD_SRC = {"panel": "Daily panel", "extra": "Panel extras", "manual": "Buy straight",
-             "app": "Build & Live ideas", "before": "Held before tracking began", "own": "You, on Kalshi"}
+             "app": "Build and other app buys", "idea": "Live buy ideas", "before": "Held before tracking began", "own": "You, on Kalshi"}
 
 
 def profit_board(now=None, max_age=120):
@@ -25237,7 +25249,7 @@ def profit_board(now=None, max_age=120):
         r["end"] = ("smart" if r["ticker"] in auto else "you") if r.get("n_sold") else r["status"] \
             if r["status"] in ("won", "lost") else "you"
         r["src"] = ("extra" if c.get("origin") == "extra" else "panel") if c else \
-            {"manual": "manual", "before": "before"}.get(how.get(r["ticker"]), "app" if r["ticker"] in how else
+            {"manual": "manual", "before": "before", "idea": "idea"}.get(how.get(r["ticker"]), "app" if r["ticker"] in how else
                                                          "own" if seeded else "app")
         if r.get("n_sold") and r.get("held") is not None and r.get("outcome") != "void":
             r["sold_net"] = (r["sold_back"] or 0) - (r["sell_fees"] or 0)
