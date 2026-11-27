@@ -17,7 +17,8 @@ S1 = "KXNBAGAME-26NOV19NYKMIA-NYK"
 E.CFG.update(smart_sell=True, ride=2, take_profit=0, lock_trail=False, stop_loss=False, auto_hedge=False, auto_cap=5)
 
 # ---- off by default, and never borrowed
-ok("no data: no loss cut at all", E.smart_params([T])["loss"] is None and E.SMART_DEFAULT["loss"] is None)
+E.CFG["loss_cut_default"] = False                       # the cautious default (t_cutloss_default.py) is tested there; this file is the old behaviour
+ok("no data, default switch off: no loss cut at all", E.smart_params([T])["loss"] is None and E.SMART_DEFAULT["loss"] is None)
 E.save_json(E.SMART_FILE, {"soccer": {"floor": 1.5, "lam": 1.0, "loss": 0.15, "n": 40},
                            "all": {"floor": 1.5, "lam": 1.0, "loss": 0.2, "n": 90}}); E.SMART_CACHE["at"] = 0
 ok("a league short on data never borrows its sport's loss cut", E.smart_params(["KXEPLGAME-26NOV22ARSCHE-ARS"])["loss"] is None)

@@ -6,6 +6,7 @@
 import os, time, tempfile, importlib.util, copy
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E._held_all = lambda: []                  # no singles held: the combo-vs-held-single guard reads the account (money-h)
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.MAIN_SAVED = os.path.join(E.HERE, "main.json"); E.SIZING_FILE = os.path.join(E.HERE, "s.json")
 E.leg_score = lambda l: None

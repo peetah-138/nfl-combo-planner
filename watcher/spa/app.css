@@ -1,7 +1,7 @@
-:root{--bg:#0b0d12;--panel:#12151c;--panel2:#181c26;--hover:#1d2230;--line:#232836;--ink:#eef1f6;--sub:#a1aabb;--mute:#6b7488;
+:root{--bg:#0b0d12;--panel:#12151c;--panel2:#181c26;--hover:#1d2230;--line:#232836;--ink:#eef1f6;--sub:#a1aabb;--mute:#8790a3;
  --yes:#16c784;--yesbg:rgba(22,199,132,.13);--no:#ff5c6c;--nobg:rgba(255,92,108,.13);--acc:#4c8dff;--accbg:rgba(76,141,255,.15);
  --live:#ff9f1c;--livebg:rgba(255,159,28,.14);--r:14px}
-@media (prefers-color-scheme:light){:root{--bg:#f6f7fa;--panel:#fff;--panel2:#f2f4f8;--hover:#eef1f7;--line:#e4e7ee;--ink:#0e1320;--sub:#4c5568;--mute:#8a93a6;
+@media (prefers-color-scheme:light){:root{--bg:#f6f7fa;--panel:#fff;--panel2:#f2f4f8;--hover:#eef1f7;--line:#e4e7ee;--ink:#0e1320;--sub:#4c5568;--mute:#6f7890;
  --yesbg:rgba(22,170,110,.12);--yes:#0f9e64;--no:#e5394b;--nobg:rgba(229,57,75,.1);--acc:#2468ff;--accbg:rgba(36,104,255,.1);--live:#d97706;--livebg:rgba(217,119,6,.12)}}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 Inter,-apple-system,system-ui,sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1,"cv11" 1}
@@ -36,10 +36,12 @@ h2 .r{margin-left:auto;text-transform:none;letter-spacing:0}
 .alert b{font-size:15px}.alert p{margin:2px 0 0;color:var(--sub)}
 .btn{border-radius:10px;padding:8px 13px;font-weight:700;font-size:13px;border:1px solid var(--line);background:var(--panel2);white-space:nowrap}
 .btn:hover{background:var(--hover)}.btn.yes{background:var(--yes);color:#04150c;border-color:transparent}.btn.acc{background:var(--acc);color:#fff;border-color:transparent}
-.btn.ghost{background:none}.btn[disabled]{opacity:.5;pointer-events:none}
+.btn.ghost{background:none}
+/* #436/#454: the Pass/Buying, sheet, Settings-row and error-card buttons are real thumb targets (44px) */
+.dbtns .btn,.sheet .btn,.srow .btn,.empty .btn,.sbgo .btn{min-height:44px}.btn[disabled]{opacity:.5;pointer-events:none}
 .own{display:inline-block;font-size:10.5px;font-weight:700;letter-spacing:.03em;padding:2px 7px;border-radius:999px;background:rgba(245,158,11,.16);color:#f5b544;vertical-align:middle;margin-left:4px}.own.app{background:var(--panel2);color:var(--mute)}.name span.own{display:inline-block;white-space:nowrap}
 .legs .up{color:var(--yes)}.legs .down{color:var(--no)}
-.ss{display:inline-flex;align-items:center;gap:4px;margin:6px 0 2px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer;width:max-content;max-width:100%}.ss.me{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#f5b544}.ss.dim{opacity:.6}
+.ss{display:inline-flex;align-items:center;gap:4px;margin:6px 0 2px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);color:var(--ink);font:inherit;font-size:12px;font-weight:600;cursor:pointer;width:max-content;max-width:100%}.ss.me{background:rgba(245,158,11,.14);border-color:rgba(245,158,11,.4);color:#f5b544}.ss.dim{opacity:.6}.sslines{display:flex;flex-direction:column;gap:2px;margin:2px 0 4px;font-size:12px;line-height:1.35;color:var(--mut,var(--ink));white-space:normal}.sslines span{font-size:13px;display:block;white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere}.sslines b{font-size:13px;font-weight:600;margin-right:4px;color:var(--ink)}
 .an{padding:16px 18px;margin:18px 0}.anh{display:flex;justify-content:space-between;align-items:baseline;gap:10px;margin-bottom:10px}
 .ant{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px}.ant button{flex:1 1 auto}
 .annotes{margin:0 0 6px 18px;padding:0;font-size:13.5px;line-height:1.5}
@@ -118,7 +120,7 @@ main.sw-l{animation:swl .3s var(--ease)}main.sw-r{animation:swr .3s var(--ease)}
 .hv .big{display:block;font-size:40px;font-weight:800;letter-spacing:-.045em;line-height:1.05;margin:6px 0 4px;font-variant-numeric:tabular-nums}
 .hv .delta{font-weight:700;font-size:14px;display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px}
 .hv .delta.up{color:var(--yes);background:var(--yesbg)}.hv .delta.down{color:var(--no);background:var(--nobg)}.hv .delta.flat{color:var(--sub);background:var(--panel2)}
-.sparkw{position:relative;margin-top:10px}.hv .spark{display:block;width:100%;height:64px}
+.sparkw{position:relative;margin-top:10px}
 .sdot{position:absolute;width:10px;height:10px;border-radius:50%;box-shadow:0 0 0 0 currentColor;animation:sdot 1.8s infinite}
 @keyframes sdot{0%{box-shadow:0 0 0 0 color-mix(in srgb,currentColor 60%,transparent)}100%{box-shadow:0 0 0 10px transparent}}
 .hs{display:grid;grid-template-columns:1fr 1fr;border-left:1px solid var(--line);position:relative}
@@ -193,7 +195,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .hrow{display:grid;grid-template-columns:90px minmax(0,1fr) 80px 90px 90px;gap:12px;padding:11px 16px;border-bottom:1px solid var(--line);align-items:center}
 .toast{position:fixed;left:50%;bottom:calc(84px + env(safe-area-inset-bottom));transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);
  padding:11px 16px;border-radius:12px;font-weight:600;transition:.25s;z-index:70;max-width:min(560px,92vw);text-align:center;pointer-events:none}.toast.good{background:var(--yes);color:#04130c}.toast.bad{background:var(--no);color:#fff}
-.toast.on{opacity:1;transform:translateX(-50%)}.toast.tap.on{pointer-events:auto;cursor:pointer}.toast.tap::after{content:' ›';opacity:.7}.toast[hidden]{display:none!important}
+.toast.on{opacity:1;transform:translateX(-50%)}.toast.tap.on{pointer-events:auto;cursor:pointer}body:has(#modal.on) .toast.tap.on{pointer-events:none}body:has(#modal.on) .toast.tap::after{content:none}.toast.tap::after{content:' ›';opacity:.7}.toast[hidden]{display:none!important}
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:60;padding:20px}
 .modal.on{display:flex}.sheet{background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:22px;max-width:420px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.45)}
 .sheet h3{margin:0 0 6px;font-size:19px;letter-spacing:-.02em}.sheet p{color:var(--sub);margin:0 0 18px}.sheet .row{display:flex;gap:10px;justify-content:flex-end}
@@ -215,6 +217,7 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .dnums.ifacts{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px 12px}.dnums.ifacts div{min-width:0}.dnums.ifacts b{overflow-wrap:anywhere}
 .dnums{display:flex;gap:18px;margin-top:8px;flex-wrap:wrap}.dnums div{font-size:11px;color:var(--mute);font-weight:700;text-transform:uppercase;letter-spacing:.05em}
 .dnums b{display:block;color:var(--ink);font-size:16px;letter-spacing:-.01em;text-transform:none}
+.dcard p.hnote{margin:8px 0 0;font-size:12px;color:var(--mute)}
 .dbtns{display:flex;gap:8px;grid-row:span 2}
 .calm{display:flex;align-items:center;gap:12px;color:var(--sub);background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 16px;margin:4px 0 18px;font-size:13.5px}
 .calm i{width:8px;height:8px;border-radius:50%;background:var(--yes);box-shadow:0 0 0 4px var(--yesbg);flex:none}
@@ -275,3 +278,19 @@ input.stake{width:72px;border:1px solid var(--line);background:var(--panel2);col
 .cc-nums b{font-size:26px}.cc-pl{display:flex;justify-content:space-between;align-items:baseline;margin:12px 0}.cc-pl b{font-size:19px}
 .ccard .good,.cc-nums .good b{color:var(--yes)}.ccard .bad{color:var(--no)}
 .cc-ft{display:flex;justify-content:space-between;color:var(--mute);font-size:12px;font-family:ui-monospace,Menlo,monospace}.cc-stamp{letter-spacing:.12em;font-weight:700}
+/* #413: Kalshi's value big, our sale estimate small beside it */
+.hv .hrow{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:6px 0 4px}.hv .hrow .big{margin:0}
+.hv .hest{display:flex;flex-direction:column;align-items:flex-end;text-align:right;padding-bottom:4px}.hv .hest small{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--mute)}
+.hv .hest b{font-size:18px;font-weight:800;letter-spacing:-.02em;color:var(--sub);font-variant-numeric:tabular-nums}
+/* #140: score burst on Live rows: glow ring plus a digit pop. Off for reduced motion. */
+.trow.burst{animation:rowburst 1.5s var(--ease)}
+@keyframes rowburst{0%{background:var(--livebg);box-shadow:0 0 0 0 color-mix(in srgb,var(--live) 65%,transparent)}35%{box-shadow:0 0 0 8px transparent}100%{}}
+.trow.burst .name>span{display:inline-block;animation:digitpop .7s var(--spring)}
+@keyframes digitpop{0%{transform:scale(1)}30%{transform:scale(1.12);color:var(--live)}100%{transform:none}}
+@media (prefers-reduced-motion:reduce){.trow.burst,.trow.burst .name>span,.rowpop{animation:none}}
+/* #140: the reason a button failed, right under it (replaces the 6-7 s toast) */
+.berr{display:flex;align-items:flex-start;gap:8px;margin:8px 0 0;padding:10px 12px;min-height:44px;border-radius:12px;background:var(--nobg);color:var(--no);font-size:14px;font-weight:600;line-height:1.35;animation:fadein .2s var(--ease)}
+.berr.still{animation:none}
+.berr i{font-style:normal;font-weight:800}
+.nice{min-height:44px;min-width:160px;font-size:17px;font-weight:700}
+@media (prefers-reduced-motion:reduce){.btn.st-bad{animation:none}.berr{animation:none}}

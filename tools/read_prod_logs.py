@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Read the production Mac's logs from the dev Mac (issue #377, docs/LOG_ACCESS.md).
 
-Read-only: it asks the watcher's /api/logs for a redacted tail of watcher.log or the auto cash-out log. It can't buy,
-sell, pause or change anything, and never sees the Kalshi key, the history database or combo_*.json.
+Read-only: it asks the watcher's /api/logs for a credential-scrubbed tail of watcher.log or the auto cash-out log, or
+(--source db) for rows of the collected data (history database: ticks, offers, sell_log, ledger, price_path ...) by table
+or by one SELECT. It can't buy, sell, pause or change anything, and never gets the Kalshi key, ~/combowatch, the database
+file itself or combo_*.json.
 
 Where it finds the address and code (nothing secret is in this file):
   1. the environment: CW_LOGS_URL (e.g. http://100.x.y.z:8765) and CW_LOGS_TOKEN
@@ -13,6 +15,9 @@ Examples:
   python3 tools/read_prod_logs.py --source autosell --since 2h
   python3 tools/read_prod_logs.py --since 30m --grep "cash-out|Traceback"
   python3 tools/read_prod_logs.py --follow              # keep printing new lines (Ctrl-C to stop)
+  python3 tools/read_prod_logs.py --source db --tables  # the tables and their columns
+  python3 tools/read_prod_logs.py --source db --table sell_log --since 1d --limit 50
+  python3 tools/read_prod_logs.py --source db --sql "select ticker, count(*) from offers group by 1 limit 20" --json
 """
 import argparse
 import http.client
@@ -28,6 +33,7 @@ import urllib.parse
 import urllib.request
 
 URL_SVC, TOKEN_SVC = "nfl-combo-logs-url", "nfl-combo-logs-token"
+PROBLEMS = r"refused|check|failed|held|Traceback"          # --problems: the words that usually mean something went wrong
 
 
 def keychain(service):
@@ -79,8 +85,8 @@ WHY = {401: "The code was refused (it was replaced, or access was switched off).
        429: "Too many requests (or too many wrong codes). Wait a few minutes and try again.",
        400: "The production Mac didn't understand the question (check --source / --limit / --since).",
        405: "Only reading is allowed.",
-       503: "The production Mac couldn't safely redact its logs, so it sent nothing. Try again shortly; if it "
-            "persists, look at the logs on that Mac itself."}
+       503: "The production Mac couldn't safely scrub that answer (a credential was still in it), so it sent nothing. "
+            "Try again shortly; if it persists, look at the logs on that Mac itself."}
 
 
 class Failed(Exception):
@@ -91,16 +97,22 @@ class Failed(Exception):
         self.again = again
 
 
-def fetch(url, tok, source, since, limit):
+def fetch(url, tok, source, since, limit, extra=None):
     q = {"source": source, "limit": str(limit)}
     if since is not None:
         q["since"] = f"{since:.0f}"
+    q.update(extra or {})
     req = urllib.request.Request(f"{url}/api/logs?{urllib.parse.urlencode(q)}",
                                  headers={"Authorization": f"Bearer {tok}"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read().decode("utf-8"))
     except urllib.error.HTTPError as err:
+        if err.code == 400 and source == "db":                      # the Mac says why (short fixed wording)
+            try:
+                raise Failed("Refused: " + str(json.loads(err.read().decode("utf-8")).get("error")), False)
+            except (ValueError, OSError):
+                pass
         raise Failed(f"Error {err.code}: {WHY.get(err.code, 'unexpected answer.')}", err.code in (429, 503) or err.code >= 500)
     except urllib.error.URLError as err:
         raise Failed(f"Couldn't reach {urllib.parse.urlsplit(url).netloc}: {err.reason}. Is Tailscale connected on both "
@@ -111,6 +123,30 @@ def fetch(url, tok, source, since, limit):
         raise Failed(f"The connection broke ({type(err).__name__}). Is the production Mac awake and on Tailscale?", True)
     except ValueError:
         raise Failed("The answer wasn't readable. Is the address the watcher's (port 8765)?", False)
+
+
+def fetch_db(url, tok, table=None, sql=None, since=None, limit=200, tables=False):
+    """Rows of the collected data (read-only on the Mac). Returns the answer: {columns, rows, truncated} or {tables}.
+    Other tools (e.g. a --remote mode) call this instead of opening the database file."""
+    extra = {"sql": sql} if sql else {"table": table} if table else {"tables": "1"} if tables else {}
+    return fetch(url, tok, "db", since if table else None, limit, extra)
+
+
+def show_db(ans, as_json):
+    if "tables" in ans:
+        for t in ans["tables"]:
+            print(f"{t['name']}: {', '.join(t['columns'])}")
+        return
+    cols = ans.get("columns") or []
+    if as_json:
+        for r in ans.get("rows") or []:
+            print(json.dumps(dict(zip(cols, r)), ensure_ascii=False))
+    else:
+        print("\t".join(cols))
+        for r in ans.get("rows") or []:
+            print("\t".join("" if v is None else str(v).replace("\t", " ").replace("\n", " ") for v in r))
+    if ans.get("truncated"):
+        print("# more rows exist than were sent: narrow the question or raise --limit (the Mac caps it at 1000)", file=sys.stderr)
 
 
 def show(ans, rx, as_json, seen):
@@ -137,16 +173,35 @@ def show(ans, rx, as_json, seen):
 
 def main():
     ap = argparse.ArgumentParser(description="Read the production Mac's redacted logs (read-only).")
-    ap.add_argument("--source", choices=("console", "autosell", "both"), default="console")
+    ap.add_argument("--source", choices=("console", "autosell", "both", "db"), default="console")
+    ap.add_argument("--table", help="with --source db: a table's newest rows (--since limits by its ts column)")
+    ap.add_argument("--sql", help="with --source db: one SELECT (the Mac refuses anything else, and stops it after 5 s)")
+    ap.add_argument("--tables", action="store_true", help="with --source db: list the tables and their columns")
     ap.add_argument("--since", help="30m, 2h, 1d, unix time, or ISO date/time")
-    ap.add_argument("--limit", type=int, default=200, help="lines per source (the Mac caps it at 500)")
+    ap.add_argument("--limit", type=int, default=200, help="lines per source (the Mac caps it at 500; rows for --source db: 1000)")
     ap.add_argument("--grep", help="only lines matching this regular expression (case-insensitive)")
+    ap.add_argument("--problems", action="store_true", help="shortcut for --grep 'refused|check|failed|held|Traceback'")
     ap.add_argument("--follow", action="store_true", help="keep checking every 15 seconds")
     ap.add_argument("--json", action="store_true", help="one JSON object per line")
     a = ap.parse_args()
-    rx = re.compile(a.grep, re.I) if a.grep else None
+    if a.problems and a.grep:
+        ap.error("use --problems or --grep, not both")
+    if a.problems and a.source == "db":
+        ap.error("--problems filters log lines, not --source db")
+    rx = re.compile(PROBLEMS if a.problems else a.grep, re.I) if (a.problems or a.grep) else None
     url, tok = settings()
     since = parse_since(a.since)
+    if a.source == "db":
+        if not (a.table or a.sql or a.tables):
+            sys.exit("With --source db give --tables, --table NAME or --sql \"select ...\".")
+        if a.follow:
+            sys.exit("--follow is only for the logs.")
+        try:
+            ans = fetch_db(url, tok, a.table, a.sql, since, a.limit, tables=a.tables)
+        except Failed as err:
+            sys.exit(str(err))
+        show_db(ans, a.json)
+        return
     sources = ("console", "autosell") if a.source == "both" else (a.source,)
     seen, first, nxt = {s: {} for s in sources}, True, since
     while True:

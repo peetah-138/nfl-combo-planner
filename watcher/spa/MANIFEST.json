@@ -19,7 +19,8 @@
     "sell_single.css",
     "overlap.css",
     "betlabel.css",
-    "smallwins.css"
+    "smallwins.css",
+    "update.css"
   ],
   "js": [
     "common.js",
@@ -46,8 +47,10 @@
     "moments.js",
     "logaccess.js",
     "overlap.js",
+    "fullauto.js",
     "settings.js",
     "smallwins.js",
+    "update.js",
     "boot.js"
   ],
   "login": "login.html"

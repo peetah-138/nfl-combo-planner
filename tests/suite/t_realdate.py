@@ -81,7 +81,7 @@ E.CFG = dict(E.CFG, kalshi_key_id="fake")
 E.load_private_key = lambda pem: "key"
 E.KEYFILE = os.path.join(E.HERE, "key.pem"); open(E.KEYFILE, "w").close()
 E.account_get = lambda key, kid, path, params=None: {"balance": 30000}
-E.all_positions = lambda key, kid: []
+E.all_positions = lambda key, kid, strict=False: []
 LEG = {"ticker": "KXNFLGAME-26NOV22BUFKC-KC", "event": "KXNFLGAME-26NOV22BUFKC", "side": "yes"}
 # Pre-seed the legs cache so combo_legs doesn't hit the network for our fake combos.
 E.fetch_legs_parallel = lambda tickers, cache: cache.update({t: [dict(LEG)] for t in tickers if t not in cache})

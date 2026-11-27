@@ -26,10 +26,10 @@ function clkTick(){document.querySelectorAll('[data-clk]').forEach(e=>{const c=(
  const t=c.lab+' '+Math.floor(v/60)+':'+String(v%60).padStart(2,'0');if(e.textContent!==t)e.textContent=t;});}
 function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelector('#sheet .gtabs');if(gb)S.gtabScroll=gb.scrollLeft;}
  const l=r.leg,sc=l.sc,st=r.story||{ticks:[],plays:[]};const ch=l.live!=null?l.live:l.chance;const lc=legCls(l);
- const pts=st.ticks.filter(x=>x.chance!=null).map(x=>[x.ts,x.chance]);
+ const wr=winRange(r,st),pts=wr.pts;
  const plays=st.plays.slice().reverse();
  const ov=`<div class="dkpis"><div><span>${l.kind==='spread'?'Chance it covers':l.kind==='total'?'Chance it hits':esc(short(l.name))+' to win'}</span><b class="${ch>=.5?'up':'down'}" data-num="gc:${t}" data-v="${ch}" data-f="pct">${pct(ch)}</b></div><div><span>Your bets on it</span><b>${r.combos.length}</b></div><div><span>Riding on it</span><b>${money(r.combos.reduce((a,c)=>a+c.pays,0))}</b></div><div><span>Score changes</span><b>${Math.max(0,st.plays.length-1)}</b></div></div>
-  <div class="chartbox">${winChart(pts,st.plays)}</div>
+  <div class="chartbox">${winChart(pts,st.plays,wr)}</div>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px">
    <div><h2 style="margin:0 0 6px">Scoring</h2>${plays.length>1?plays.slice(0,-1).map((p,i)=>{const prev=plays[i+1];const mine=p.me>prev.me;return `<div class="moment"><span class="k" style="color:${mine?'var(--yes)':'var(--no)'}">${mine?'▲':'▼'}</span><span>${mine?esc(short(l.name)):esc(short(l.opp||'Them'))} score · <b>${p.me}–${p.opp}</b> <span class="m">${esc(p.detail||'')}</span></span><time>${ago2(p.ts)}</time></div>`;}).join(''):'<div class="m">No score changes recorded yet.</div>'}</div>
    <div><h2 style="margin:0 0 6px">Your bets on this game</h2>${r.combos.map(c=>`<div class="moment" ${c.single?'':`style="cursor:pointer" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)"`}><span class="k">${c.single?'📏':'🎯'}</span><span><b>${esc(c.single?betPlain(c):c.label)}</b>${(c.parts||[]).length>1&&(c.parts||[]).some(q=>q.plain)?`<span class="bparts">${c.parts.map(q=>esc(q.plain||'')+(q.matchup?' ('+esc(q.matchup)+')':'')).join(' + ')}</span>`:''} <span class="m">${c.single?(c.how?esc(c.how)+' · ':'')+pct(c.p)+' chance':c.legs+' picks · '+pct(c.p)+' to hit'}</span></span><b>${money(c.pays)}</b>${c.single&&typeof ssOpen==='function'?`<button class="btn yes sm" data-sss="${esc(c.t)}" onclick="event.stopPropagation();ssOpen('${c.t}')">Sell</button>`:''}</div>`).join('')||'<div class="m">None pending.</div>'}
@@ -54,7 +54,7 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
 /* The game page's pinned buy buttons (#113): each team's Kalshi price now as a chance and what $1 turns into after the
    fee ("IND · 24% · 3.96x"). A tap opens the buy sheet for that side, which prices it afresh; nothing is bought here. */
 function gameBuyBar(r){const b=((r&&r.buy)||[]).filter(s=>/^[A-Z0-9._-]+$/.test(s.t||''));if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
- return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen('${esc(s.t)}','${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
+ return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen(this.dataset.t,'${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
 function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
 function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
  const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');

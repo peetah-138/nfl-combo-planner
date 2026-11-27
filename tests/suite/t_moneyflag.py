@@ -73,6 +73,9 @@ ok("an incomplete read still stamps when a position really changed", E.money_see
 os.utime(E.MONEY_FLAG, (1, 1))
 E.money_note([], [], 120.0, 1)
 ok("an incomplete read still stamps when the balance really changed", E.money_seen() > time.time() - 60)
+os.utime(E.MONEY_FLAG, (1, 1))
+E.money_note([dict(b) for b in bets], [], 120.0)       # #457: the full read right after shows that same change, combos unchanged
+ok("the full read after an incomplete one does not stamp the same money change twice", E.money_seen() < 100)
 E.MONEY_FP.update(v=None, pb=None, inc=0)
 E.money_note(bets, pos, 100.0); os.utime(E.MONEY_FLAG, (1, 1))
 E.money_note([dict(bets[0], status="cashed", back=9.1)], pos, 100.0)
@@ -114,3 +117,15 @@ E.hub_call = lambda op, timeout=0: {"value": [[], 8.0, "n"]}
 E.fetch_account(max_age=15, every_league=True)
 ok("a normal hub copy is cached as before", E.ACCT_CACHE["at"] > time.time() - 60 and E.ACCT_CACHE["value"][1] == 8.0)
 E.hub_up = lambda: False
+
+# #457: failures with neither a ticker nor a combo must not hide each other's stamp
+E.MONEY_FAIL_AT.clear()
+os.utime(E.MONEY_FLAG, (1, 1))
+E.log_decision({"result": "failed", "offer": 9.1, "cost": 5.0})
+ok("a failure with no ticker or combo stamps", E.money_seen() > time.time() - 60)
+os.utime(E.MONEY_FLAG, (1, 1))
+E.log_decision({"result": "failed", "offer": 7.7, "cost": 4.0})
+ok("a different no-id failure is not hidden by the first", E.money_seen() > time.time() - 60)
+os.utime(E.MONEY_FLAG, (1, 1))
+E.log_decision({"result": "failed", "offer": 7.7, "cost": 4.0})
+ok("the same no-id failure repeating still does not re-stamp", E.money_seen() <= 1)

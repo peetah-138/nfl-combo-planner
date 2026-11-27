@@ -172,7 +172,7 @@ SENT = []
 E.kalshi_send = lambda m, p, b=None, params=None: (SENT.append((m, p, b)), {"order": {"fill_count_fp": f"{b['count']:.2f}"}})[1]
 E.hands_off = lambda t: False
 E.single_sell_reason = lambda x, bid, ask, cut_ok=False: ("smart", 1.0)
-E.smart_params = lambda ts: {"loss": None}
+E.smart_params = lambda ts, **kw: {"loss": None}
 E.resting_single_sells = lambda: set()
 E.sold_today = lambda: 0
 E.log_decision = lambda rec: None
@@ -205,6 +205,8 @@ E.maker_pass = lambda *a, **k: []
 E.screen_live = lambda games, bf: ([], [])
 E.injury_note = lambda *a, **k: ([], False)
 E.LEAGUE["code"] = "nba"
+E.KICKOFF["EV1"] = "2099-01-01T00:00:00Z"        # the push gate wants a kick time on file, and a read of what you hold
+E.MINE["view"] = {"singles": [], "singles_ok": True, "combos": []}; E.MINE["view_at"] = time.time()
 for label, depth, expect in (("unknown book (None)", None, 0), ("thin book", {"thin": True, "ask": 0.4, "bid": 0.3}, 0),
                              ("good book", {"thin": False, "ask": 0.40, "bid": 0.39, "ask_size": 500}, 1)):
     E.book_depth = lambda t, max_age=60, _d=depth: _d

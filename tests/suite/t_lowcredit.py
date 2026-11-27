@@ -128,5 +128,35 @@ def sec_d():
         E._sim_panel = real_sim
 
 
-for name, fn in (("A", sec_a), ("B", sec_b), ("C", sec_c), ("D", sec_d)):
+def sec_e():
+    # #182: a draw side is tagged like its two teams, through the real path attach_fair -> _cand -> the idea's leg facts
+    day = E.game_date({"event_ticker": "KXEPLGAME-26NOV30ALPBET"})
+    game = {"day": day, "opp": None, "fair": (0.45, "odds service"), "sharp": True, "start": None}
+    E.BOOK_GAMES.clear()
+    E.BOOK_GAMES["Alpha FC"] = [dict(game, opp="Beta FC")]
+    E.BOOK_GAMES["Beta FC"] = [dict(game, opp="Alpha FC", fair=(0.30, "odds service"))]
+    ev = "KXEPLGAME-26NOV30ALPBET"
+    sides = [{"ticker": ev + "-ALP", "event": ev, "abbr": "ALP", "pick": "Alpha FC", "p": 0.44},
+             {"ticker": ev + "-BET", "event": ev, "abbr": "BET", "pick": "Beta FC", "p": 0.29},
+             {"ticker": ev + "-TIE", "event": ev, "abbr": "TIE", "pick": "Draw", "p": 0.27, "tie": True}]
+    games = {ev: sides}
+    book = {"Alpha FC": (0.45, "odds service"), "Beta FC": (0.30, "odds service")}
+    E.attach_fair(games, book)
+    ok("E: the teams are priced on the odds service's line (the setup works)", sides[0].get("sharp_line") is True
+       and sides[0].get("src"))
+    ok("E: the draw side is tagged sharp_line like its teams", sides[2].get("sharp_line") is True)
+    cand = E._cand("single", "epl", [sides[2]], 0.25, 0.1, "draw")
+    ok("E: it carries through _cand", cand["legs"][0]["sharp_line"] is True)
+    ok("E: and into the idea's leg facts, so low mode keeps a far draw pick",
+       E.idea_legs_info(cand["legs"])[0]["sharp"] is True)
+    E.BOOK_GAMES.clear()
+    s2 = [dict(x) for x in sides]
+    for x in s2:
+        x.pop("sharp_line", None)
+        x.pop("src", None)
+    E.attach_fair({ev: s2}, {})
+    ok("E: no line for the game: the draw is not tagged sharp", s2[2].get("sharp_line") is False)
+
+
+for name, fn in (("A", sec_a), ("B", sec_b), ("C", sec_c), ("D", sec_d), ("E", sec_e)):
     section(name, fn)

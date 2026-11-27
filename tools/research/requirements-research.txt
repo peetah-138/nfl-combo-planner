@@ -1,0 +1,9 @@
+# Research-only environment for tools/research/nfl_discovery.py. Use a venv OUTSIDE the app's own, for example:
+#   python3 -m venv ~/dev/research/venv-nfl && ~/dev/research/venv-nfl/bin/pip install -r tools/research/requirements-research.txt
+# The app, the watcher and CI never install these; the heavy tests skip themselves when they are absent.
+numpy==2.5.5
+pandas==3.1.1
+pyarrow==26.0.1
+scikit-learn==1.9.1
+scipy==1.18.1
+# optional (faster; needs libomp on macOS): lightgbm==4.7.0
