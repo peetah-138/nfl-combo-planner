@@ -61,6 +61,7 @@ CFG = {
     "stop_loss": False,   # the old on/off override, still written for older copies: on = stop_loss_mode 'allow'
     "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
+    "hedge_before_loss_skip": True,   # (#312) auto cash-out weighs a hedge that locks in at least the cost before skipping a below-cost sale
     "live_bar_learn": True,           # (#287) learn (paper only) the in-play single green bar per league from live_fairs
     "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
     "loss_cut_default": True,   # the cautious starting loss cut (12.5% win chance, combos) for a league with no record of its own; off = the old "never until a league's own record turns it on". Every loss guard still applies
@@ -6215,10 +6216,16 @@ def auto_sell_now(plan):
                 rec["fee_note"] = fee_note                # fee model off, or no contracts: judged on the gross offer
             gross_below = o["offer"] < h["cost"] * o.get("frac", 1.0) - 0.005
             below = net < h["cost"] * o.get("frac", 1.0) - 0.005
-            if below and why != "cut loss" and not sl_ready.get(t):
-                log_decision(dict(rec, result="skipped", why="below what you paid"))
-                continue
-            if below and why != "cut loss":                   # a guarded stop-loss sale (gross below cost, or only the fee puts it below)
+            below_skip = below and why != "cut loss" and not sl_ready.get(t)
+            if below_skip:
+                # (#312) a below-cost sale is still never made here. But a hedge that locks in at least the combo's cost is
+                # not a loss, so it is weighed first (every hedge guard unchanged); anything else is skipped as before.
+                hg0 = hedge_for(t) if (CFG.get("hedge_before_loss_skip", True) and CFG.get("auto_hedge") and not clock
+                                       and not restriction_holding("buy")) else None
+                if not (hg0 and hg0.get("n") and hg0["locked"] >= h["cost"] - 0.005):
+                    log_decision(dict(rec, result="skipped", why="below what you paid"))
+                    continue
+            if below and why != "cut loss" and not below_skip:   # a guarded stop-loss sale (a below-cost hedge-only path is not one: no stop_loss tag) (gross below cost, or only the fee puts it below)
                 rec["stop_loss"] = True
                 rec["sl_mode"] = mode
                 if not gross_below:
@@ -6239,6 +6246,8 @@ def auto_sell_now(plan):
                 if ready:
                     hg, gw = hedge_fresh(t, h, whole)
                     ready = hg is not None
+                    if ready and below_skip and hg["locked"] < h["cost"] - 0.005:
+                        hg, gw, ready = None, "wouldn't lock in what you paid at the fresh price", False   # (#312)
                 if not ready:
                     if gw == "waiting to confirm":
                         continue                # the sale waits while the hedge is confirmed (3+ checks, 3+ minutes)
@@ -6265,6 +6274,9 @@ def auto_sell_now(plan):
                     if unsure:
                         out.append("🤖 Auto-hedge: " + msg)
                         continue                # never retried, and no sale on top of a hedge that may have filled
+            if below_skip:                                # (#312) the hedge didn't go through: never sell below cost
+                log_decision(dict(rec, result="skipped", why="below what you paid"))
+                continue
             CASH_LAST.pop(t, None)
             # The sale's purpose (Pete, 2026-11-23: "It should only sell at a loss if that's a way to try to minimize
             # losses. Not when there's still an opportunity for it to get profit."): a sale whose offer was at or above
@@ -24558,22 +24570,22 @@ FAL = {"week": 7 * 86400, "look": 6 * 3600, "judge_max": 14 * 86400, "days": 60,
        "game": {"lo": 0.10, "hi": 0.30, "step": 0.025}}      # share of the full-auto bankroll one game may carry
 FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30}            # = today's behaviour (the identity) and the loose end
 FAL_RECS = ("bar", "sbev", "game")
-FAL_NAMES = {"bar": "League shadow (combo bars)", "sbev": "Smart Buy paper book", "game": "Exposure paper log"}
+FAL_NAMES = {"bar": "Combo bars, league by league", "sbev": "Smart Buy bars", "game": "Per-game limit"}
 FAL_RUN = {"at": 0.0}
 FAL_NOT_WIRED = (
-    ("Paper panel", "it is the gate that unlocks full auto itself and has no number to step"),
-    ("Smart Buy shadow and the dial", "the dial already learns by itself every hour; nothing extra to wire"),
-    ("Knob stepper shadow", "it has its own weekly stepper and loss brake for smart sell's numbers"),
-    ("Momentum shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Exit-cap shadow", "it is about selling rules; full auto only approves buys"),
-    ("Smart-sell-more shadow", "it is about selling rules; full auto only approves buys"),
-    ("Flex shadow", "it is about selling rules; full auto only approves buys"),
-    ("Combo shadow trader", "display only; no pass bar is defined"),
-    ("Signal shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Broad shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Slate shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Prop shadow", "no pass bar is defined, and no full-auto number depends on it"),
-    ("Books' weight (mkt fair)", "it already steers long-shot ideas on its own; no full-auto number depends on it"))
+    ("Paper panel", "it is the practice gate that unlocks full auto itself and has no number to adjust"),
+    ("Smart Buy practice run and dial", "the dial already adjusts itself every hour; nothing extra to connect"),
+    ("Smart sell number tuning", "it already has its own weekly steps and loss brake"),
+    ("Momentum practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Early-exit cap practice run", "it is about selling rules; full auto only approves buys"),
+    ("Smart-sell-more practice run", "it is about selling rules; full auto only approves buys"),
+    ("Flex practice run", "it is about selling rules; full auto only approves buys"),
+    ("Combo practice trader", "display only; it has no pass mark yet"),
+    ("Signal practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Broad practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Slate practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Prop practice run", "it has no pass mark yet, and no full-auto number depends on it"),
+    ("Market-odds weighting", "it already steers long-shot ideas on its own; no full-auto number depends on it"))
 
 
 def fal_on(st):
@@ -24716,6 +24728,14 @@ def _fal_val_text(rec, v):
     return f"{v * 100:g}% of the bankroll"
 
 
+def _fal_change(key, dirn, to=None):
+    """A step in plain words: 'Raised the NBA combo bar a little' (a per-game limit goes the other way: tighter = lower)."""
+    rec, _ = _fal_split(key)
+    up = (dirn == "tighter") != (rec == "game")
+    tail = f" to {_fal_val_text(rec, to)}" if rec == "game" and to is not None else " one level" if rec == "sbev" else " a little"
+    return f"{'Raised' if up else 'Lowered'} the {_fal_name(key)}{tail}"
+
+
 def _fal_name(key):
     rec, lg = _fal_split(key)
     if rec == "game":
@@ -24803,8 +24823,8 @@ def _fal_apply(s, plan, now):
     if not isinstance(L.get("log"), list):
         L["log"] = []
 
-    def say(kind, key, text):
-        L["log"].append({"at": round(now), "kind": kind, "key": key, "text": text})
+    def say(kind, key, text, **extra):
+        L["log"].append({"at": round(now), "kind": kind, "key": key, "text": text, **extra})
         del L["log"][:-FAL["log"]]
     for a in plan.get("actions") or []:
         rec, key = a["rec"], a["key"]
@@ -24814,27 +24834,28 @@ def _fal_apply(s, plan, now):
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
                 continue
             ev = a["ev"]
-            say("step", key, f"Learned: {_fal_name(key)} {_fal_val_text(rec, a['from'])} -> {_fal_val_text(rec, a['to'])} "
-                f"({'tighter' if a['dir'] == 'tighter' else 'looser'}) because on {ev['band']} past bets it would have changed, "
-                f"it made ${ev['gain']:.2f} more after fees, the newest {ev['hold_n']} agreed (${ev['hold']:+.2f}) and "
-                f"the low end of the range is ${a['lb']:+.2f}.")
+            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets this would have made "
+                f"${ev['gain']:.2f} more after fees.", ev={"band": ev["band"], "gain": ev["gain"], "hold_n": ev["hold_n"],
+                                                          "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"]})
             _fal_set(L, rec, key, a["to"])
             L["steps"][rec], L["since"][key] = round(now), round(now)
             L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
         elif lr and not lr.get("judged") and lr.get("key") == key:
             if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9:
-                why = ("because the " + str(a["n"]) + " bets that step changed lost $" + format(-a["net"], ".2f") + " after fees in the week since."
+                why = ("the " + str(a["n"]) + " bets that change affected lost $" + format(-a["net"], ".2f") + " after fees in the week since."
                        if a.get("why", "lost") == "lost" else
-                       "because its results could not be read." if a.get("why") == "unreadable" else
-                       "because too few bets came in over two weeks to show it helped.")
-                say("revert", key, f"Learned: {_fal_name(key)} back {_fal_val_text(rec, lr['to'])} -> {_fal_val_text(rec, lr['from'])} " + why)
+                       "its results could not be read." if a.get("why") == "unreadable" else
+                       "too few bets came in over two weeks to show it helped.")
+                back = f" to {_fal_val_text(rec, lr['from'])}" if rec == "game" else " where it was"
+                say("revert", key, f"Put the {_fal_name(key)} back{back}: " + why,
+                    ev={"net": a["net"], "n": a["n"], "why": a.get("why", "lost"), "from": lr["to"], "to": lr["from"]})
                 _fal_set(L, rec, key, lr["from"])
                 L["steps"][rec], L["since"][key] = round(now), round(now)
                 lr.update(judged=True, reverted=True)
             elif a["do"] == "kept":
-                say("kept", key, f"Learned: {_fal_name(key)} {_fal_val_text(rec, lr['to'])} kept; the {a['n']} bets "
-                    f"it changed since made ${a['net']:+.2f} after fees." if a["n"] else
-                    f"Learned: {_fal_name(key)} {_fal_val_text(rec, lr['to'])} kept; too few bets since to tell.")
+                say("kept", key, f"Kept the {_fal_name(key)} change: the {a['n']} bets it affected since made ${a['net']:.2f} "
+                    f"after fees." if a["n"] else f"Kept the {_fal_name(key)} change: too few bets since to tell.",
+                    ev={"net": a["net"], "n": a["n"]})
                 lr["judged"] = True
     L["status"] = status
     L["checked"] = round(now)
@@ -24930,7 +24951,7 @@ def fal_view(st):
         for rec in FAL_RECS:
             x = stat.get(rec) if isinstance(stat.get(rec), dict) else {}
             recs.append({"name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", _fal_min_n(rec)),
-                         "state": "not checked yet" if not x else ("passes its bar" if x.get("pass") else "no clear lesson"),
+                         "state": "not checked yet" if not x else ("has a clear lesson" if x.get("pass") else "no clear lesson"),
                          "note": x.get("note") or ""})
         log = [e.get("text") for e in (L.get("log") or [])[-5:] if isinstance(e, dict)][::-1]
         return {"switch": st.get("fa_lessons") is not False, "active": fal_on(st), "learned": learned, "log": log,
