@@ -136,20 +136,21 @@ with sync_playwright() as pw:
         hd2 = pg.locator(".an .ksp .ksh")
         if "What self-tuning changed" not in hd2.inner_text() or "1 change" not in hd2.inner_text() or "brake" not in hd2.inner_text():
             P.append(tag + ": live header wrong: " + hd2.inner_text())
-        pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
+        pg.evaluate("v=>{S.ksSeen=Date.now()/1000-7200;S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
         txt = pg.locator(".an .ksp").inner_text()
         for want in ("Self-tuning is on", "Changed", "Profit floor: 1.5× what you paid → 1.6× what you paid",
                      "the newest 30% agree", "Still a test, nothing changes", "Tuning itself: %d of its selling, loss and hedge numbers" % sum(1 for n in A.knob_live_names() if n in A.KNOB_JUDGED)):
             if want not in txt: P.append(tag + ": live NBA missing %r" % want)
         if "nothing changes yet" in txt: P.append(tag + ": live card still says nothing changes")
+        if "New" not in pg.locator(".an .ksp .ksc").first.inner_text(): P.append(tag + ": (#283) a change made since the last visit has no New tag")
         if "Where it stands now" in txt: P.append(tag + ": (#283) a value already under Changed is repeated under 'Where it stands now'")
         diff = json.loads(json.dumps(KS_LIVE))
         for l in diff["leagues"]:
             for m in l.get("moved") or []:
                 m["say"] = "a different value"
-        pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", diff)
+        pg.evaluate("v=>{S.ksSeen=Date.now()/1000-7200;S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", diff)
         if "Where it stands now" not in pg.locator(".an .ksp").inner_text(): P.append(tag + ": (#283) a value that differs from the change must still show under 'Where it stands now'")
-        pg.evaluate("v=>{S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
+        pg.evaluate("v=>{S.ksSeen=Date.now()/1000-7200;S.ksOpen=true;S.ksLg='nba';document.querySelector('.an .ksp').outerHTML=knobShadow(v)}", KS_LIVE)
         if pg.evaluate("document.documentElement.scrollWidth>innerWidth+1"): P.append(tag + ": the live card scrolls sideways")
         over = pg.evaluate("[...document.querySelectorAll('.an .ksp .ksr')].filter(e=>e.getBoundingClientRect().right>innerWidth+1).length")
         if over: P.append(tag + ": %d live rows run past the screen" % over)

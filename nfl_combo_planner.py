@@ -27446,10 +27446,7 @@ def knob_brake_pass(now=None, force=False):
                                 f"starting numbers until "
                                 f"{dt.datetime.fromtimestamp(now + days * 86400, PACIFIC).strftime('%b %-d')} (any number "
                                 f"it had made stricter stays). Why: {why}.")
-                elif push_ok:
-                    msgs.append(f"Self-tuning test, nothing changed: with self-tuning on, {league_label(lg)} would go "
-                                f"back to its starting numbers for {days} days (keeping any number it had made stricter). "
-                                f"Why: {why}.")
+                # (#283) self-tuning off: this is only a test, so it stays on the Results card and sends no push
             return msgs, done_
         msgs, braked = _knob_save(put)
         _knob_shadow_table()

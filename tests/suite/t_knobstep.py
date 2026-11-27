@@ -257,8 +257,7 @@ sale(now - 1000, "KXMVENBA-3", 2.0, 5.0)
 msgs = E.knob_brake_pass(now, force=True)
 S = E.knob_state()
 b = S["brake"].get("nba") or {}
-ok("4 losses in a row: would brake, one push, plain words, no urgent words", len(msgs) == 1 and "NBA" in msgs[0]
-   and "nothing changed" in msgs[0] and not any(w in msgs[0].lower() for w in ("auto", "hedge", "cash out", "paused", "can't")))
+ok("4 losses in a row: would brake, and (#283) a test with self-tuning off sends no push", msgs == [] and "nba" in S["brake"])
 ok("the brake lasts 14 days and resets only the shadow values, never looser than they were (#284): the looser risk "
    "weight 1.15 back to 1.0, the stricter floor 1.8x kept", abs(b.get("until", 0) - (now + 14 * 86400)) < 2
    and S["groups"]["nba"]["v"]["smart_floor"] == 1.8 and S["groups"]["nba"]["v"]["smart_lam"] == 1.0

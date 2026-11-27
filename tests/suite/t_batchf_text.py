@@ -40,3 +40,6 @@ try:
     ok("an unreadable registry gives None, never raises", M.sl_auto_view() is None)
 finally:
     M.knob_switch_on, M.knob_view = real_sw, real_kv
+# wording-c: shorter registry brake sentence; New tag since the last visit (#283); no test-brake push
+ok("registry brake sentence is one short line", "(any number it had made stricter stays). Loss guards, hedging and Smart Buy are still a test." in kn)
+ok("a change since the last open of the card says New", "cw_ks_seen" in kn and ">New</span>" in kn)
