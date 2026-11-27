@@ -24273,7 +24273,7 @@ def _fa_caution_eval(st, after, run, now, legacy=False):
     if seen is None:                                  # state from before bets were tracked by id: the old stamp line stands in for it
         seen = [f"{d}|{c.get('id')}" for d, c in after if _fa_stamp(c) <= base]
         seen_set, floor = set(seen), max(floor, base)
-    fresh = [(d, c) for d, c in after if f"{d}|{c.get('id')}" not in seen_set and _fa_stamp(c) > floor]
+    fresh = [(d, c) for d, c in after if f"{d}|{c.get('id')}" not in seen_set and _fa_settle_key(c) > floor]
     for d, c in sorted(fresh, key=lambda x: (_fa_settle_key(x[1]), _fa_stamp(x[1]))):   # in the order the money moved, each bet once
         stamp = _fa_settle_key(c)
         seen.append(f"{d}|{c.get('id')}")
@@ -24307,10 +24307,10 @@ def _fa_caution_eval(st, after, run, now, legacy=False):
                       f"Easing up to {round(F['factors'][level] * 100)}% after {F['calm_days']} calm days with no loss.")
         if level == 0:
             why = ""
-    if len(seen) > FA_SEEN_MAX:                       # bounded: what falls off is covered by floor_at (its buy time)
+    if len(seen) > FA_SEEN_MAX:                       # bounded: what falls off is covered by floor_at (its newest settle time)
         gone = seen[:len(seen) - FA_SEEN_MAX]
         gs = set(gone)
-        floor = max([floor] + [_fa_stamp(c) for d, c in after if f"{d}|{c.get('id')}" in gs])
+        floor = max([floor] + [_fa_settle_key(c) for d, c in after if f"{d}|{c.get('id')}" in gs])
         seen = seen[-FA_SEEN_MAX:]
     factor = F["factors"][level]
     saved = {"level": level, "base_at": base, "since": since, "why": why, "wl": wl, "ww": ww, "loss_at": loss_at,

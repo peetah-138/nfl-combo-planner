@@ -395,6 +395,16 @@ big = [bet(i, "W") for i in range(260)]
 g = E._fa_caution_eval({"streak": 3, "caution": {"level": 0, "base_at": 0, "since": 0}}, big, 0, 1500)
 g2 = E._fa_caution_eval({"streak": 3, "caution": g["saved"]}, big, 0, 1500)
 ok("the counted list stays bounded and pruned bets are not recounted", len(g["saved"]["seen"]) <= E.FA_SEEN_MAX and g2["events"] == [] and not g2["changed"])
+# after the counted list is full, a long-open bet bought earlier but settled later still counts
+many = []
+for i in range(260):
+    d_, c_ = bet(i + 10, "W"); c_["settled_at"] = 3000 + i; many.append((d_, c_))
+h1 = E._fa_caution_eval({"streak": 2, "caution": {"level": 0, "base_at": 0, "since": 0}}, many, 0, 4000)
+late = []
+for i, k in enumerate((0, 1)):
+    d_, c_ = bet(k, "L"); c_["settled_at"] = 3500 + i; late.append((d_, c_))     # bought long before the dropped ones, settled after
+h2 = E._fa_caution_eval({"streak": 2, "caution": h1["saved"]}, many + late, 0, 4000)
+ok("after 200+ counted bets, two long-open losses settling later still trip Cautious", len(h1["saved"]["seen"]) == E.FA_SEEN_MAX and h2["level"] == 1)
 # calm days: 3 days with no loss step up one level (saved each pass, so the next step needs 3 more)
 c2 = {"level": 2, "base_at": 0, "since": 5000, "why": "t"}
 e0 = E._fa_caution_eval({"streak": 3, "caution": c2}, [], 0, 5000 + 86400)
