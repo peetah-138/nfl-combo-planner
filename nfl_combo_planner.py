@@ -14530,6 +14530,21 @@ def save_combo(i, new):
         save_json(HISTORY, hist)
 
 
+def flip_ev(legs, stake):
+    """(#204) Expected profit in dollars of a combo with these legs at `stake`, after the entry fee, on the chance
+    corrected by your own record (`calib_fair`, as the panel and Best bets use) and Kalshi's leg prices. None when a
+    leg has no price or chance. A guide for the flip note only: nothing here buys or sizes; the combo fee is the
+    standard taker fee on the combo's price (Kalshi's real combo fee is not verified), so it is a close estimate."""
+    try:
+        q = math.prod(calib_fair(ticker_sport(l["ticker"]) or LEAGUE["code"], l["fair"], l.get("ticker")) for l in legs)
+        pp = math.prod(l["p"] for l in legs)
+        if not (0 < q < 1 and 0 < pp < 1 and stake > 0):
+            return None
+        return stake / pp * (q - pp - single_fee(pp))
+    except Exception:
+        return None
+
+
 def flip_pick(i, ticker):
     """Switch one pick in combo i to the other team and explain what changed.
     Returns (ok, html note)."""
@@ -14565,6 +14580,11 @@ def flip_pick(i, ticker):
              "slightly worse value" if v_new <= v_old - 0.01 else "about the same value")
     good = p_new > p_old * 1.05 and v_new >= v_old - 0.01
     bad = p_new < p_old * 0.95 and v_new <= v_old + 0.01
+    ev_old, ev_new = flip_ev(old["legs"], stake), flip_ev(legs, stake)
+    if ev_old is not None and ev_new is not None:     # (#204) in dollars: "good" only if expected dollars do not fall
+        fell = ev_new < ev_old - 0.01
+        good = good and not fell
+        bad = bad or (fell and not p_new > p_old * 1.05)
     head = ("<span class='verdict ok'>Good flip</span>" if good else
             "<span class='verdict no'>Worse bet</span>" if bad else
             "<span class='verdict ok' style='background:var(--badbg);color:var(--bad)'>Trade-off</span>")
@@ -14576,9 +14596,13 @@ def flip_pick(i, ticker):
         extra.append(f"Kalshi charges extra for {e(other['pick'])} ({round(edge * 100)}¢).")
     if other.get("live"):
         extra.append("Live pick: its price moves fast, so get an offer soon.")
+    dollars = ""
+    if ev_old is not None and ev_new is not None:
+        dollars = (f"Expected profit at {money(stake)}, after fees and on your own record: "
+                   f"{'-' if ev_old < 0 else ''}{money(abs(ev_old))} → {'-' if ev_new < 0 else ''}{money(abs(ev_new))}. ")
     note = (f"<div class='min'>{head} Flipped <b>{e(leg['pick'])}</b> → <b>{e(other['pick'])}</b>: "
             f"{likely} ({p_old:.1%} → {p_new:.1%}), fair payout {money(old['fair'])} → {money(new['fair'])}, "
-            f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + " ".join(extra) +
+            f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + dollars + " ".join(extra) +
             " Tap Flip again to undo. New price shows whether Kalshi's offer is good.</div>")
     CTX["combos"][i - 1] = new
     CTX["offers"].pop(i, None)
@@ -31439,6 +31463,41 @@ def _best_exposure(legs):
     return {"n": len(on), "of": len(hold), "team": team, "label": label}
 
 
+def _best_calibrate(c):
+    """(#243) One Best-bets candidate on the chance corrected by your own record (`calib_fair`, the same nudge the panel
+    uses), or None when the corrected edge is gone. The books' raw chance used to decide which candidates were looked at
+    (the top BEST_LOOK by raw edge) and what they were sized and simulated on. Now the legs' fair, the chance, the
+    return used to rank, the stake (`_size`) and the exit simulation all read the corrected chance; the raw one is kept
+    as `chance_book`. A leg `calib_fair` cannot correct keeps the books' chance, and an empty record changes nothing.
+    Display and ranking only: nothing here buys or sells, and it can only reorder or drop a row. Spreads/totals are not
+    touched (their chance is already `calib_line`'s)."""
+    try:
+        code = c.get("code") or ""
+        legs = []
+        for l in c["legs"]:
+            f = l.get("fair")
+            legs.append(dict(l, fair=round(calib_fair(code, f, l.get("ticker")), 4) if f else f))
+        book = c["chance"]
+        if c["kind"] == "combo":
+            if not all(l.get("fair") for l in legs):
+                return c
+            q = math.prod(l["fair"] for l in legs)
+            ret = (c.get("pct") or 0) * q / book - 1 if book else 0
+        else:
+            q = legs[0]["fair"]
+            p = c["price"]
+            ret = (q - p - single_fee(p)) / p
+            if q - p - single_fee(p) < SINGLE_MIN_EDGE or ret < 0.04:   # single_candidates' own bar, on the corrected chance
+                return None
+        if ret <= 0:
+            return None
+        return dict(c, legs=legs, chance=round(q, 4), ret=round(ret, 4), edge=round(ret if c["kind"] == "combo" else ret * c["price"], 4),
+                    chance_book=book)
+    except Exception as err:
+        console_note(f"best bets calibrate: {type(err).__name__}: {err}")
+        return c
+
+
 def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
     """{'items': [...], 'why': text or None, 'looked': {...}} for Build. games = the board's {event: [sides]}, lines =
     line_recommend's vetted rows (BUILD["lines"]), combos = [(index, combo dict, predicted share of fair or None)]. Never
@@ -31478,6 +31537,7 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
         cands = hide_contradicting(cands, lambda c: c.get("legs"))    # a combo against a single he holds is never listed
         for c in cands:
             looked[c["kind"]] += 1
+        cands = [c for c in (_best_calibrate(c) for c in cands) if c is not None]   # (#243) rank on YOUR record's chance
         cands.sort(key=lambda c: -(c.get("ret") or 0))
         out = []
         # Spreads and totals arrive ALREADY VETTED by line_recommend (issue #117): the league's learned edge bar after the
@@ -31531,7 +31591,7 @@ def best_bets_feed(games, lines, combos, now=None, limit=BEST_MAX):
                             "legs": [{"pick": l.get("pick"), "game": l.get("game"), "ticker": l.get("ticker")} for l in c["legs"]],
                             "ticker": c["legs"][0]["ticker"], "i": c.get("i"), "kick": c.get("kick"),
                             "price": c.get("price"), "fair": c["legs"][0]["fair"] if c["kind"] != "combo" else None,
-                            "chance": c["chance"], "edge": c["edge"], "stake": stake, "ev": ev,
+                            "chance": c["chance"], "chance_book": c.get("chance_book"), "edge": c["edge"], "stake": stake, "ev": ev,
                             "route": sim["route"], "p_exit": sim["p_exit"], "win": sim["win"],
                             "exit_mins": sim.get("exit_mins"), "exposure": _best_exposure(c["legs"])})
             except Exception as err:
