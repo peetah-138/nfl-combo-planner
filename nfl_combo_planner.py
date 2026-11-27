@@ -14600,9 +14600,9 @@ def flip_pick(i, ticker):
     if ev_old is not None and ev_new is not None:
         dollars = (f"Expected profit at {money(stake)}, after fees and on your own record: "
                    f"{'-' if ev_old < 0 else ''}{money(abs(ev_old))} → {'-' if ev_new < 0 else ''}{money(abs(ev_new))}. ")
-    note = (f"<div class='min'>{head} Flipped <b>{e(leg['pick'])}</b> → <b>{e(other['pick'])}</b>: "
+    note = (f"<div class='min'>{head} " + dollars + f"Flipped <b>{e(leg['pick'])}</b> → <b>{e(other['pick'])}</b>: "
             f"{likely} ({p_old:.1%} → {p_new:.1%}), fair payout {money(old['fair'])} → {money(new['fair'])}, "
-            f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + dollars + " ".join(extra) +
+            f"{value} at Kalshi's prices ({v_old:.0%} → {v_new:.0%} of fair). " + " ".join(extra) +
             " Tap Flip again to undo. New price shows whether Kalshi's offer is good.</div>")
     CTX["combos"][i - 1] = new
     CTX["offers"].pop(i, None)
@@ -24122,7 +24122,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
         try:
             _held_all()
         except Exception as err:
-            b.append("Couldn't read your Kalshi positions, so it buys nothing (" + type(err).__name__ + ").")
+            b.append("Couldn't read your Kalshi positions just now, so it buys nothing until it can.")
     out["blockers"] = b
     return out
 
