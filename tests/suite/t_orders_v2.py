@@ -318,7 +318,7 @@ ok("killer deal with an unknown outcome: 'check', Pete is told, and it counts to
 # ---- (5) the 6-cent gap rule for single sales (exactly 6c sells, 7c is too thin), resting sells read both ways
 E.hands_off = lambda t: False
 E.single_sell_reason = lambda x, bid, ask, cut_ok=False: ("smart", 1.0)
-E.smart_params = lambda ts: {"loss": None}
+E.smart_params = lambda ts, **kw: {"loss": None}
 E.resting_single_sells = lambda: set()
 E.sold_today = lambda: 0
 E.log_decision = lambda rec: None

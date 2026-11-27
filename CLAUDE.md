@@ -1046,10 +1046,21 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   `max(q·P − λ·P·√(q(1−q)), floor × cost)`, q ≥ 0.5 (`EXIT_Q_MIN`; never lowered by self-tuning since #306); λ from the sport's swing and time left (×1.3 at a slate
   checkpoint); lock-in after a big run-up drops 20%; take-profit % optional (default off — the old 75% default was
   migrated off). There is **no 80% floor** (removed at Pete's request).
+- **Cautious default loss cut (Pete, option A; `docs/changes/loss-cut-default.md`).** The learned "cut loss" in
+  `exit_policy` is ON from day one at a **12.5% win chance for every league's COMBOS** (`LOSS_CUT_DEFAULT`; `smart_params`
+  adds `loss` + `loss_src: "default"` when the league has no own value; singles never get it). EVERY existing guard is
+  unchanged (`stop_loss_leg`: fresh score, not halftime, at least half the game, pick under 50% and 20+ points under
+  pregame, 3+ checks over 3+ minutes; a real offer; at least 2% of cost; 97% of the first offer; Pause; Auto cash-out and
+  Smart profit-taking on). A league's own tuned value (30+ results, 10-30% range) replaces it; an explicit "stop cutting"
+  (`loss_off`, or self-tuning's smart_loss set off) keeps it off. Switch `loss_cut_default` (Settings, default on; off =
+  the old "never until a league's own record turns it on"). Every firing is logged in the sell log as `loss_cut`
+  `{src, cutoff, chance, offer, cost, legs}` for later measurement. **The evidence is thin:** the replay of 131 settled combos
+  found 4 cuts out-of-sample, about +$10 versus what prod did (+$59 versus holding), and the range includes flat; no winner was
+  cut at 12.5% or lower, but 15% cut one. This is a cautious start to be re-measured at about 30 settled combos per league.
 - **Self-tuning, per league** (weekly, `smart_tune`): replays settled bets on their recorded game prices with
   nearby settings and moves one small step toward what clearly did better (≥ 2% of stake, 30+ bets): profit floor
-  (starts 1.5×, 0.1 steps, 1.2–2.0), risk weight, and a learned loss cut (off until a league's record shows
-  selling a sliding bet beats holding). On a tie, the smallest change wins. Results › Selling shows each league's
+  (starts 1.5×, 0.1 steps, 1.2–2.0), risk weight, and a learned loss cut (starts at the cautious default 12.5% for combos,
+  see **Cautious default loss cut** below; a league's own record replaces it). On a tie, the smallest change wins. Results › Selling shows each league's
   settings and why they last changed. With `knobs_live` on (#228 PR3, below), `smart_tune` no longer moves the floor,
   risk weight or loss cut (`knob_tune` does, on the stricter evidence bar), and borrowed values are only stricter (#259).
 - Settings: `sell_own` (old "include bets I place myself") is removed; the per-bet switch replaced it. The old
@@ -1088,7 +1099,8 @@ and each test registers itself with a `# CHECK: group=... [secs=N] [retry]` head
   pregame chance from `single_pre` (last chance seen before the game in `MINE["pre_single"]`, else the saved
   `PREGAME` for game-winners; unknown = never). Same league `prog`/`drop` as the switch (`stoploss_params`).
   Without `cut_ok` both functions never cut (Live display included). The cut is **never borrowed**: `smart_params`
-  drops `loss` unless it is the league's own. The weekly replay only cuts where the live guards would have held
+  drops `loss` unless it is the league's own (the one exception is the cautious default below: it is a fixed starting value, not
+  borrowed from another league). The weekly replay only cuts where the live guards would have held
   (`_sl_held` → `_cut_guard_ts`, `_replay(..., cut_at=)`), so the tuner learns what live can actually do. A cut the
   guards hold back is logged once per bet and reason (`note_cut_held`, `result: "held"`); `analytics()["cut_held"]`
   counts them for Results › Selling, which also shows the guard settings per league. Pause / Auto cash-out off /

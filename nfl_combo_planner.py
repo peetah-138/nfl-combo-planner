@@ -62,6 +62,7 @@ CFG = {
     "stop_loss_mode": None,   # #228 PR5: 'tune' / 'allow' (a saved 'never' reads as 'tune'); None = read from stop_loss (sl_mode)
                           # (the app also learns a loss cut per league, see smart_tune; this switch is separate)
     "combo_sell_fee": True,   # combo cost floor nets Kalshi's selling fee (#382/#383). ASSUMES the combo sell fee = the single taker fee: UNCONFIRMED. False = judge the gross offer (old way)
+    "loss_cut_default": True,   # the cautious starting loss cut (12.5% win chance, combos) for a league with no record of its own; off = the old "never until a league's own record turns it on". Every loss guard still applies
     "smart_sell": True,   # auto cash-out: weighs the offer against the risk of holding, by sport (on top of take profit)
     "exit_cap_shadow": False,   # #375 paper test: log what a capped profit floor WOULD do on favorites; sells nothing, default OFF
     "panel_budget": 40,   # the daily panel: most to spend on one day's panel
@@ -276,7 +277,7 @@ PRIMARY_SPORTS = ("nfl", "nba", "nhl", "ncaaf")        # on the sport picker; th
 def sport_rule(ticker, key, default):
     """A betting rule for the sport this pick is in (e.g. soccer's draw-aware thresholds)."""
     return (LEAGUES.get(ticker_sport(ticker)) or LG()).get(key, default)
-SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "mkt_hold", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask")
+SHARED_KEYS = ("kalshi_key_id", "odds_key", "bankroll", "auto_cash", "cash_every", "ride", "tp_follow", "tp_auto", "tp_ladder", "watcher_code", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "auto_hedge", "hedge_cap", "prefer_hedge", "size_auto", "notify_value", "notify_price", "notify_cash", "notify_news", "killer_mode", "maker_mode", "hub_ui", "refresh_secs", "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model", "tp_v2", "panel_rank_dollars", "idea_bar_strict", "smart_buy_gate", "ideas_shown", "knobs_live", "learned_guards", "mkt_hold", "stop_loss_mode", "overlap_guard", "overlap_n", "overlap_pct", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "loss_cut_default")
 
 
 def next_league():
@@ -6177,6 +6178,11 @@ def auto_sell_now(plan):
                    "picks_left": [round(c, 3) for c, _, _ in h.get("legs_left") or []],
                    "frac": round(o.get("frac", 1.0), 3), "kind": "combo", "side": "yes",
                    "live": any(lv for _, lv, _ in h.get("legs_left") or [])}
+            if why == "cut loss":                     # loss-cut firing record: legs, win chance, offer vs cost (re-measured later)
+                _lp = smart_params([tk for (_, tk), _ in h.get("need") or []])
+                rec["loss_cut"] = {"src": _lp.get("loss_src") or "league", "cutoff": _lp.get("loss"),
+                                   "chance": round(h["p"], 4), "offer": round(o["offer"], 2), "cost": round(h["cost"], 2),
+                                   "legs": [tk for (_, tk), _ in h.get("need") or []]}
             try:                                      # (#300) log only: the estimate smart sell held this sale against
                 rec["disc"] = round(kalshi_discount(rec["live"]), 4)
                 rec["est"] = round(rec["disc"] * h["p"] * h["pays"] * o.get("frac", 1.0), 2)
@@ -6753,7 +6759,7 @@ def single_sell_reason(x, bid, ask, track=True, cut_ok=False, more=None, cap=Non
         peak[t] = max(peak.get(t, 0.0), net)
     prm = {"tp": float(CFG.get("take_profit") or 0) / 100, "trail": CFG.get("lock_trail", True), "cut_ok": cut_ok,
            **knob_exit_prm([t])}                      # self-tuning's numbers (#228 PR3): {} while it is off
-    pr = smart_params([t])
+    pr = smart_params([t], single=True)
     rl = ride_lam()
     if CFG.get("smart_sell", True) and rl is not None:
         leg = _score_leg(t, x.get("kind") or "win", x.get("side") or "yes", x.get("sport") or "")
@@ -7352,7 +7358,7 @@ def more_eval(x, m, now=None):
     bid, ask, q = fresh
     res.update(bid=bid, ask=ask, q=q)
     x2 = dict(x, chance=q)
-    pr = smart_params([t])
+    pr = smart_params([t], single=True)
     n, cost = x.get("n") or 0, x.get("cost") or 0
     a, b = res["a"], res["b"]
     if not n or not cost:
@@ -7572,7 +7578,7 @@ def smart_sell_singles():
         bid = dollars(m, f"{side}_bid")
         ask = dollars(m, f"{side}_ask")
         cut_ok = False                                # the learned loss cut: only once every loss guard held
-        loss = smart_params([x["t"]])["loss"] if CFG.get("smart_sell", True) and ride_lam() is not None else None
+        loss = smart_params([x["t"]], single=True)["loss"] if CFG.get("smart_sell", True) and ride_lam() is not None else None
         if loss:
             cut_ok, gw = cut_loss_single_check(x, loss)
             if not cut_ok and x.get("state") == "live" and x.get("chance") is not None and x["chance"] <= loss:
@@ -10517,7 +10523,7 @@ def autosell_pass():
 # ---- the Raspberry Pi watcher (see watcher/combo_watcher.py) ----
 NTFY = "https://ntfy.sh"
 WATCHER_SYNCED = ("bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap",
-                  "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "learned_guards", "mkt_hold",
+                  "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "loss_cut_default", "learned_guards", "mkt_hold",
                   "auto_hedge", "hedge_cap", "prefer_hedge", "notify_value", "notify_price", "notify_cash", "notify_news",
                   "killer_mode", "maker_mode", "accept_pct", "size_min", "size_max", "budget", "include_live", "live_min",
                   "take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "panel_live", "line_model",
@@ -24853,6 +24859,9 @@ SMART_FILE = os.path.join(HERE, "combo_smart.json")
 SMART_DEFAULT = {"floor": 1.5, "lam": 1.0, "loss": None}
 SMART_BOUNDS = {"floor": (1.2, 2.0), "lam": (0.5, 2.0), "loss": (0.10, 0.30)}
 SMART_MIN_N, SMART_MIN_GAIN = 30, 0.02
+# The cautious starting loss cut (Pete, option A, docs/changes/loss-cut-default.md): until a league has its own ~30 results
+# a COMBO is cut at or under this win chance, every existing guard unchanged. Switch `loss_cut_default` (default on).
+LOSS_CUT_DEFAULT = 0.125
 SOCCER_LEAGUE = {"KXEPL": "epl", "KXLALIGA": "laliga", "KXSERIEA": "seriea", "KXBUNDESLIGA": "bundesliga",
                  "KXLIGUE1": "ligue1", "KXMLS": "mls", "KXLIGAMX": "ligamx"}
 LEAGUE_NAME = {"epl": "Premier League", "laliga": "La Liga", "seriea": "Serie A", "bundesliga": "Bundesliga",
@@ -24884,7 +24893,34 @@ def smart_table():
     return SMART_CACHE["d"]
 
 
-def smart_params(tickers):
+def smart_params(tickers, single=False):
+    """smart_params_walk plus the cautious default loss cut: a COMBO whose league has no record of its own gets
+    `loss` = LOSS_CUT_DEFAULT (12.5%) and `loss_src` "default" while the `loss_cut_default` switch is on. A league's own
+    record replaces it: its own value, or an explicit "stop cutting" the tuner chose (a stored None that nothing chose,
+    like the one an untouched league's file entry carries, is not that); singles never get it (the evidence was
+    combos only). While self-tuning's brake holds the league there is no default either (no cut is the strictest)."""
+    out = _smart_params_walk(tickers)
+    if out.get("loss") is None and not single and CFG.get("loss_cut_default", True) \
+            and not _loss_cut_chosen_off(bet_key(tickers)) and not more_braked(tickers):
+        out = dict(out, loss=LOSS_CUT_DEFAULT, loss_src="default")
+    return out
+
+
+def _loss_cut_chosen_off(key):
+    """True only when this league's own tuning explicitly chose no loss cut (smart_tune marked `loss_off`, or
+    self-tuning recorded smart_loss as off for it). A missing or merely-None value is not a choice."""
+    try:
+        if (smart_table().get(key) or {}).get("loss_off"):
+            return True
+        if knob_switch_on():
+            lv = (((knob_state_cached() or {}).get("groups") or {}).get(key) or {}).get("lv") or {}
+            return "smart_loss" in lv and lv["smart_loss"] is None
+    except Exception:
+        pass
+    return False
+
+
+def _smart_params_walk(tickers):
     """The smart-sell settings for a bet: its league's own once it has enough results, else its sport's,
     else everyone's, else the starting point (1.5x floor, standard risk, no selling at a loss). The learned loss
     cut is never borrowed (borrowing may only make selling at a loss stricter): only a league's own record turns
@@ -24984,7 +25020,7 @@ def sim_exit(c, until=None):
     lost leg's last (stale) price (#340). None = the whole path, as before."""
     if not STORE["db"] or c.get("kind") == "early" or not c.get("kick"):
         return None
-    pr = smart_params([l["ticker"] for l in c["legs"]])
+    pr = smart_params([l["ticker"] for l in c["legs"]], single=c.get("kind") != "combo")
     cut_at = _cut_guard_ts(c, _sl_paths(c), pr["loss"]) if pr["loss"] else None
     path = _paths(c)
     if until is not None:
@@ -25213,6 +25249,11 @@ def smart_tune(force=False):
     owned = knob_switch_on()          # #228 PR3: with 'Let smart sell tune its own numbers' on, self-tuning moves the
     for key, rows in groups.items():  # floor, risk weight and loss cut (one mover per value, #267); this only counts
         cur = {**SMART_DEFAULT, **{x: (d.get(key) or {}).get(x, SMART_DEFAULT[x]) for x in SMART_DEFAULT}}
+        stored_loss = (d.get(key) or {}).get("loss")      # what the file really holds: the default is never written to it
+        from_default = False
+        if cur["loss"] is None and CFG.get("loss_cut_default", True) and not (d.get(key) or {}).get("loss_off"):
+            cur["loss"] = LOSS_CUT_DEFAULT                # judged from the default in memory only; saved only if it moves
+            from_default = True
         n = len(rows)
         staked = sum(c["stake"] for c, _ in rows) or 1
 
@@ -25255,10 +25296,12 @@ def smart_tune(force=False):
             why = (f"{', '.join(parts)}: in {n} recent bets that would have returned {best_v:+.0%} on what was staked, "
                    f"vs {base:+.0%} with the old settings (and it also did better on the half of the games held "
                    f"back to check it)")
-            e.update(floor=best[0], lam=best[1], loss=best[2], why=why, at=int(time.time()))
+            keep_default = from_default and best[2] == LOSS_CUT_DEFAULT      # the loss did not move: keep the file's own
+            e.update(floor=best[0], lam=best[1], loss=stored_loss if keep_default else best[2], why=why,
+                     at=int(time.time()), loss_off=False if keep_default else best[2] is None)
             moved.append(f"{league_label(key)}: {why}")
         else:
-            e.update({x: cur[x] for x in SMART_DEFAULT})
+            e.update({x: cur[x] for x in SMART_DEFAULT if x != "loss"}, loss=stored_loss)
         d[key] = e
     for key, rows in sl_groups.items():                  # the stop-loss switch's guards, same league-by-league way
         e = dict(d.get(key) or {})
@@ -25808,6 +25851,27 @@ def _knob_from(g, key, n=None):
 
 
 def _knob_league(key, d, now=None):
+    """_knob_league_raw plus the cautious default loss cut, so the card shows what live smart sell really uses."""
+    out = _knob_league_raw(key, d, now)
+    v = out.get("smart_loss")
+    if v and v[0] is None and CFG.get("loss_cut_default", True) and not _loss_cut_chosen_off(key) \
+            and not _key_braked(key):
+        out["smart_loss"] = (LOSS_CUT_DEFAULT, "starting value: the cautious default for combos (12.5%) until this league has its own record")
+    return out
+
+
+def _key_braked(key):
+    """more_braked for a league key (the card has no tickers): any group in its chain is braked; unreadable = braked."""
+    if not knob_switch_on():
+        return False
+    try:
+        st, now = knob_state_cached(), time.time()
+        return any(_knob_braked(st, g, now) for g in dict.fromkeys((key, _knob_sport(key), "all")) if g)
+    except Exception:
+        return True
+
+
+def _knob_league_raw(key, d, now=None):
     """The knobs learned by league, for one league key: {name: (value, whose record)}. With the switch on (#228 PR3)
     the exit knobs come from the live record (knob_live_value: borrowed only stricter, the start while braked)."""
     sl, lg_ = _knob_sl(key, d)
@@ -26946,7 +27010,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                               + dt.datetime.fromtimestamp(float(st["brake"][g]["until"]), PACIFIC).strftime("%b %-d")}]
                 groups[g] = e
                 continue
-            cur = {}
+            cur, loss_dflt = {}, False
             for k in tun:                             # where each knob stands for this group now: what live uses from
                 n_ = k["name"]                        # its OWN record, re-read every run (#267)
                 if live and n_ in knob_live_names():          # what live really uses, a borrowed (stricter) value included,
@@ -26955,6 +27019,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     cur[n_] = _knob_sl(g, smart)[0][KNOB_SL_FIELD[n_]]           # (a borrowed value only stricter)
                 else:
                     cur[n_] = _knob_seed(n_, g, smart, dial)
+            if cur.get("smart_loss") is None and CFG.get("loss_cut_default", True) and not _loss_cut_chosen_off(g):
+                cur["smart_loss"] = LOSS_CUT_DEFAULT      # judged from what live really uses (the cautious default), not "off"
+                loss_dflt = True                          # ...in memory only: never written into the test values `v` below
             last, best, best_live = [], None, None
             try:                                      # what the live code uses for this group today, logged beside each row
                 live_now = {n_: x for n_, (x, _) in _knob_league(g, smart, now).items()}
@@ -26977,7 +27044,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                     last.append({"knob": n_, "status": "thin", "n": len(rs),
                                  "say": f"{k['label']}: needs {globals()[KNOB_MIN_N[jd]]} results of its own (has {len(rs)})"})
                     continue
-                v[n_] = cur[n_]                       # the group's own record from here on
+                if not (n_ == "smart_loss" and loss_dflt):
+                    v[n_] = cur[n_]                   # the group's own record from here on (the default is no record)
                 staked = (5.0 * len(rs)) if jd in ("sb", "sbev") else float(len(rs)) if jd in ("brk", "feed") else \
                     (sum(r["cost"] for r in rs) or 1.0) if jd == "hedge" else (sum(c["stake"] for c, _, _ in rs) or 1.0)
                 top = SB_DIAL_MAX if len(rs) >= SB_DIAL_SOFT_N else SB_DIAL_SOFT
@@ -27318,8 +27386,8 @@ def knob_brake_pass(now=None, force=False):
                 if live and off:                              # its own self-tuned numbers back to the start, newer than
                     lv = dict(e.get("lv") or {}) if isinstance(e.get("lv"), dict) else {}     # anything smart_tune set
                     lat = dict(e.get("lat") or {}) if isinstance(e.get("lat"), dict) else {}
-                    for n in off:
-                        if n in knob_live_names():
+                    for n in off:                         # `off` holds only leagues' OWN values, so smart_loss goes to its
+                        if n in knob_live_names():        # start None = an explicit "no cut" (also blocks the smart.json
                             lv[n], lat[n] = KNOB_BY[n]["start"], now
                     e.update(lv=lv, lat=lat, lstep_at=now,
                              hist=(list(e.get("hist") or []) + [{"at": int(now), "knob": "*", "brake": True, "live": True,
@@ -29603,10 +29671,10 @@ def _probit(p):
     return statistics.NormalDist().inv_cdf(min(max(p, 1e-4), 1 - 1e-4))
 
 
-def exit_settings(tickers):
+def exit_settings(tickers, single=False):
     """Smart sell's settings for a bet, as exit_policy takes them (the same reads take_profit_reason makes), plus
     the parts the simulator needs to rebuild the risk weight step by step."""
-    pr = smart_params(list(tickers))
+    pr = smart_params(list(tickers), single=bool(single))
     rl = ride_lam()
     smart = bool(CFG.get("smart_sell", True) and rl is not None)
     sl = stoploss_params(list(tickers))
@@ -29687,7 +29755,7 @@ def simulate_exit(spec, n_paths=SB_PATHS, stake=SB_STAKE, seed=None, prm=None, f
     t0 = time.perf_counter()
     legs = spec["legs"]
     combo = spec["kind"] == "combo"
-    prm = prm or exit_settings(spec["tickers"])
+    prm = prm or exit_settings(spec["tickers"], single=not combo)
     fr = FEE_RATE if fee_rate is None else fee_rate
     fee = lambda p: fr * p * (1 - p)                    # noqa: E731
     seed = int(hashlib.md5(spec.get("id", "").encode()).hexdigest()[:8], 16) if seed is None else seed
@@ -33337,7 +33405,7 @@ def exit_replay(row, path, prm=None, gain=SB_GAIN):
     if not price or not 0 < price < 1 or len(path) < 3:
         return None
     tks = json.loads(row.get("tickers") or "[]") if isinstance(row.get("tickers"), str) else row.get("tickers") or []
-    prm = prm or exit_settings(tks)
+    prm = prm or exit_settings(tks, single=True)
     P = SB_STAKE / (price + single_fee(price))
     cost, peak = SB_STAKE, 0.0
     code = ticker_sport(tks[0]) if tks else ""

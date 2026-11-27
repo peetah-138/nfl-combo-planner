@@ -8,6 +8,7 @@
 import os, time, tempfile, importlib.util, json, inspect, re
 os.environ["COMBOWATCH_HOME"] = os.path.abspath("wahome")
 spec = importlib.util.spec_from_file_location("E", "wahome/engine.py"); E = importlib.util.module_from_spec(spec); spec.loader.exec_module(E)
+E.CFG["loss_cut_default"] = False   # tests the older machinery; the default is tested in t_cutloss_default.py
 E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtemp()
 E.SMART_FILE = os.path.join(E.HERE, "smart.json"); E.SMART_CACHE["at"] = 0
 E.SB_DIAL_FILE = os.path.join(E.HERE, "sb.json"); E.SB_GATE["dial"] = None
@@ -140,7 +141,7 @@ LIVE_OK = ["knob_auto_slip", "knob_exit_prm", "knob_shadow", "knob_shadow_view",
 LIVE_OK = sorted(LIVE_OK)
 ok("outside the registry only analytics and, from PR3, smart sell's exit numbers (behind the switch) read it"
    + (f" {uses}" if uses != LIVE_OK else ""), uses == LIVE_OK)
-_callers = {n: [f for f in ("take_profit_reason", "single_sell_reason", "exit_settings", "smart_params", "smart_tune")
+_callers = {n: [f for f in ("take_profit_reason", "single_sell_reason", "exit_settings", "_smart_params_walk", "smart_tune")
                 if n in inspect.getsource(getattr(E, f))] for n in ("knob_exit_prm", "knob_smart_params", "knob_switch_on")}
 ok("#228 PR4: smart sell's own slip (auto_slip) is read only by auto_sell_now, for a combo's automatic sale",
    (lambda a: "knob_auto_slip(" in a and "CASH_SLIP" not in a.replace("AUTO_CASH_SLIP", ""))(
@@ -152,7 +153,7 @@ ok("...and your own Cash out retries keep CASH_SLIP, listed as never moving by i
 ok("...and exactly where: the two sellers and Smart Buy's exit settings take the exit numbers, smart_params the "
    "floor/risk/loss, smart_tune only asks the switch", _callers == {
        "knob_exit_prm": ["take_profit_reason", "single_sell_reason", "exit_settings"],
-       "knob_smart_params": ["smart_params"], "knob_switch_on": ["smart_params", "smart_tune"]})
+       "knob_smart_params": ["_smart_params_walk"], "knob_switch_on": ["_smart_params_walk", "smart_tune"]})
 wsrc_ = open("wtest/combo_watcher.py", encoding="utf-8").read() if os.path.exists("wtest/combo_watcher.py") else None
 if wsrc_ is not None:
     code_ = "\n".join(l.split("#")[0] for l in wsrc_.split("\n"))          # code only, not comments

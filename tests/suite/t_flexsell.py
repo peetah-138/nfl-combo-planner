@@ -159,18 +159,18 @@ for off in (9.7, 9.9, 12.0):
     ok(f"ON: the old rule's own accept ({off}) is still taken", accepts == [10.0, off])
 
 # ---- a loss cut: only while the learned cut-off still holds
-E.smart_params = lambda tks: {"loss": 0.45}
+E.smart_params = lambda tks, **kw: {"loss": 0.45}
 LIVE["f"] = 0.3
 msg, info = run(["cancelled", "executed"], offers=[6.0], auto=True, cost=12, line=0.0, cutting=True, floor=None)
 ok("loss cut, still under the cut-off (0.30 <= 0.45), offer above the backstop: taken", accepts == [10.0, 6.0], (accepts, info))
-E.smart_params = lambda tks: {"loss": 0.2}
+E.smart_params = lambda tks, **kw: {"loss": 0.2}
 LIVE["f"] = 0.5
 msg, info = run(["cancelled", "executed"], offers=[8.6], auto=True, cost=12, line=0.0, cutting=True, floor=None)
 ok("loss cut whose cut-off no longer holds (0.50 > 0.20), offer 8.60 (over the 8.50 backstop) under waiting and under 97% of the first: refused",
    accepts == [10.0] and info["flex"]["why"] == "waiting is worth more now", (accepts, info))
 
 # ---- no Never exception: a below-cost auto sale is judged only by the flexible rule, backstop and guards
-E.smart_params = lambda tks: {"loss": None}
+E.smart_params = lambda tks, **kw: {"loss": None}
 LIVE["f"] = 0.3
 msg, info = run(["cancelled", "executed"], offers=[6.2], auto=True, cost=12, line=8.5)
 ok("below cost (12.00), 6.20 beats waiting now: taken (no Never floor)", accepts == [10.0, 6.2] and info["flex"]["why"] == "selling beats waiting now", (accepts, info))
