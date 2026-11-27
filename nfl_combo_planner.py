@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.26.144"
+VERSION = "2026.11.27.145"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -33,6 +33,8 @@ CFG = {
     "mom_shadow": True,   # record the momentum-exit shadow (what a drop-based rule WOULD do; write-only, never sells); false = off
     "sig_shadow": True,   # record the early-exit test's shadow tables (write-only, nothing reads them); false = off
     "broad_shadow": True,   # watch-all recorder (bp_* tables): price paths + signals for every market already fetched; write-only; false = off
+    "wp_shadow": True,    # (#483) record ESPN win chance beside Kalshi and our model (write-only, nothing reads it); false = off
+    "wp_hist": True,      # (#483) keep ESPN's win-chance history and betting line for followed games (rate-limited GETs); false = off
     "live_min": 25,       # a team in a game under way needs at least this % live chance to be picked
     "cash_pct": 90,       # suggest cashing out when Kalshi's offer is at least this % of what holding is worth
     "auto_cash": True,    # during game-day alerts, ask Kalshi for cash-out offers on combos worth checking
@@ -8528,6 +8530,8 @@ def game_detail(event_id, code, max_age=6, budget=None):
         r = requests.get(url, params={"event": str(event_id)}, timeout=10)
         data = r.json() if r.ok else {}
         out = _parse_game_detail(data, event_id) if data else {}
+        if data:
+            wp_hist_ingest(code, event_id, data)             # (#483) record-only: reuses this fetch, never raises
     except (requests.RequestException, ValueError, TypeError, AttributeError) as err:
         # Keep serving the last good copy, but log it once per game (like kalshi_score/display_score) so a
         # persistent feed break is visible instead of silently falling back forever.
@@ -9366,6 +9370,7 @@ def fetch_scores(max_age=None, code=None):
                         "redzone": bool(sit.get("isRedZone")), "sport": code,
                         "game": ev.get("id"), "day": espn_day(ev.get("date")),
                         "wp": _wp(prob, me.get("homeAway")) if state == "in" else None,
+                        "wp_play": (str(lp.get("id") or "")[:40] or None) if state == "in" else None,   # (#483) the play that wp belongs to
                         "brk": state == "in" and any(x in typ.get("name", "") for x in ("HALFTIME", "END_PERIOD", "END_OF_PERIOD"))}
                 if state == "in" and code in CB_STAT_SPORTS:   # (#348) shots etc. ESPN already sent: comeback model only
                     info["stats"], info["ostats"] = _cb_team_stats(me), _cb_team_stats(opp)
@@ -18530,9 +18535,12 @@ def manual_cap_msg(code, spent, add, budget):
     lg = LEAGUES[code]
     daily = lg["slate"] == "day"
     left = max(0.0, budget - spent)
+    need = math.ceil((spent + add) / 10 - 1e-9) * 10     # the cap slider moves in $10 steps (up to $200), as in cap_msg (#112)
+    if need > 200:
+        need = spent + add
     return (f"That would bring your {lg['name']} spending {'that day' if daily else 'that week (Tue to Mon)'} to "
             f"{money(spent + add)}, over your {money(budget)} cap. You have {money(left)} left. To go ahead, raise "
-            f"it to at least {money(spent + add)} in Settings > Money > {'Daily cap' if daily else 'Weekly cap'} "
+            f"it to at least {money(need)} in Settings > Money > {'Daily cap' if daily else 'Weekly cap'} "
             f"(for {lg['name']}).")
 
 
@@ -20881,6 +20889,10 @@ def resolve_closes(limit=150):
     except Exception:
         pass
     try:
+        wp_resolve(limit)                              # (#483) outcomes for the ESPN win-chance recorder
+    except Exception:
+        pass
+    try:
         resolve_line_fairs(limit)
     except Exception:
         pass
@@ -22240,6 +22252,11 @@ def panel_collect(book_snap, code, log=print):
     broad_shadow(code, every, lc_all)                  # watch-all recorder: write-only, no fetch, never raises
     slate_shadow(code, cands)                          # (#332) slate concentration aggregates: write-only, never raises
     signal_events(code, games)                         # news + game-context recorder: write-only, never raises
+    try:                                               # (#483) the live games the panel screened out, with the reason
+        scr = {e: (every[e], w) for e, w in (LIVE_WHY.get(code) or {}).items() if e in every}
+    except Exception:
+        scr = None
+    espn_wp_record(code, games, scr)                   # (#483) ESPN win chance recorder: write-only, never raises
     sb_universe_stash(code, games, set(live))          # Smart Buy (#137): every priced market, scored later on paper
     smart_buy_shadow(cands, "panel")                   # Smart Buy stage 1: logs only, never changes the candidates
     smart_buy_shadow_ideas()
@@ -24090,6 +24107,26 @@ def panel_record():
 # file means OFF. Turning it on needs the paper gate passed, or Pete's explicit "override the paper gate" (recorded).
 FA = {"bank": 300.0, "cap": 30.0, "max_open": 15, "streak": 4, "day_loss": 20.0}
 FA_LIMITS = {"bank": (50, 1000), "cap": (2, 100), "max_open": (1, 30), "streak": (2, 10), "day_loss": (2, 100)}
+# (#144 soft brake, Pete: "I wouldn't want it to completely turn itself off. It should just adjust.") A losing streak no
+# longer stops full auto: it goes CAUTIOUS. Bet size and the daily cap shrink to a share of normal and the buy bar goes up one
+# notch per level (combos only: FAL's bar step, in points over the league's combo cut-off). It only ever makes full auto
+# more conservative than the saved limits. Levels: 100% (normal), 50%, 25% (the floor; never off, never above normal).
+# Each level back up needs 2 winning (non-loss) full-auto bets in a row since the last change, or 3 calm days with no loss.
+# 2 more losses in a row while cautious step it down one level. The daily loss limit pause is separate and unchanged.
+# THE CONFIDENCE LEVEL (Pete: full auto should be constantly adjusting): one number, 0 = the user's normal settings (the
+# ceiling, never exceeded), steps DOWN on losses and back UP on wins or calm. Everything the level adjusts is one row of
+# FA_LADDER, so a later adjustable setting plugs in by adding a key to every row and one reader (_fa_knob). Today's knobs:
+#   size: share of the normal bet size   cap: share of the normal daily cap   bar: extra points on the combo cut-off
+FA_LADDER = ({"size": 1.0, "cap": 1.0, "bar": 0.0},
+             {"size": 0.5, "cap": 0.5, "bar": 0.5},
+             {"size": 0.25, "cap": 0.25, "bar": 1.0})
+FA_CAUTION = {"factors": tuple(r["size"] for r in FA_LADDER), "wins": 2, "calm_days": 3, "drop_losses": 2}
+
+
+def _fa_knob(level, name):
+    """The level's value for one adjustable setting; a level or name out of range reads as the most cautious row."""
+    row = FA_LADDER[min(max(int(level), 0), len(FA_LADDER) - 1)]
+    return row[name]
 FA_WHY = {"bank": "bankroll", "cap": "daily spend cap", "max_open": "open bets", "streak": "losses in a row",
           "day_loss": "daily loss limit"}
 
@@ -24112,6 +24149,9 @@ def fa_state():
         out[k] = int(min(hi, max(lo, v))) if k in ("max_open", "streak") else round(min(hi, max(lo, v)), 2)
     if not isinstance(out.get("bets"), dict):
         out["bets"] = {}
+    out.setdefault("brake", None)
+    if not isinstance(out.get("caution"), dict):
+        out["caution"] = {"level": 0, "base_at": 0, "since": 0, "why": ""}
     return out
 
 
@@ -24178,7 +24218,14 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
         if on and explicit_on is not True and st.get("on") is not True:
             refused.append(True)                    # re-checked under the lock: only the explicit turn-on may switch it on
             return
+        was_open = _ap_open_base(st)
         st.update({k: (int(v) if k in ("max_open", "streak") else round(v, 2)) for k, v in clean.items()})
+        if "max_open" in clean and int(clean["max_open"]) != was_open and isinstance(st.get("lessons"), dict):     # (#145) Pete's own number replaces what autopilot learned
+            for k in ("vals", "since", "holds"):
+                if isinstance(st["lessons"].get(k), dict):
+                    st["lessons"][k].pop("open_slots", None)
+            if isinstance(st["lessons"].get("last"), dict):
+                st["lessons"]["last"].pop("open", None)
         if on:
             was = st.get("on") is True
             st["on"], st["gate"] = True, gate
@@ -24189,12 +24236,15 @@ def fa_set(on, override=False, reset_brake=False, limits=None, now=None, explici
                 _fa_note(st, "on", now, gate=gate)
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
+                st["caution"] = {"level": 0, "base_at": round(now), "since": 0, "why": ""}
+                _fa_note(st, "caution", now, text="You reset it: back to normal.", level=0)
         else:
             if st.get("on") is True:
                 _fa_note(st, "off", now)
             st["on"] = False
             if reset_brake:
                 st["brake"], st["reset_at"] = None, round(now)
+                st["caution"] = {"level": 0, "base_at": round(now), "since": 0, "why": ""}
     _fa_update(fn)
     if refused:
         return False, "Full auto is off, so nothing was changed. Use Turn on if you want it running.", {}
@@ -24215,6 +24265,120 @@ def _fa_rows(now, days=None):
         first = _panel_day(now - days * 86400)
         rows = store_rows("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
     return [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
+
+
+def _fa_stamp(c):
+    return c.get("bought_at") or c.get("at") or 0
+
+
+def _fa_settle_key(c):
+    """When a bet's money moved (cash-out, else Kalshi's settle time), falling back to when it was bought."""
+    return c.get("cashed_at") or c.get("settled_at") or _fa_stamp(c)
+
+
+FA_SEEN_MAX = 200
+
+
+def _fa_caution_eval(st, after, run, now, legacy=False):
+    """Read-only: the confidence level as it stands now. The saved state is replayed over the full-auto bets settled since
+    it was last updated (`after`, oldest first, bets already counted are skipped by stamp), one bet at a time, so several
+    bets settling between two passes give the same result as one at a time. A loss (real P/L under 0) counts toward a step
+    down, a win (over 0) toward a step up, a push (exactly 0) is neutral. Returns level (0 normal ... top = the floor),
+    factor, pct, why, recovery numbers, `saved` (what to persist) and `events` (history lines). Pure: the pass saves it."""
+    F = FA_CAUTION
+    top = len(F["factors"]) - 1
+    c0 = st.get("caution") if isinstance(st.get("caution"), dict) else {}
+
+    def num(k, d=0.0):
+        v = c0.get(k)
+        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else d
+    level = min(top, max(0, int(num("level"))))
+    base, since, loss_at = num("base_at"), num("since"), num("loss_at")
+    floor = num("floor_at")
+    seen = [x for x in (c0.get("seen") or []) if isinstance(x, str)] if isinstance(c0.get("seen"), list) else None
+    seen_set = set(seen or [])
+    wl, ww = int(num("wl")), int(num("ww"))
+    why = c0.get("why") if isinstance(c0.get("why"), str) else ""
+    events = []
+    if legacy and level == 0:                         # an older version's saved streak pause: not a stop, not silent either
+        level, wl, ww, since = top, 0, 0, now
+        base = max([base] + [_fa_stamp(c) for d, c in after])
+        seen = [f"{d}|{c.get('id')}" for d, c in after]; seen_set = set(seen)
+        why = f"Brake from before this update: tap Back to normal now, or it eases back by itself (after {F['wins']} winning bets or {F['calm_days']} calm days)."
+        events.append(f"Cautious ({round(F['factors'][top] * 100)}%): {why}")
+    if seen is None:                                  # state from before bets were tracked by id: the old stamp line stands in for it
+        seen = [f"{d}|{c.get('id')}" for d, c in after if _fa_stamp(c) <= base]
+        seen_set, floor = set(seen), max(floor, base)
+    fresh = [(d, c) for d, c in after if f"{d}|{c.get('id')}" not in seen_set and _fa_settle_key(c) > floor]
+    for d, c in sorted(fresh, key=lambda x: (_fa_settle_key(x[1]), _fa_stamp(x[1]))):   # in the order the money moved, each bet once
+        stamp = _fa_settle_key(c)
+        seen.append(f"{d}|{c.get('id')}")
+        base = max(base, _fa_stamp(c))
+        pl = panel_pl(c) or 0
+        if pl == 0:
+            continue                                  # a push: neither a win nor a loss
+        if pl < 0:
+            wl, ww, loss_at = wl + 1, 0, stamp
+            if level == 0 and wl >= st["streak"]:
+                level, wl, since = 1, 0, stamp
+                why = f"{st['streak']} losing bets in a row (the limit is {st['streak']})."
+                events.append(f"Cautious ({round(F['factors'][1] * 100)}%): {why}")
+            elif level and wl >= F["drop_losses"] and level < top:
+                level, wl, since = level + 1, 0, stamp
+                why = f"{F['drop_losses']} more losing bets in a row while cautious."
+                events.append(f"Cautious, tighter ({round(F['factors'][level] * 100)}%): {why}")
+        else:
+            wl = 0
+            if level:
+                ww += 1
+                if ww >= F["wins"]:
+                    level, ww, since = level - 1, 0, stamp
+                    events.append("Back to normal after %d winning bets." % F["wins"] if level == 0 else
+                                  f"Easing up to {round(F['factors'][level] * 100)}% after {F['wins']} winning bets.")
+                    if level == 0:
+                        why = ""
+    if level and now - max(since, loss_at) >= F["calm_days"] * 86400:
+        level, ww, wl, since = level - 1, 0, 0, now
+        events.append("Back to normal after %d calm days with no loss." % F["calm_days"] if level == 0 else
+                      f"Easing up to {round(F['factors'][level] * 100)}% after {F['calm_days']} calm days with no loss.")
+        if level == 0:
+            why = ""
+    if len(seen) > FA_SEEN_MAX:                       # bounded: what falls off is covered by floor_at (its newest settle time)
+        gone = seen[:len(seen) - FA_SEEN_MAX]
+        gs = set(gone)
+        floor = max([floor] + [_fa_settle_key(c) for d, c in after if f"{d}|{c.get('id')}" in gs])
+        seen = seen[-FA_SEEN_MAX:]
+    factor = F["factors"][level]
+    saved = {"level": level, "base_at": base, "since": since, "why": why, "wl": wl, "ww": ww, "loss_at": loss_at,
+             "floor_at": floor, "seen": seen}
+    calm_left = max(0.0, round((max(since, loss_at) + F["calm_days"] * 86400 - now) / 86400, 1)) if level else None
+    prev = {k: c0.get(k, 0 if k not in ("why", "seen") else "" if k == "why" else None) for k in saved}
+    return {"level": level, "factor": factor, "pct": round(factor * 100), "why": why, "wins": ww if level else 0,
+            "wins_need": F["wins"], "calm_days_left": calm_left, "bar_extra": _fa_knob(level, "bar"), "knobs": dict(FA_LADDER[level]),
+            "saved": saved, "events": events, "changed": saved != prev}
+
+
+def _fa_scaled(stake, factor):
+    """A stake at `factor` of normal: rounded down to the cent, never under the $2 minimum, never above the normal stake."""
+    if factor >= 1:
+        return stake
+    return min(stake, max(PANEL_OWN_MIN, math.floor(stake * factor * 100 + 1e-9) / 100))
+
+
+def _fa_caution_bar(items, level, learned=None):
+    """Cautious only: combos must clear their league's cut-off by one more notch per level (FA_LADDER's bar).
+    Tighten-only; singles and lines are untouched. Raises on a bad value (the pass then approves nothing)."""
+    extra = _fa_knob(level, "bar")
+    kept, held = [], []
+    for c in items:
+        if c.get("kind") == "combo" and extra > 0:
+            tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+            lrn = float((learned or {}).get(bet_key(tks) if tks else "mix", 0.0) or 0.0)   # the learned bar and the cautious one ADD
+            ok = float(c.get("pct") or 0) >= combo_cutoff(c["code"], len(c["legs"]), c["legs"]) + (max(lrn, 0.0) + extra) / 100 - 1e-9
+        else:
+            ok = True
+        (kept if ok else held).append(c)
+    return kept, held
 
 
 def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=False):
@@ -24252,16 +24416,18 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
         run += 1
     loss_today = round(sum(panel_pl(c) or 0 for d, c in settled if d == day), 2)
     brake = st.get("brake") if isinstance(st.get("brake"), dict) else None
-    if brake and brake.get("kind") == "day" and brake.get("day") != day:
+    legacy = bool(brake and brake.get("kind") == "streak")   # an older version's streak pause: now it is caution, never a stop
+    if brake and (brake.get("kind") != "day" or brake.get("day") != day):
         brake = None                                      # a daily-loss pause ends with the panel day
-    if not brake and run >= st["streak"]:
-        brake = {"kind": "streak", "why": f"{run} losing bets in a row (the limit is {st['streak']}). Reset it when you're ready."}
-    elif not brake and loss_today <= -st["day_loss"]:
+    caut = _fa_caution_eval(st, after, run, now, legacy)
+    if not brake and loss_today <= -st["day_loss"]:
         brake = {"kind": "day", "day": day, "why": f"down {money(-loss_today)} today (the limit is {money(st['day_loss'])}). It starts again tomorrow."}
-    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": st["cap"], "open": open_n,
-           "max_open": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
+    cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap"), 2)
+    mo = ap_open_limit(st)                                # (#145) Pete's open-bet number, or what autopilot moved it to (8 to 20)
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "caution": caut, "open": open_n,
+           "max_open": mo, "max_open_set": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
-           "room": round(max(0.0, st["cap"] - spent), 2), "slots": max(0, st["max_open"] - open_n)}
+           "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, mo - open_n)}
     b = []
     if paused or (TRADING_PAUSED and TRADING_PAUSED()):
         b.append("Pause is on. Nothing new is approved or bought until you turn Pause off.")
@@ -24270,11 +24436,14 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if brake:
         b.append("Paused itself: " + brake["why"])
     if out["room"] < PANEL_OWN_MIN:
-        b.append(f"Today's {money(st['cap'])} spending cap is used up ({money(spent)} spent).")
+        b.append(f"Today's {money(cap_eff)} spending cap is used up ({money(spent)} spent)"
+                 + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else "."))
+    slot_msg = f"{open_n} bets are open, the most it allows is {mo}."
     if out["slots"] <= 0:
-        b.append(f"{open_n} bets are open, the most it allows is {st['max_open']}.")
+        b.append(slot_msg)
     if free < PANEL_OWN_MIN:
         b.append(f"The {money(st['bank'])} bankroll is all riding or lost ({money(max(free, 0))} free).")
+    out["slots_only"] = bool(b) and all(x == slot_msg for x in b)   # (#145) the open-bet limit is the ONLY thing in the way
     if read_positions and not b:
         try:
             _held_all()
@@ -24318,6 +24487,122 @@ def _fa_overlap_ok(c):
         return False
 
 
+def _fa_candidates(st, real, now, caut, log, quiet=False):
+    """The bets this pass could approve or add, before the size, cap, bankroll and open-bet checks: the fresh draft, or the
+    extras on the approved panel, minus what Autopilot's learned numbers and a cautious level's higher bar leave out. None =
+    approve nothing (no panel to act on, or a check that could not be made). `quiet` skips the 'left out' log lines."""
+    status = real.get("status")
+    if status == "draft":
+        items = [c for c in real.get("items", []) if c.get("state") in (None, "draft", "")]
+    elif status == "approved":
+        x = panel_extras(real)
+        items = [c for c in ((x or {}).get("items") or []) if _fa_overlap_ok(c)]
+    else:
+        return None
+    if fal_on(st):                                        # (#144) skip-only: what the learned numbers say to leave out
+        try:
+            items, held = fal_filter(items, st, now)
+        except Exception as err:                          # a malformed value or any error: approve nothing this pass
+            log("full auto lessons: nothing approved:", type(err).__name__, err)
+            return None
+        if held and not quiet:
+            log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
+    if caut["level"]:                                     # (#144 soft brake) cautious: one more notch on the bar, tighten-only
+        try:
+            lv, lerr = _fal_vals(st) if fal_on(st) else ({"bar": {}}, None)
+            if lerr:
+                raise ValueError(lerr)
+            items, held = _fa_caution_bar(items, caut["level"], lv["bar"])
+        except Exception as err:
+            log("full auto cautious: nothing approved:", type(err).__name__, err)
+            return None
+        if held and not quiet:
+            log(f"full auto cautious: left out {len(held)} bet{'' if len(held) == 1 else 's'} under the higher bar")
+    return items
+
+
+# ---- (#145) evidence for the open-bet limit. One row per bet full auto bought ("taken": how many bets were already open when
+# it was bought) or turned away ONLY because the open-bet limit was full ("skip": it fit the cap, the bankroll and every bar).
+# Skips are settled later from Kalshi's results (held to the end, after fees); taken bets use what they really made. Writing
+# these rows buys nothing and never blocks a buy: any error here is logged and the pass carries on.
+FA_SLOT_RUN = {"at": 0.0}
+
+
+def _fa_slot_table():
+    store_x("create table if not exists fa_slots(key text primary key, ts real, day text, kind text, open_at int, stake real, "
+            "pays real, tickers text, outcome text, pnl real)")
+    store_x("create index if not exists fa_slots_t on fa_slots(ts)")
+
+
+def _fa_slot_pays(c, s):
+    """What a bet of `s` dollars would pay if it won, held to the end (None when it can't be told: then it isn't evidence)."""
+    kind = c.get("kind")
+    normal = float(c.get("stake") or 0)
+    if normal <= 0 or s <= 0:
+        return None
+    if kind == "combo":
+        pays = c.get("pays") or normal * float(c.get("pct") or 0) * float(c.get("fair_mult") or 1)
+        return float(pays) * s / normal if pays else None
+    if kind == "early":
+        return None                                      # an exit-order bet: no plain held-to-the-end result to compare
+    p_ = c.get("paid") or c.get("price")
+    return s / (float(p_) + single_fee(float(p_))) if p_ and 0 < float(p_) < 1 else None
+
+
+def fa_slot_taken(items, ids, book, open_n, day, now, log=print):
+    """Record the bets this pass is buying with how many bets were open just before each. Never raises."""
+    try:
+        _fa_slot_table()
+        for i, c in enumerate(x for x in items if x["id"] in ids):
+            store_x("insert or replace into fa_slots values(?,?,?,?,?,?,?,?,?,?)",
+                    (f"{day}|{c['id']}", now, day, "taken", int(open_n) + i, float(book.get(c["id"]) or 0), None, None, None, None))
+    except Exception as err:
+        log("full auto open-bet evidence:", type(err).__name__, err)
+
+
+def fa_slot_skips(items, level, v, open_at, real, now, log=print):
+    """Record bets turned away only for want of a free slot (they must fit the room and the free bankroll as they stood).
+    One row per bet, never overwritten (a bet bought later replaces it with its 'taken' row). Never raises."""
+    try:
+        _fa_slot_table()
+        day = _panel_day(real.get("at"))
+        room, free, n = float(v["room"]), float(v["free"]), 0       # as if each turned-away bet had been bought, in order
+        for c in items:
+            normal = float(c.get("stake") or 0)
+            s = _fa_scaled(normal, _fa_knob(level, "size"))
+            if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01:
+                continue
+            pays = _fa_slot_pays(c, s)
+            tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+            if not pays or not tks:
+                continue
+            store_x("insert or ignore into fa_slots values(?,?,?,?,?,?,?,?,?,?)",
+                    (f"{day}|{c['id']}", now, day, "skip", int(open_at) + n, round(s, 2), round(pays, 4),
+                     json.dumps([c.get("kind")] + tks), None, None))
+            room, free, n = room - s, free - s, n + 1
+    except Exception as err:
+        log("full auto open-bet evidence:", type(err).__name__, err)
+
+
+def fa_slot_settle(now, limit=100):
+    """Give each turned-away bet its result once Kalshi has settled every leg: dollars it would have made held to the end,
+    after fees. Also drops rows older than FAL_OPEN['keep']. Quietly leaves a bet unresolved when a leg isn't settled yet."""
+    _fa_slot_table()
+    rows = store_rows_strict("select key, tickers, stake, pays from fa_slots where kind='skip' and outcome is null and ts < ? "
+                             "order by ts limit ?", (now - 3 * 3600, limit))
+    legs = {r["key"]: json.loads(r["tickers"]) for r in rows}
+    res = fetch_results({t for v in legs.values() for t in v[1:]}) if legs else {}
+    for r in rows:
+        kind, tks = legs[r["key"]][0], legs[r["key"]][1:]
+        rs = [res.get(t) for t in tks]
+        out = "lost" if "no" in rs else "won" if rs and all(x == "yes" for x in rs) else None
+        if not out:
+            continue
+        pnl = _lgsh_pnl(out, r["stake"], r["pays"]) if kind == "combo" else (r["pays"] - r["stake"] if out == "won" else -r["stake"])
+        store_x_strict("update fa_slots set outcome=?, pnl=? where key=?", (out, round(pnl, 4), r["key"]))
+    store_x("delete from fa_slots where ts < ?", (now - FAL_OPEN["keep"],))
+
+
 _FA_LOCK = threading.Lock()
 
 
@@ -24342,46 +24627,66 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         return None
     now = now or time.time()
     v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
-    if v["brake"] and not (st.get("brake") or {}).get("kind"):
-        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"])))
+    sb = st.get("brake") if isinstance(st.get("brake"), dict) else {}
+    if v["brake"] and not (sb.get("kind") == "day" and sb.get("day") == v["brake"].get("day")):
+        _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"], text="Paused for the day: " + v["brake"]["why"])))
         log("full auto paused itself:", v["brake"]["why"])
+    caut = v["caution"]
+    if caut["changed"] or (isinstance(st.get("brake"), dict) and st["brake"].get("kind") == "streak"):
+        def _save_caution(s):
+            if s.get("caution") != st.get("caution") or s.get("reset_at") != st.get("reset_at"):
+                return                                    # Pete reset (or another writer changed it) since this pass read: his tap wins
+            s["caution"] = caut["saved"]
+            if isinstance(s.get("brake"), dict) and s["brake"].get("kind") == "streak":
+                s["brake"] = None
+            for e in caut["events"]:
+                _fa_note(s, "caution", now, text=e, level=caut["level"])
+        _fa_update(_save_caution)
+        for e in caut["events"]:
+            log("full auto:", e)
     if v["blockers"]:
+        if v.get("slots_only") and now - FA_SLOT_RUN["at"] >= FAL_OPEN["look"]:   # (#145) record what the full limit turned away (evidence only; buys nothing)
+            FA_SLOT_RUN["at"] = now
+            try:
+                real0 = panel_get("real")
+                items0 = _fa_candidates(st, real0, now, caut, log, quiet=True) if real0 else None
+                if items0:
+                    fa_slot_skips(items0, caut["level"], v, v["open"], real0, now)
+            except Exception as err:
+                log("full auto open-bet evidence:", type(err).__name__, err)
         return None
     real = panel_get("real")
     if not real:
         return None
     room, slots, free = v["room"], v["slots"], v["free"]
     status, ids = real.get("status"), []
-    if status == "draft":
-        items = [c for c in real.get("items", []) if c.get("state") in (None, "draft", "")]
-    elif status == "approved":
-        x = panel_extras(real)
-        items = [c for c in ((x or {}).get("items") or []) if _fa_overlap_ok(c)]
-    else:
+    items = _fa_candidates(st, real, now, caut, log)
+    if items is None:
         return None
-    if fal_on(st):                                        # (#144) skip-only: what the learned numbers say to leave out
-        try:
-            items, held = fal_filter(items, st, now)
-        except Exception as err:                          # a malformed value or any error: approve nothing this pass
-            log("full auto lessons: nothing approved:", type(err).__name__, err)
-            return None
-        if held:
-            log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
+    own, skipped = {}, []
     for c in items:
-        s = float(c.get("stake") or 0)
+        normal = float(c.get("stake") or 0)
+        s = _fa_scaled(normal, _fa_knob(caut["level"], "size"))            # cautious: smaller bets (never above the normal size)
+        if s >= PANEL_OWN_MIN and s <= room + 0.01 and s <= free + 0.01 and len(ids) >= slots:
+            skipped.append(c)                             # (#145) it fit everything except the open-bet limit
         if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01 or len(ids) >= slots:
             continue
         ids.append(c["id"])
+        if s < normal - 0.005:
+            own[c["id"]] = s
         room, free = room - s, free - s
     if not ids:
         return None
     day = _panel_day(real.get("at"))
-    book = {c["id"]: float(c.get("stake") or 0) for c in items if c["id"] in ids}
+    book = {c["id"]: own.get(c["id"], float(c.get("stake") or 0)) for c in items if c["id"] in ids}
     _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
+    fa_slot_taken(items, ids, book, v["open"], day, now, log)     # (#145) evidence for the open-bet limit; never blocks the buy
+    if skipped:
+        fa_slot_skips(skipped, caut["level"], {"room": room, "free": free}, v["open"] + len(ids), real, now)
     if status == "draft":
-        ok, msg = panel_approve(ids, "all", at=real.get("at"))
+        ok, msg = panel_approve(ids, "all", at=real.get("at"), stakes=own or None)
     else:
-        ok, msg = panel_add(ids, "extra")
+        ok, msg = panel_add(ids, "extra", stakes=own or None)
     log(f"full auto {'approved' if status == 'draft' else 'added'} {len(ids)}: {msg}")
     return {"ok": ok, "ids": ids, "msg": msg}
 
@@ -24402,12 +24707,15 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
 # daily loss limit, the bankroll and the losing-streak brake are never touched. Inert unless full auto is ON; the
 # master switch is st["fa_lessons"] (only an explicit False turns it off). Buying stays in panel_exec.
 FAL = {"week": 7 * 86400, "look": 6 * 3600, "judge_max": 14 * 86400, "days": 60, "log": 30,
+       "borrow_max": 1.5, "stale": 28 * 86400,                # a borrowed bar adds at most this; eases back after this long unconfirmed
        "bar": {"lo": 0.0, "hi": 5.0, "step": 0.5},          # points over the league's combo cut-off
        "sbev": {"lo": 0, "hi": 4, "step": 1},                # SB_DIAL_BARS level: none .. +$0.10 expected on $5
-       "game": {"lo": 0.10, "hi": 0.30, "step": 0.025}}      # share of the full-auto bankroll one game may carry
-FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30}            # = today's behaviour (the identity) and the loose end
-FAL_RECS = ("bar", "sbev", "game")
-FAL_NAMES = {"bar": "Combo bars, league by league", "sbev": "Smart Buy bars", "game": "Per-game limit"}
+       "game": {"lo": 0.10, "hi": 0.30, "step": 0.025},      # share of the full-auto bankroll one game may carry
+       "open": {"lo": 8, "hi": 20, "step": 1}}               # (#145) the most bets full auto may have open at once
+FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30, "open": FA["max_open"]}   # = today's behaviour (the identity); "open" starts from Pete's own number
+FAL_RECS = ("bar", "sbev", "game", "open")
+FAL_NAMES = {"bar": "Combo bars, league by league", "sbev": "Smart Buy bars", "game": "Per-game limit", "open": "Open-bet limit"}
+FAL_OPEN = {"min_n": 25, "loose_mult": 2, "loose_wait": 14 * 86400, "keep": 90 * 86400, "look": 600}
 FAL_RUN = {"at": 0.0}
 FAL_NOT_WIRED = (
     ("Paper panel", "it is the practice gate that unlocks full auto itself and has no number to adjust"),
@@ -24425,19 +24733,136 @@ FAL_NOT_WIRED = (
     ("Market-odds weighting", "it already steers long-shot ideas on its own; no full-auto number depends on it"))
 
 
+# ---------------------------------------------------------------- the autopilot registry (#144, step 1)
+# One list of every self-adjusting full-auto setting, one shared evidence gate, one card log. The paper lessons (bar, sbev,
+# game) are the first three entries; later settings register here and ride the same gate, Undo and freeze. The registry
+# adds control, not behaviour: step sizes, ranges, evidence rules and the loosen-only-back-to-start rule are #602's, unchanged.
+#   Undo last change: restores the previous value and holds THAT setting for AP_HOLD (2 weeks).
+#   Freeze: a frozen setting (one key like "bar:nba", or a whole record like "bar") takes no automatic step or revert.
+#   Brake priority: while the brake is cautious (ap_brake_cautious) nothing loosens anywhere; tightening is still fine.
+#   Errors: any unreadable data or error = no step, and the card says "no change, not enough evidence".
+AP_HOLD = 14 * 86400
+AP_REG = {}                                               # record -> spec; filled below, once the functions exist
+
+
+def ap_register(rec, label, load, min_n, text, bounds, start, tighter_sign):
+    """Add one self-adjusting setting. bounds = {lo, hi, step}; start = its identity value (the loose end);
+    tighter_sign +1 when a bigger number is tighter, -1 when a smaller one is."""
+    AP_REG[rec] = {"label": label, "load": load, "min_n": min_n, "text": text, "bounds": bounds, "start": start,
+                   "sign": tighter_sign}
+
+
+def ap_brake_cautious(st, now=None):
+    """THE BRAKE HOOK. True while the full-auto brake is in a cautious state, so nothing may loosen anywhere (tightening
+    still may). Today: the losing-streak / daily-loss brake is tripped. The soft brake plugs in here later; this function
+    is the only place the autopilot looks at the brake, and it never changes it. Reads both the hard brake (st["brake"])
+    and the soft brake's confidence level (st["caution"]["level"] > 0; absent before that lands). Unreadable = cautious."""
+    try:
+        if not isinstance(st, dict):
+            return True
+        b = st.get("brake")
+        if isinstance(b, dict) and b.get("kind"):
+            if not (b.get("kind") == "day" and b.get("day") and b.get("day") != _panel_day(now or time.time())):
+                return True                               # a daily-loss brake from an earlier panel day has ended; anything else, or unreadable, holds
+        c = st.get("caution")
+        if c is None:
+            return False
+        if not isinstance(c, dict):
+            return True
+        lv = c.get("level", 0)
+        if isinstance(lv, bool) or not isinstance(lv, (int, float)) or not math.isfinite(lv):
+            return True
+        return lv > 0
+    except Exception:
+        return True
+
+
+def _ap_open_base(st):
+    """Pete's own open-bet number (never written by autopilot), as a whole number."""
+    try:
+        return int(st.get("max_open", FA["max_open"]))
+    except (TypeError, ValueError):
+        return FA["max_open"]
+
+
+def ap_open_limit(st):
+    """The most bets full auto may have open right now: autopilot's learned number (8 to 20) while Autopilot is on and its
+    saved numbers can be read, else Pete's own. Never raises. It only decides how MANY bets; the daily cap, the daily loss
+    limit and the bankroll still bind every buy in the pass, whatever this says."""
+    base = _ap_open_base(st)
+    try:
+        if not fal_on(st):
+            return base
+        vals, err = _fal_vals(st)
+        L = st.get("lessons")
+        if err or vals is None or not (isinstance(L, dict) and isinstance(L.get("vals"), dict) and "open_slots" in L["vals"]):
+            return base                                      # nothing learned: Pete's own number, even outside 8 to 20
+        got = ap_clamp("open", vals["open"])
+        return base if got is None else min(got, base)       # Pete's own number is the ceiling; learning only goes below it
+    except Exception:
+        return base
+
+
+def ap_clamp(rec, v):
+    """`v` forced inside the setting's outer bounds (and a game share never above the whole bankroll); None when it isn't a
+    plain finite number. The one place a value is fenced before it is saved."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    b = AP_REG[rec]["bounds"]
+    v = min(max(v, b["lo"]), b["hi"])
+    if rec == "game":
+        v = min(v, 1.0)
+    return int(round(v)) if rec in ("sbev", "open") else round(float(v), 4)
+
+
+def _ap_looser(rec, a, b):
+    """True when moving a -> b loosens the setting (toward its start value)."""
+    return (b - a) * AP_REG[rec]["sign"] < -1e-9
+
+
+def _ap_frozen(L, key):
+    f = L.get("frozen") if isinstance(L, dict) and isinstance(L.get("frozen"), dict) else {}
+    try:
+        rec = _fal_split(key)[0]
+    except Exception:
+        rec = None
+    return bool(f.get(key) or f.get(rec))
+
+
+def _ap_held(L, key, now):
+    h = L.get("holds") if isinstance(L, dict) and isinstance(L.get("holds"), dict) else {}
+    try:
+        return float(h.get(key) or 0) > now
+    except (TypeError, ValueError):
+        return True
+
+
+def ap_gate(rec, key, rs, passes, a, b, last_at):
+    """THE shared evidence gate for every registered setting: (ok, evidence, bootstrap low end) for moving a -> b. Needs the
+    setting's own minimum sample, the stepper's evidence (the older 70% picks the step, the newest 30% must agree) and a
+    bootstrap low end above zero, in net dollars after fees. No evidence, no step."""
+    ds = _fal_ds(rs, passes, a, b)
+    ev = knob_evidence(ds, 0, last_at)
+    lb = _guard_bootstrap(ds, last_at, f"fal:{key}:{a}>{b}")
+    clean = all(math.isfinite(d) for _, d, _ in ds)               # a NaN anywhere: no step
+    return bool(clean and len(rs) >= AP_REG[rec]["min_n"](rec) and ev["ok"] and lb > 0), ev, lb
+
+
 def fal_on(st):
-    """Lessons only count while full auto is ON; the master switch defaults to on (only an explicit False turns it off)."""
+    """Autopilot (the Lessons switch, key fa_lessons) only counts while full auto is ON; the master switch defaults to on (only an explicit False turns it off)."""
     return st.get("on") is True and st.get("fa_lessons") is not False
 
 
 def _fal_key(rec, lg=None):
-    return "game_share" if rec == "game" else f"{rec}:{lg}"
+    return "game_share" if rec == "game" else "open_slots" if rec == "open" else f"{rec}:{lg}"
 
 
 def _fal_split(key):
     """('bar', 'nba') from 'bar:nba'; ('game', None) from 'game_share'. Anything else raises (a malformed value)."""
     if key == "game_share":
         return "game", None
+    if key == "open_slots":
+        return "open", None
     rec, lg = key.split(":", 1)
     if rec not in ("bar", "sbev") or not lg:
         raise ValueError(key)
@@ -24447,7 +24872,7 @@ def _fal_split(key):
 def _fal_vals(st):
     """(values, None) or (None, why). values = {'bar': {league: points}, 'sbev': {league: level}, 'game': share}. Nothing
     saved yet = the start values. A value that isn't a plain number inside its fixed range is a blocker, never a guess."""
-    out = {"bar": {}, "sbev": {}, "game": FAL_START["game"]}
+    out = {"bar": {}, "sbev": {}, "game": FAL_START["game"], "open": _ap_open_base(st)}
     L = st.get("lessons")
     if L is None:
         return out, None
@@ -24463,23 +24888,32 @@ def _fal_vals(st):
                 raise ValueError(key)
             if rec == "game":
                 out["game"] = float(v)
+            elif rec == "open":
+                if int(v) != v:
+                    raise ValueError(key)
+                out["open"] = int(v)
             else:
                 out[rec][lg] = int(v) if rec == "sbev" else float(v)
         return out, None
     except Exception:
         return None, ("Full auto's learned numbers couldn't be read, so it approves nothing until they can. "
-                      "Turn Lessons off to carry on without them.")
+                      "Turn Autopilot off to carry on without them.")
 
 
 def _fal_cur(vals, key):
     rec, lg = _fal_split(key)
-    return vals["game"] if rec == "game" else vals[rec].get(lg, FAL_START[rec])
+    return vals["game"] if rec == "game" else vals["open"] if rec == "open" else vals[rec].get(lg, FAL_START[rec])
 
 
 def _fal_moves(rec, cur):
     """[(direction, new value)]: the tighter and the looser neighbour of `cur`, inside the fixed range. Looser only ever
     goes back toward the start value, never past it."""
     b, s0 = FAL[rec], FAL_START[rec]
+    if rec == "open":                                        # (#145) fewer open bets = tighter; the only setting that may loosen PAST its start
+        if not b["lo"] <= cur <= b["hi"]:
+            return []                                        # Pete's own number is outside autopilot's range: it leaves it alone
+        return [d for d in (("tighter", cur - b["step"]) if cur - b["step"] >= b["lo"] else None,
+                            ("looser", cur + b["step"]) if cur + b["step"] <= b["hi"] else None) if d]
     sg = -1 if rec == "game" else 1                          # tighter = a smaller game share, a bigger bar
     end = b["lo"] if rec == "game" else b["hi"]              # the tight end of the range (the loose end is the start)
     out = []
@@ -24494,7 +24928,7 @@ def _fal_moves(rec, cur):
 
 def _fal_min_n(rec):
     """The record's own minimum sample (the stepper's 10 changed / 20 new bets come on top, in knob_evidence)."""
-    return {"bar": LGSH["k_roi"], "sbev": SB_OPTIN["n"], "game": EXPO["dollar_n"]}[rec]
+    return {"bar": LGSH["k_roi"], "sbev": SB_OPTIN["n"], "game": EXPO["dollar_n"], "open": FAL_OPEN["min_n"]}[rec]
 
 
 def _fal_load(rec, now):
@@ -24519,6 +24953,19 @@ def _fal_load(rec, now):
                                    "and ts>? order by ts", (since,)):
             by[_fal_key("sbev", r["league"])].append({"k": r["ts"], "d": float(r["outcome"]), "s": SB_STAKE, "ev": float(r["ev"])})
         return by, lambda rs, v: [_sb_pass(r["ev"], int(v)) for r in rs]
+    if rec == "open":
+        _fa_slot_table()
+        pl = {}
+        for day, c in _fa_rows(now, FAL["days"] + 2):                  # what each bought bet really made (Kalshi's record, else held to the end)
+            v = panel_pl(c) if c.get("result") or c.get("pl_real") is not None else None
+            if v is not None:
+                pl[f"{day}|{c.get('id')}"] = float(v)
+        for r in store_rows_strict("select key, ts, kind, open_at, stake, outcome, pnl from fa_slots where ts>? order by ts", (since,)):
+            d = pl.get(r["key"]) if r["kind"] == "taken" else (float(r["pnl"]) if r["outcome"] else None)
+            if d is None:
+                continue                                                # not settled yet: not evidence
+            by["open_slots"].append({"k": r["ts"], "d": d, "s": float(r["stake"] or 0), "open_at": int(r["open_at"])})
+        return by, lambda rs, v: [r["open_at"] < v for r in rs]
     _expo_tables()
     for r in store_rows_strict("select ts, cost, bank, alloc, net, settled from expo_pos where seed=0 and coalesce(batch,1)<=1 "
                                "and ts>? order by ts, pos", (since,)):
@@ -24548,16 +24995,13 @@ def _fal_ds(rs, passes, a, b):
 
 
 def _fal_judge(rec, key, rs, passes, a, b, last_at):
-    """(ok, evidence, bootstrap low end) for one proposed move. ok needs the record's own sample, the stepper's evidence
-    (older 70% picks it, newest 30% must agree) and a bootstrap low end above zero, in net dollars after fees."""
-    ds = _fal_ds(rs, passes, a, b)
-    ev = knob_evidence(ds, 0, last_at)
-    lb = _guard_bootstrap(ds, last_at, f"fal:{key}:{a}>{b}")
-    clean = all(math.isfinite(d) for _, d, _ in ds)               # a NaN anywhere: no step
-    return bool(clean and len(rs) >= _fal_min_n(rec) and ev["ok"] and lb > 0), ev, lb
+    """Kept name for #602's callers: the shared gate (ap_gate) does the work."""
+    return ap_gate(rec, key, rs, passes, a, b, last_at)
 
 
 def _fal_val_text(rec, v):
+    if rec == "open":
+        return f"{int(v)} open bets"
     if rec == "bar":
         return f"+{v:g} points"
     if rec == "sbev":
@@ -24568,8 +25012,8 @@ def _fal_val_text(rec, v):
 def _fal_change(key, dirn, to=None):
     """A step in plain words: 'Raised the NBA combo bar a little' (a per-game limit goes the other way: tighter = lower)."""
     rec, _ = _fal_split(key)
-    up = (dirn == "tighter") != (rec == "game")
-    tail = f" to {_fal_val_text(rec, to)}" if rec == "game" and to is not None else " one level" if rec == "sbev" else " a little"
+    up = (dirn == "tighter") != (rec in ("game", "open"))
+    tail = f" to {_fal_val_text(rec, to)}" if rec in ("game", "open") and to is not None else " one level" if rec == "sbev" else " a little"
     return f"{'Raised' if up else 'Lowered'} the {_fal_name(key)}{tail}"
 
 
@@ -24577,7 +25021,21 @@ def _fal_name(key):
     rec, lg = _fal_split(key)
     if rec == "game":
         return "per-game limit"
+    if rec == "open":
+        return "open-bet limit"
     return f"{league_label(lg)} combo bar" if rec == "bar" else f"{league_label(lg)} Smart Buy bar"
+
+
+ap_register("bar", FAL_NAMES["bar"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["bar"], FAL_START["bar"], 1)
+ap_register("sbev", FAL_NAMES["sbev"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["sbev"], FAL_START["sbev"], 1)
+ap_register("game", FAL_NAMES["game"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["game"], FAL_START["game"], -1)
+ap_register("open", FAL_NAMES["open"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["open"], FAL_START["open"], -1)
+
+
+def _fal_slow(L, key, rs, now):
+    """True when the open-bet limit may NOT loosen yet: it needs two weeks since its last move and twice the usual sample."""
+    since = (L.get("since") or {}).get(key) or 0
+    return now - float(since) < FAL_OPEN["loose_wait"] or len(rs) < FAL_OPEN["loose_mult"] * FAL_OPEN["min_n"]
 
 
 def _fal_plan(st, now):
@@ -24588,48 +25046,82 @@ def _fal_plan(st, now):
         return {"actions": [], "status": {}}
     L = st.get("lessons") if isinstance(st.get("lessons"), dict) else {}
     last, steps, since = L.get("last") or {}, L.get("steps") or {}, L.get("since") or {}
-    actions, status = [], {}
-    for rec in FAL_RECS:
-        s = {"n": None, "min": _fal_min_n(rec), "pass": False, "at": round(now), "note": ""}
+    actions, status, nochange = [], {}, []
+    cautious = ap_brake_cautious(st)
+    for rec, spec in AP_REG.items():
+        s = {"n": None, "min": spec["min_n"](rec), "pass": False, "at": round(now), "note": ""}
         status[rec] = s
         try:
-            by, passes = _fal_load(rec, now)
+            by, passes = spec["load"](rec, now)
             s["n"] = sum(len(v) for v in by.values())
+            skip_key = None                                  # a borrowed step still being judged holds only its own league
             lr = last.get(rec) if isinstance(last.get(rec), dict) else None
             if lr and not lr.get("judged"):                  # the last step is judged before anything new
                 age = now - float(lr["at"])
                 if age < FAL["week"]:
                     s["note"] = "watching its last step"
-                    continue
-                ds = _fal_ds(by.get(lr["key"], []), passes, lr["from"], lr["to"])
-                post = [d for k, d, _ in ds if (k or 0) > lr["at"] and abs(d) > KNOB_EPS]
-                net = sum(post)
-                held = abs(_fal_cur(vals, lr["key"]) - lr["to"]) < 1e-9
-                if not math.isfinite(net) or any(not math.isfinite(d) for _, d, _ in ds):
-                    bad, net = "unreadable", 0.0               # a NaN result is never "kept": back to the prior setting
-                elif len(post) >= KNOB_HOLD_MIN and net < -KNOB_EPS:
-                    bad, net = "lost", round(net, 2)
-                elif len(post) < KNOB_HOLD_MIN and age >= FAL["judge_max"]:
-                    bad, net = "thin", round(net, 2)           # never silently keep a step nobody could check
-                else:
-                    bad, net = None, round(net, 2)
-                if bad and held:
-                    actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
-                elif bad:
-                    pass
-                elif len(post) >= KNOB_HOLD_MIN:
-                    actions.append({"do": "kept", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
-                else:
-                    s["note"] = "watching its last step (too few bets yet)"
-                continue
+                    if not lr.get("borrow"):
+                        continue
+                    skip_key = lr["key"]
+                if skip_key is None:
+                    n_before = len(actions)
+                    ds = _fal_ds(by.get(lr["key"], []), passes, lr["from"], lr["to"])
+                    post = [d for k, d, _ in ds if (k or 0) > lr["at"] and abs(d) > KNOB_EPS]
+                    net = sum(post)
+                    held = abs(_fal_cur(vals, lr["key"]) - lr["to"]) < 1e-9
+                    if not math.isfinite(net) or any(not math.isfinite(d) for _, d, _ in ds):
+                        bad, net = "unreadable", 0.0               # a NaN result is never "kept": back to the prior setting
+                    elif len(post) >= KNOB_HOLD_MIN and net < -KNOB_EPS:
+                        bad, net = "lost", round(net, 2)
+                    elif len(post) < KNOB_HOLD_MIN and age >= FAL["judge_max"]:
+                        bad, net = "thin", round(net, 2)           # never silently keep a step nobody could check
+                    else:
+                        bad, net = None, round(net, 2)
+                    if bad and held:
+                        if cautious and _ap_looser(rec, lr["to"], lr["from"]):
+                            s["note"] = "the brake is cautious: nothing loosens"
+                        else:
+                            actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
+                    elif bad:
+                        pass
+                    elif len(post) >= KNOB_HOLD_MIN:
+                        actions.append({"do": "kept", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
+                    else:
+                        s["note"] = "watching its last step (too few bets yet)"
+                    if not lr.get("borrow") or len(actions) > n_before:
+                        continue
+                    skip_key = lr["key"]
             cands = []
             for key, rs in by.items():
                 found = []
+                if _ap_frozen(L, key) or key == skip_key:
+                    continue                                 # frozen by Pete: no new step (a pending revert is still judged)
+                held = _ap_held(L, key, now)
+                ers, borrow = rs, False
+                if rec == "bar" and len(rs) < spec["min_n"](rec):   # too thin for its own step: borrow the group's evidence
+                    ers = sorted((r for k2, v2 in by.items() if k2 != key for r in v2), key=lambda r: r["k"])
+                    borrow = True
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
-                    ok, ev, lb = _fal_judge(rec, key, rs, passes, _fal_cur(vals, key), new, since.get(key) or 0)
+                    if rec == "open" and new > _ap_open_base(st):
+                        continue                             # (#145) never above Pete's saved number
+                    if dirn == "looser" and (cautious or held):
+                        continue                             # brake priority, or held after Pete's Undo: nothing loosens
+                    if rec == "open" and dirn == "looser" and _fal_slow(L, key, rs, now):
+                        continue                             # (#145) tighten fast, loosen slow
+                    if borrow and dirn == "looser" and (L.get("src") or {}).get(key) != "borrow":
+                        continue                             # only a bar this logic borrowed is eased back; an earned one is its own
+                    if borrow and dirn == "tighter" and new > FAL["borrow_max"] + 1e-9:
+                        continue                             # a borrowed bar never adds more than +1.5 in all
+                    ok, ev, lb = ap_gate(rec, key, ers, passes, _fal_cur(vals, key), new, since.get(key) or 0)
+                    stale = False
+                    if not ok and borrow and dirn == "looser" and now - float(since.get(key) or 0) >= FAL["stale"]:
+                        ok, stale = True, True               # four weeks without its own data to confirm it: ease back toward the start
+                        ev, lb = {"band": 0, "gain": 0.0, "hold_n": 0, "hold": 0.0}, 0.0
                     if ok:
                         found.append({"do": "step", "rec": rec, "key": key, "from": _fal_cur(vals, key), "to": new,
-                                      "dir": dirn, "ev": ev, "lb": lb})
+                                      "dir": dirn, "ev": ev, "lb": lb, "borrow": borrow, "stale": stale})
+                if len(found) > 1:
+                    found = [f for f in found if not f["stale"]]   # a gated lesson beats the timed ease-back
                 if len(found) == 1:                          # both ways at once = no clear lesson
                     cands.append(found[0])
             s["pass"] = bool(cands)
@@ -24641,7 +25133,8 @@ def _fal_plan(st, now):
                 actions.append(max(cands, key=lambda c: c["lb"]))
         except Exception as err:
             s["note"] = "couldn't read its data, no step (" + type(err).__name__ + ")"
-    return {"actions": actions, "status": status}
+            nochange.append(rec)
+    return {"actions": actions, "status": status, "nochange": nochange}
 
 
 def _fal_apply(s, plan, now):
@@ -24654,7 +25147,7 @@ def _fal_apply(s, plan, now):
     if err:
         return
     L = s.setdefault("lessons", {})
-    for k in ("vals", "steps", "since", "last", "status"):
+    for k in ("vals", "steps", "since", "last", "status", "frozen", "holds", "nochg", "src"):
         if not isinstance(L.get(k), dict):
             L[k] = {}
     if not isinstance(L.get("log"), list):
@@ -24663,22 +25156,60 @@ def _fal_apply(s, plan, now):
     def say(kind, key, text, **extra):
         L["log"].append({"at": round(now), "kind": kind, "key": key, "text": text, **extra})
         del L["log"][:-FAL["log"]]
+    for rec in plan.get("nochange") or []:                   # an unreadable record: say so, at most once a day each
+        if rec in AP_REG and now - float(L["nochg"].get(rec) or 0) >= 86400:
+            say("nochange", rec, f"Autopilot: {FAL_NAMES[rec]}: no change, not enough evidence.")
+            L["nochg"][rec] = round(now)
+    cautious = ap_brake_cautious(s)
     for a in plan.get("actions") or []:
         rec, key = a["rec"], a["key"]
         lr = L["last"].get(rec) if isinstance(L["last"].get(rec), dict) else None
+        if rec not in AP_REG:
+            continue
         if a["do"] == "step":
-            if now - float(L["steps"].get(rec) or 0) < FAL["week"] or (lr and not lr.get("judged")) \
+            to = ap_clamp(rec, a["to"])                      # the outer fence, once more, right before it is saved
+            if to is None or abs(to - a["to"]) > 1e-9 or _ap_frozen(L, key) \
+                    or (_ap_looser(rec, a["from"], to) and (cautious or _ap_held(L, key, now)))\
+                    or (rec == "open" and _ap_looser(rec, a["from"], to)
+                        and now - float(L["since"].get(key) or 0) < FAL_OPEN["loose_wait"]):
+                continue
+            if now - float(L["steps"].get(rec) or 0) < FAL["week"] \
+                    or (lr and not lr.get("judged") and not (lr.get("borrow") and lr.get("key") != key)) \
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
                 continue
             ev = a["ev"]
-            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: on {ev['band']} past bets this would have made "
-                f"${ev['gain']:.2f} more after fees.", ev={"band": ev["band"], "gain": ev["gain"], "hold_n": ev["hold_n"],
-                                                          "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"]})
+            if a.get("stale"):
+                say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: it has had too little data of its own for four weeks "
+                    "to confirm the borrowed bar, so it eases back toward the start.",
+                    ev={"stale": True, "borrow": True, "from": a["from"], "to": a["to"]})
+                _fal_set(L, rec, key, a["to"])
+                L["steps"][rec], L["since"][key] = round(now), round(now)
+                L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": True}   # judged: the ease-back sticks
+                L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
+                continue
+            src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
+            if rec == "open":
+                why = (f"the bets that fit only as the {max(a['from'], a['to'])}th open one {'lost' if a['dir'] == 'tighter' else 'would have made'} "
+                       f"money: on {ev['band']} past bets this would have made ${ev['gain']:.2f} more after fees.")
+            elif a.get("borrow"):
+                why = f"on {ev['band']} past bets from " + src + f" this would have made ${ev['gain']:.2f} more after fees."
+            else:
+                why = f"on {ev['band']} past bets this would have made ${ev['gain']:.2f} more after fees."
+            say("step", key, f"{_fal_change(key, a['dir'], a['to'])}: {why}", ev={"band": ev["band"], "gain": ev["gain"], "hold_n": ev["hold_n"],
+                                                          "hold": ev["hold"], "lb": a["lb"], "from": a["from"], "to": a["to"],
+                                                          "borrow": bool(a.get("borrow"))})
             _fal_set(L, rec, key, a["to"])
+            if not a.get("borrow") or (L["src"].get(key) or "borrow") != "borrow":
+                L["src"][key] = "own"                        # earned from its own data (or tightened past a borrowed one)
+            else:
+                L["src"][key] = "borrow"
             L["steps"][rec], L["since"][key] = round(now), round(now)
-            L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
+            L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False,
+                            **({"borrow": True} if a.get("borrow") else {})}
+            L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
         elif lr and not lr.get("judged") and lr.get("key") == key:
-            if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9:
+            if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9 \
+                    and ap_clamp(rec, lr["from"]) is not None and not (cautious and _ap_looser(rec, lr["to"], lr["from"])):
                 why = ("the " + str(a["n"]) + " bets that change affected lost $" + format(-a["net"], ".2f") + " after fees in the week since."
                        if a.get("why", "lost") == "lost" else
                        "its results could not be read." if a.get("why") == "unreadable" else
@@ -24686,9 +25217,10 @@ def _fal_apply(s, plan, now):
                 back = f" to {_fal_val_text(rec, lr['from'])}" if rec == "game" else " where it was"
                 say("revert", key, f"Put the {_fal_name(key)} back{back}: " + why,
                     ev={"net": a["net"], "n": a["n"], "why": a.get("why", "lost"), "from": lr["to"], "to": lr["from"]})
-                _fal_set(L, rec, key, lr["from"])
+                _fal_set(L, rec, key, ap_clamp(rec, lr["from"]))
                 L["steps"][rec], L["since"][key] = round(now), round(now)
                 lr.update(judged=True, reverted=True)
+                L["change"] = {"rec": rec, "key": key, "from": lr["to"], "to": lr["from"], "at": round(now), "kind": "revert"}
             elif a["do"] == "kept":
                 say("kept", key, f"Kept the {_fal_name(key)} change: the {a['n']} bets it affected since made ${a['net']:.2f} "
                     f"after fees." if a["n"] else f"Kept the {_fal_name(key)} change: too few bets since to tell.",
@@ -24699,7 +25231,7 @@ def _fal_apply(s, plan, now):
 
 
 def _fal_set(L, rec, key, v):
-    if abs(v - FAL_START[rec]) < 1e-9:
+    if rec != "open" and abs(v - FAL_START[rec]) < 1e-9:     # (the open-bet limit's start is Pete's own number: always saved)
         L["vals"].pop(key, None)                             # back at the start: nothing saved
     else:
         L["vals"][key] = v
@@ -24712,7 +25244,15 @@ def fal_tick(st, now, log=print):
     if not fal_on(st) or now - FAL_RUN["at"] < FAL["look"]:
         return False
     FAL_RUN["at"] = now
-    plan = _fal_plan(st, now)
+    try:
+        fa_slot_settle(now)                                  # (#145) give turned-away bets their results (a failure just means thinner evidence)
+    except Exception as err:
+        log("full auto open-bet evidence:", type(err).__name__, err)
+    try:
+        plan = _fal_plan(st, now)
+    except Exception as err:                                 # any error at all: no step
+        log("full auto autopilot: no change:", type(err).__name__, err)
+        return False
     if not plan["status"]:
         return False
     _fa_update(lambda s: _fal_apply(s, plan, now))
@@ -24768,8 +25308,153 @@ def fa_lessons_set(on):
         _fa_update(lambda s: s.update(fa_lessons=bool(on)))
     except Exception as err:
         return False, "Couldn't save that (" + type(err).__name__ + ")."
-    return True, ("Lessons are ON. While full auto is on, it may learn small steps from the paper records."
-                  if on else "Lessons are OFF. Full auto uses its starting numbers, as before.")
+    return True, ("Autopilot is ON. While full auto is on, it may take small steps from the paper records."
+                  if on else "Autopilot is OFF. Full auto uses its starting numbers, as before.")
+
+
+def ap_undo(now=None):
+    """Undo last change: put the setting the autopilot last moved (a step or an automatic revert) back to its previous value
+    and hold THAT setting for two weeks. Works with Autopilot off. Only while the setting is still where the autopilot left
+    it. (ok, message). Never raises."""
+    now = now or time.time()
+    out = {}
+    try:                                                     # #145: a knob step newer than the last setting change is the "last change"
+        kx = ap_knob_last(knob_state())
+        if kx:
+            st0 = fa_state()
+            ch0 = (st0.get("lessons") or {}).get("change") if isinstance(st0.get("lessons"), dict) else None
+            ch0 = ch0 if isinstance(ch0, dict) and not ch0.get("undone") else None
+            # the newer of the two is "the last change"; a knob step that has moved on since never hides an older setting change
+            if (kx.get("ok") or not ch0) and not (ch0 and float(ch0.get("at") or 0) > kx["at"]):
+                return _ap_undo_knob(kx, now)
+    except Exception as err:
+        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+
+    def go(s):
+        L = s.get("lessons")
+        ch = L.get("change") if isinstance(L, dict) and isinstance(L.get("change"), dict) else None
+        if not ch or ch.get("undone"):
+            out["r"] = (False, "Nothing to undo: autopilot hasn't changed anything that is still in place.")
+            return
+        vals, err = _fal_vals(s)
+        rec, key = ch["rec"], ch["key"]
+        back = ap_clamp(rec, ch["from"]) if rec in AP_REG else None
+        if err or back is None or abs(_fal_cur(vals, key) - ch["to"]) > 1e-9:
+            out["r"] = (False, "Nothing to undo: that setting is no longer where autopilot left it.")
+            return
+        if _ap_looser(rec, ch["to"], back) and (ap_brake_cautious(s) or ch.get("kind") == "revert"):
+            out["r"] = (False, "Can't undo that: it would loosen a setting " +
+                        ("the evidence just rejected." if ch.get("kind") == "revert" else "while the brake is cautious."))
+            return
+        for k in ("vals", "since", "last", "holds"):
+            if not isinstance(L.get(k), dict):
+                L[k] = {}
+        if not isinstance(L.get("log"), list):
+            L["log"] = []
+        _fal_set(L, rec, key, back)
+        L["since"][key] = round(now)                         # only bets after this count toward its next step
+        L["holds"][key] = round(now + AP_HOLD)
+        lr = L["last"].get(rec)
+        if isinstance(lr, dict) and lr.get("key") == key:
+            lr["judged"] = True                              # no later automatic revert of what Pete already undid
+        ch["undone"] = True
+        txt = (f"Autopilot: you undid {_fal_name(key)}: {_fal_val_text(rec, ch['to'])} -> {_fal_val_text(rec, back)}. "
+               f"It stays there for 2 weeks.")
+        L["log"].append({"at": round(now), "kind": "undo", "key": key, "text": txt})
+        del L["log"][:-FAL["log"]]
+        out["r"] = (True, txt)
+    try:
+        _fa_update(go)
+    except Exception as err:
+        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+    return out.get("r") or (False, "Couldn't undo that.")
+
+
+def _ap_undo_knob(kx, now):
+    """Undo of the newest live knob step: the group's own value goes back to what it was (or to none, if it had none),
+    the test value follows, the group's next step waits for bets after now, and that knob is held two weeks in that
+    group (no looser step). Only while the knob is still where the step left it; never loosens while the brake is
+    cautious. (ok, message). Never raises."""
+    g, h = kx["g"], kx["h"]
+    name, frm, to = h["knob"], h["from"], h["to"]
+    k = KNOB_BY[name]
+    if not kx.get("ok"):
+        return False, "Nothing to undo: that setting is no longer where autopilot left it."
+    if knob_loosens(name, to, frm) and ap_brake_cautious(fa_state()):
+        return False, "Can't undo that: it would loosen a setting while the brake is cautious."
+    done = {}
+
+    def go(d):
+        e = d["groups"].get(g)
+        lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else None
+        hh = next((x for x in (e.get("hist") or []) if isinstance(x, dict) and x.get("at") == h.get("at")
+                   and x.get("knob") == name and x.get("live") and not x.get("undone")), None) if lv is not None else None
+        if hh is None or lv.get(name) != to:
+            return
+        lat = e["lat"] if isinstance(e.get("lat"), dict) else {}
+        v = e["v"] if isinstance(e.get("v"), dict) else {}
+        if hh.get("prev_own"):
+            lv[name], lat[name] = frm, now
+        else:
+            lv.pop(name, None)
+            lat.pop(name, None)
+        v[name] = frm
+        if isinstance(e.get("why"), dict):
+            e["why"].pop(name, None)
+        e.update(lat=lat, v=v, lstep_at=now)
+        hh["undone"] = True
+        done["ok"] = True
+    try:
+        _knob_save(go)
+        if not done.get("ok"):
+            return False, "Nothing to undo: that setting is no longer where autopilot left it."
+        u = k["unit"]
+        txt = (f"Autopilot: you undid {league_label(g)} {k['label']}: {knob_say(u, to)} -> {knob_say(u, frm)}. "
+               f"It stays there for 2 weeks.")
+
+        def note(s):
+            L = s.get("lessons")
+            if not isinstance(L, dict):
+                L = s["lessons"] = {}
+            for kk, tp in (("holds", dict), ("log", list)):
+                if not isinstance(L.get(kk), tp):
+                    L[kk] = tp()
+            L["holds"][f"knob:{g}:{name}"] = round(now + AP_HOLD)
+            L["log"].append({"at": round(now), "kind": "undo", "key": f"knob:{g}:{name}", "text": txt})
+            del L["log"][:-FAL["log"]]
+        _fa_update(note)
+        return True, txt
+    except Exception as err:
+        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+
+
+def ap_freeze(key, on):
+    """Freeze or unfreeze one setting (a key like "bar:nba", or a whole record: "bar", "sbev", "game"). A frozen setting
+    takes no automatic step or revert. Works with Autopilot off. (ok, message)."""
+    try:
+        if key not in AP_REG and not (ap_knob_name(key) and key.count(":") <= 1):   # #145: "knobs" or "knob:<name>" too
+            _fal_split(key)
+    except Exception:
+        return False, "That isn't one of autopilot's settings."
+
+    def go(s):
+        if s.get("lessons") is None:
+            s["lessons"] = {}
+        if not isinstance(s["lessons"], dict):
+            raise ValueError("lessons")
+        f = s["lessons"].get("frozen")
+        if not isinstance(f, dict):
+            f = s["lessons"]["frozen"] = {}
+        if on:
+            f[key] = True
+        else:
+            f.pop(key, None)
+    try:
+        _fa_update(go)
+    except Exception as err:
+        return False, "Couldn't save that (" + type(err).__name__ + ")."
+    name = FAL_NAMES.get(key) or ap_knob_name(key) or _fal_name(key)
+    return True, f"{name} is {'frozen: autopilot leaves it alone' if on else 'unfrozen'}."
 
 
 def fal_view(st):
@@ -24783,19 +25468,49 @@ def fal_view(st):
             learned += [{"name": _fal_name(_fal_key("sbev", lg)), "text": _fal_val_text("sbev", v)} for lg, v in sorted(vals["sbev"].items()) if v > 0]
             if vals["game"] < FAL_START["game"] - 1e-9:
                 learned.append({"name": _fal_name("game_share"), "text": _fal_val_text("game", vals["game"])})
+            if vals["open"] != _ap_open_base(st):
+                learned.append({"name": _fal_name("open_slots"), "text": _fal_val_text("open", vals["open"])
+                                + f" (you set {_ap_open_base(st)})"})
         stat = L.get("status") if isinstance(L.get("status"), dict) else {}
         recs = []
-        for rec in FAL_RECS:
+        for rec in AP_REG:
             x = stat.get(rec) if isinstance(stat.get(rec), dict) else {}
-            recs.append({"name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", _fal_min_n(rec)),
+            recs.append({"rec": rec, "name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", AP_REG[rec]["min_n"](rec)),
                          "state": "not checked yet" if not x else ("has a clear lesson" if x.get("pass") else "no clear lesson"),
                          "note": x.get("note") or ""})
-        log = [e.get("text") for e in (L.get("log") or [])[-5:] if isinstance(e, dict)][::-1]
+        kst = knob_state()                                   # #145: the exit knobs share this log and this Undo
+        kx = ap_knob_last(kst)
+        ents = [(e.get("at") or 0, i, e.get("text")) for i, e in enumerate(L.get("log") or []) if isinstance(e, dict)]
+        ents += [(x["at"], -1, x["text"]) for x in ap_knob_entries(kst)]
+        log = [t for _, _, t in sorted(ents, key=lambda x: (x[0], x[1]))[-6:]][::-1]
+        ch = L.get("change") if isinstance(L.get("change"), dict) and not L["change"].get("undone") else None
+        undo = None
+        if ch and vals and ch.get("rec") in AP_REG and abs(_fal_cur(vals, ch["key"]) - ch["to"]) < 1e-9:
+            undo = f"{_fal_name(ch['key'])}: {_fal_val_text(ch['rec'], ch['to'])} back to {_fal_val_text(ch['rec'], ch['from'])}"
+        if kx and kx.get("ok") and (not ch or kx["at"] >= float(ch.get("at") or 0)):   # the newer of the two is "the last change" (as ap_undo)
+            hh, kb = kx["h"], KNOB_BY[kx["h"]["knob"]]
+            undo = (f"{league_label(kx['g'])} {kb['label']}: {knob_say(kb['unit'], hh['to'])} "
+                    f"back to {knob_say(kb['unit'], hh['from'])}")
+        fz = L.get("frozen") if isinstance(L.get("frozen"), dict) else {}
+        kfz = bool(fz.get("knobs")) or any(k.startswith("knob:") and v for k, v in fz.items())
+        recs.append({"rec": "knobs", "name": "Smart sell's numbers (exit knobs)", "n": None, "min": None,
+                     "state": "paused" if (st.get("fa_lessons") is False or fz.get("knobs")) else "on",
+                     "note": ("frozen one by one" if kfz and not fz.get("knobs") else "") or
+                             "steps come from the weekly stepper's own evidence; this card only shows them and takes them back"})
+        frozen = sorted(k for k, v in (L.get("frozen") or {}).items() if v) if isinstance(L.get("frozen"), dict) else []
+        holds = []
+        for k, t in sorted((L.get("holds") or {}).items()) if isinstance(L.get("holds"), dict) else []:
+            try:
+                if float(t) > time.time():
+                    holds.append({"name": ap_knob_name(k) or _fal_name(k), "until": round(float(t))})
+            except Exception:
+                pass                                         # a malformed hold is no hold
         return {"switch": st.get("fa_lessons") is not False, "active": fal_on(st), "learned": learned, "log": log,
+                "undo": undo, "frozen": frozen, "holds": holds, "cautious": ap_brake_cautious(st),
                 "recs": recs, "not_wired": [{"name": n, "why": w} for n, w in FAL_NOT_WIRED], "err": err}
     except Exception as err:
         return {"switch": True, "active": False, "learned": [], "log": [], "recs": [], "not_wired": [],
-                "err": "Lessons couldn't be read (" + type(err).__name__ + ")."}
+                "err": "Autopilot couldn't be read (" + type(err).__name__ + ")."}
 
 
 # ---------------------------------------------------------------- the combo lab and the analytics
@@ -28105,6 +28820,201 @@ def _knob_why_not(ev):
     return ", ".join(miss)
 
 
+# ---- #145: the exit knobs in the Autopilot log. Wiring and display plus Pete's controls only: WHEN and HOW MUCH a knob
+# moves is knob_tune's own evidence gate, untouched. Pete's controls can only stop or take back a step, never add one.
+#   Master switch (fa_lessons explicitly False) and Freeze ("knobs", or "knob:<name>") pause the live steps; an Undo holds
+#   that knob in that group for two weeks (no looser step, as for the other settings). Any unreadable control = paused.
+AP_KNOB_REVIEW_AFTER = 7 * 86400                      # a step is looked at again on full-auto bets after a week
+AP_KNOB_REVIEW_MIN = 5                                # ...once at least this many full-auto bets settled after it
+
+
+def ap_knob_ctl(now):
+    """Pete's Autopilot controls as knob_tune reads them: {'paused': master switch off or anything unreadable,
+    'frozen': {keys}, 'holds': {key: until}}. Fail closed: a damaged control file pauses the live steps."""
+    out = {"paused": False, "frozen": set(), "holds": {}, "why": ""}
+    try:
+        p = _fa_path()
+        raw = load_json(p, None) if os.path.exists(p) else {}
+        if not isinstance(raw, dict):
+            raise ValueError("full-auto file")
+        L = raw.get("lessons")
+        L = {} if L is None else L
+        if not isinstance(L, dict):
+            raise ValueError("lessons")
+        if raw.get("fa_lessons") is False:
+            out.update(paused=True, why="Autopilot is off")
+        for k in ("frozen", "holds"):
+            if L.get(k) is not None and not isinstance(L.get(k), dict):
+                raise ValueError(k)
+        out["frozen"] = {k for k, v in (L.get("frozen") or {}).items() if v}
+        out["holds"] = dict(L.get("holds") or {})
+    except Exception as err:
+        out.update(paused=True, why="Autopilot's controls couldn't be read (" + type(err).__name__ + ")")
+    return out
+
+
+def ap_knob_stopped(ctl, name):
+    return bool(ctl["paused"] or "knobs" in ctl["frozen"] or f"knob:{name}" in ctl["frozen"])
+
+
+def ap_knob_held(ctl, g, name, now):
+    """True while Pete's Undo holds this knob in this group (a malformed hold counts as held)."""
+    k = f"knob:{g}:{name}"
+    if k not in ctl["holds"]:
+        return False
+    try:
+        return float(ctl["holds"][k] or 0) > now
+    except (TypeError, ValueError):
+        return True
+
+
+def ap_knob_hist_extra(row, e):
+    """What the live step's history entry records beyond the stepper's own: the evidence in dollars after fees, and
+    whether the group already had its own value (so Undo can put things back exactly)."""
+    out = {"prev_own": row["knob"] in (e.get("lv") if isinstance(e.get("lv"), dict) else {})}
+    for k in ("gain", "share", "n", "band"):
+        if isinstance(row.get(k), (int, float)) and not isinstance(row.get(k), bool) and math.isfinite(row[k]):
+            out[k] = row[k]
+    return out
+
+
+def _ap_fa_tickers(now):
+    """The panel tickers of every full-auto bet (the ones full auto placed, plus bets swapped in for them), or None when
+    they can't be read. Read-only."""
+    try:
+        st = fa_state()
+        rows = _fa_rows(now)
+        mine, grew = set(), True
+        while grew:
+            grew = False
+            for d, c in rows:
+                k = f"{d}|{c.get('id')}"
+                if k not in mine and (k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine)):
+                    mine.add(k)
+                    grew = True
+        return {_panel_ticker(c) for d, c in rows if f"{d}|{c.get('id')}" in mine} - {None}
+    except Exception:
+        return None
+
+
+def ap_knob_review(e, g, rows, cur, cache, now, deadline):
+    """DISPLAY ONLY. A week or more after a live step, judge that same step again on the full-auto bets settled since,
+    by the same replay (fees included), and keep it on the history entry (`fa`: bets, net dollars). Nothing is moved or
+    undone by it. No full-auto bets (or too few, or unreadable) = no review, and the card keeps the all-bets evidence."""
+    todo = [h for h in (e.get("hist") or []) if isinstance(h, dict) and h.get("live") and not h.get("brake")
+            and not h.get("undone") and "fa" not in h and h.get("knob") in KNOB_BY
+            and now - float(h.get("at") or now) >= AP_KNOB_REVIEW_AFTER]
+    if not todo:
+        return
+    mine = _ap_fa_tickers(now)
+    if not mine:
+        return
+    for h in todo:
+        jd = KNOB_JUDGED.get(h["knob"])
+        if jd not in ("replay", "sl"):
+            continue
+        rs = [r for r in (rows.get(jd) or {}).get(g) or [] if _panel_ticker(r[0]) in mine
+              and (r[0].get("kick") or 0) > h["at"]]
+        if len(rs) < AP_KNOB_REVIEW_MIN:
+            continue
+        try:
+            ds = knob_judge(jd, rs, dict(cur, **{h["knob"]: h["from"]}), h["knob"], h["to"], cache, deadline=deadline)
+        except Exception:
+            continue                                      # unreadable = no review
+        net = sum(d for _, d, _ in ds)
+        if math.isfinite(net):
+            h["fa"] = {"n": len(rs), "net": round(net, 2), "at": int(now)}
+
+
+def _ap_money(x):
+    return f"{'+' if x >= 0 else '−'}${abs(x):,.2f}"
+
+
+def ap_knob_entries(kst):
+    """[{at, text, g, h}] for what the knob stepper really changed (live steps and brake resets), in plain words:
+    from/to, why, dollars after fees. Display only; never raises."""
+    out = []
+    try:
+        for g, e in (kst.get("groups") or {}).items():
+            if not isinstance(e, dict):
+                continue
+            for h in (e.get("hist") or []):
+                if not isinstance(h, dict) or not h.get("live"):
+                    continue
+                try:
+                    if h.get("brake"):
+                        txt = f"Autopilot: {league_label(g)}: smart sell went back to its starting numbers. {str(h.get('why') or '')[:200]}".strip()
+                    else:
+                        k = KNOB_BY[h["knob"]]
+                        u = k["unit"]
+                        txt = f"Autopilot: {league_label(g)} {k['label']}: {knob_say(u, h['from'])} → {knob_say(u, h['to'])}."
+                        if isinstance(h.get("gain"), (int, float)) and h.get("n"):
+                            txt += (f" Why: {h.get('band', '?')} of {h['n']} past bets would have ended differently, "
+                                    f"{_ap_money(h['gain'])} in all after fees.")
+                        elif h.get("why"):
+                            txt += " Why: " + str(h["why"]).split(": ", 1)[-1][:300]
+                        fa = h.get("fa") if isinstance(h.get("fa"), dict) else None
+                        if h.get("undone"):
+                            txt += " You undid this."
+                        elif fa:
+                            txt += f" On {fa['n']} full-auto bets since: {_ap_money(fa['net'])} after fees."
+                        else:
+                            txt += " Judged on all bets; not enough full-auto bets since to check it."
+                    out.append({"at": int(h.get("at") or 0), "text": txt, "g": g, "h": h})
+                except Exception:
+                    continue                              # one odd entry never hides the rest
+    except Exception:
+        return []
+    return out
+
+
+def ap_knob_last(kst):
+    """The newest live knob step (not a brake, not already undone, recorded with what was there before) across every
+    group, with `ok`: the group's own value is still where the step left it, so Undo may put it back. None = nothing."""
+    best = None
+    for x in ap_knob_entries(kst):
+        h = x["h"]
+        if h.get("brake") or h.get("undone") or "prev_own" not in h or h.get("knob") not in KNOB_BY:
+            continue
+        if best is None or x["at"] > best["at"]:
+            best = x
+    if best:
+        lv = kst["groups"][best["g"]].get("lv")
+        best["ok"] = isinstance(lv, dict) and lv.get(best["h"]["knob"]) == best["h"]["to"]
+    return best
+
+
+def _knob_cautious():
+    """True while the full-auto brake is cautious (ap_brake_cautious), or when the file can't be read: fail closed. Reads the
+    raw file as well, because fa_state() turns a damaged `caution` record into level 0."""
+    try:
+        p = _fa_path()
+        raw = load_json(p, None) if os.path.exists(p) else {}
+        if not isinstance(raw, dict) or (raw.get("caution") is not None and not isinstance(raw.get("caution"), dict)):
+            return True
+        return bool(ap_brake_cautious(fa_state()))
+    except Exception:
+        return True
+
+
+def _knob_grp_sig(e):
+    """What an Undo changes in one group's record (its own values, their times, the step history's undone marks); two
+    reads that differ mean Pete undid something in between."""
+    e = e if isinstance(e, dict) else {}
+    h = [(x.get("at"), x.get("knob"), bool(x.get("undone"))) for x in (e.get("hist") or []) if isinstance(x, dict)]
+    return json.dumps([e.get("lv"), e.get("lat"), e.get("lstep_at"), h], sort_keys=True, default=str)
+
+
+def ap_knob_name(key):
+    """Plain name of a knob freeze/hold key ('knobs', 'knob:smart_floor', 'knob:nba:smart_floor'), else None."""
+    if key == "knobs":
+        return "smart sell's numbers"
+    p = key.split(":") if isinstance(key, str) else []
+    if p and p[0] == "knob" and p[-1] in KNOB_BY and len(p) in (2, 3):
+        return (f"{league_label(p[1])} " if len(p) == 3 else "") + KNOB_BY[p[-1]]["label"]
+    return None
+
+
 def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
     """Weekly: for each group (everyone, each sport, each league) and each tunable knob the registry names a judge for,
     replay one step either way and hold it to Pete's bar (knob_evidence). Every knob starts from the value live uses
@@ -28124,6 +29034,8 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
         live = knob_switch_on()
         if not force and now < KNOB_RUN["tune_next"]:
             return []
+        ctl = ap_knob_ctl(now)                        # #145: Pete's Autopilot controls (switch, freeze, hold); unreadable = paused
+        cautious = _knob_cautious()                   # the full-auto brake: cautious (soft level above 0) = nothing loosens
         st = knob_state()
         if not force and now < float(st.get("_next") or 0):
             return []
@@ -28154,11 +29066,13 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
         prev = st.get("run") if isinstance(st.get("run"), dict) else {}
         cycle = float(prev.get("cycle") or 0) if prev.get("done") is False and prev.get("cycle") else now
         groups, said, logrows, done, cache = {}, [], [], True, {}   # the cache is shared: groups hold the same bets
+        sigs, skipped = {}, []                        # each group as the run first read it; groups an Undo touched meanwhile
         for g in order:
             if time.monotonic() - t0 > budget:
                 done = False
                 break
             e = dict(st["groups"].get(g) or {}) if isinstance(st["groups"].get(g), dict) else {}
+            sigs[g] = _knob_grp_sig(st["groups"].get(g))
             if cycle < now and float(e.get("at") or 0) >= cycle:
                 continue                              # already judged in this weekly cycle (a run cut short resumes)
             v = dict(e.get("v") or {}) if isinstance(e.get("v"), dict) else {}
@@ -28199,6 +29113,9 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 if not jd:                            # its own test isn't built yet (PR3+)
                     last.append({"knob": n_, "status": "waits"})
                     continue
+                if live and n_ in knob_live_names() and ap_knob_stopped(ctl, n_):
+                    last.append({"knob": n_, "status": "paused" if ctl["paused"] else "frozen"})   # #145: Pete's control
+                    continue
                 rs = rows[jd].get(g) or []
                 if len(rs) < globals()[KNOB_MIN_N[jd]]:
                     last.append({"knob": n_, "status": "thin", "n": len(rs),
@@ -28212,6 +29129,12 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 for to in knob_candidates(n_, cur[n_]):
                     if jd == "sb" and to > top and to > cur[n_]:
                         continue                      # Smart Buy's soft top until 100 results (as smart_buy_learn)
+                    if live and n_ in knob_live_names() and ap_knob_held(ctl, g, n_, now) and knob_loosens(n_, cur[n_], to):
+                        last.append({"knob": n_, "from": cur[n_], "to": to, "status": "held"})   # #145: held after Pete's Undo
+                        continue
+                    if live and n_ in knob_live_names() and cautious and knob_loosens(n_, cur[n_], to):
+                        last.append({"knob": n_, "from": cur[n_], "to": to, "status": "cautious"})   # brake priority: tightening only
+                        continue
                     blk = _knob_blocked(n_, to, cur)
                     if blk:
                         last.append({"knob": n_, "from": cur[n_], "to": to, "status": "blocked",
@@ -28282,10 +29205,14 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                 lat[row["knob"]] = now
                 why[row["knob"]] = row["say"]
                 e["lstep_at"] = now
-                e["hist"] = (list(e.get("hist") or []) + [{"at": int(now), "knob": row["knob"], "from": row["from"],
-                                                           "to": row["to"], "live": True,
-                                                           "why": row["say"][:600]}])[-12:]
+                e["hist"] = (list(e.get("hist") or []) + [dict(
+                    {"at": int(now), "knob": row["knob"], "from": row["from"], "to": row["to"], "live": True,
+                     "why": row["say"][:600]}, **ap_knob_hist_extra(row, e))])[-12:]
                 said.append(f"changed {league_label(g)}: {row['say']}")
+            try:                                      # #145: a week on, judge each earlier step on full-auto bets (display only)
+                ap_knob_review(e, g, rows, cur, cache, now, t0 + budget)
+            except Exception as err:
+                print("knob stepper: full-auto review:", type(err).__name__, err)
             e.update(v=v, why=why, last=last, at=now, lv=lv, lat=lat)
             groups[g] = e
             for r in last:
@@ -28297,7 +29224,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                                     r.get("staked"), json.dumps(live_now.get(r["knob"])), ver))
 
         cap_raise = None                              # #228 PR6: your hedge cap, raised by the system only on evidence
-        if done and not _knob_braked_any(st, now):
+        if done and not _knob_braked_any(st, now) and not (cautious and live and HEDGE_RAISE_LIVE):   # a raise loosens: waits for the brake
             try:
                 cap_raise = knob_cap_step(rows["hedge"].get("all") or [], st, live and HEDGE_RAISE_LIVE, now)
             except Exception as err:
@@ -28310,12 +29237,18 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
                                 r.get("hold_n"), r["say"][:600], r.get("n"), r.get("staked"), json.dumps(r["from"]), ver))
 
         def put(d):
-            d["groups"].update(groups)
+            for g_, e_ in groups.items():             # an Undo while this run was judging changed the group: never write over it
+                if _knob_grp_sig(d["groups"].get(g_)) != sigs.get(g_):
+                    skipped.append(g_)
+                else:
+                    d["groups"][g_] = e_
+            ok_ = done and not skipped
             d["_at"] = now
-            d["_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
-            d["run"] = {"at": now, "secs": round(time.monotonic() - t0, 1), "done": done, "groups": len(groups),
+            d["_next"] = now + (KNOB_TUNE_EVERY if ok_ else KNOB_RETRY)
+            d["run"] = {"at": now, "secs": round(time.monotonic() - t0, 1), "done": ok_, "groups": len(groups) - len(skipped),
                         "mode": "live" if live else KNOB_MODE, "cycle": cycle,
-                        "why": None if done else "ran out of time; the rest waits a day"}
+                        "why": None if ok_ else "you changed a setting while it ran; that league is judged again tomorrow"
+                        if done else "ran out of time; the rest waits a day"}
             for name in ("auto_cap", "hedge_cap"):     # #260: Pete's own value, kept apart from any system raise
                 s = d["settings"].get(name) if isinstance(d["settings"].get(name), dict) else {}
                 d["settings"][name] = dict(s, pete=_knob_pete(name), system=s.get("system"))
@@ -28324,6 +29257,16 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             elif cap_raise:
                 d["settings"]["hedge_cap"].update(would=cap_raise["to"], would_at=now)
         _knob_save(put)
+        if skipped:                                   # not saved, so not reported or logged as changes either
+            gone = tuple(f"{pre}{league_label(g_)}:" for g_ in skipped for pre in ("changed ", "(not active yet) "))
+            said = [x for x in said if not x.startswith(gone)]
+            logrows = [r for r in logrows if r[1] not in skipped]
+            said.append("you changed a setting while the weekly run was going, so it left " +
+                        ", ".join(league_label(g_) for g_ in skipped) + " as you set it and judges again tomorrow")
+            done = False
+            skip_only = True
+        else:
+            skip_only = False
         KNOB_RUN["tune_next"] = now + (KNOB_TUNE_EVERY if done else KNOB_RETRY)
         _knob_shadow_table()
         for r in logrows:
@@ -28339,7 +29282,7 @@ def knob_tune(now=None, force=False, budget=KNOB_BUDGET):
             store_x("delete from break_ep where rowid not in (select rowid from break_ep order by ts desc limit ?)",
                     (BRK_KEEP_ROWS,))
         ANALYTICS["at"] = 0
-        return said + ([] if done else ["ran out of time; the rest waits a day"])
+        return said + ([] if done or skip_only else ["ran out of time; the rest waits a day"])
     except Exception as err:
         print("knob stepper:", type(err).__name__, err)
         msg = f"the last try hit an error ({type(err).__name__}); tries again in a day"
@@ -32817,8 +33760,10 @@ def price_prune(now=None):
             store_x("delete from exit_shadow where rowid in (select rowid from exit_shadow where source='universe' "
                     "order by ts limit ?)", (n - cap,))
             n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
-        if n > cap:
-            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (n - cap,))
+        while n > cap:                                  # in chunks, so the shared lock is freed between them
+            k = min(n - cap, 5000)
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (k,))
+            n -= k
 
 
 # ---- signal events (news + game context recorder, write-only): PETE chose to RECORD two signal families and test them
@@ -33674,6 +34619,397 @@ def signal_shadow(code, games, lines=(), now=None):
         except Exception:
             pass
         return 0
+
+
+# ---- ESPN win-chance recorder (issue #483). RECORD-ONLY: NOTHING in the engine or watcher reads these tables (only
+# tools/espn_wp_scorecard.py, offline, read-only). Three append-only, bounded tables, all errors swallowed, never on the
+# trading path:
+#   wp_shadow  ESPN's raw scoreboard win chance (wp) for a game under way, its play id and how long we have seen that play,
+#              next to our pure model (no wp), the 50/50 blend and Kalshi's bid/ask/mid, joined later on ticker + ts. A row
+#              with wp NULL is a league/game that has none (coverage). From data already in memory: no request.
+#   wp_outcome the settled result of each ticker in wp_shadow (one row per ticker), for scoring.
+#   wp_hist    ESPN's summary `winprobability` history (new plays only) and wp_lines its `pickcenter` line when it changes,
+#              for followed NBA / college basketball / NFL / college football games. Reuses the football game page's own
+#              summary fetch; otherwise a polite, capped, key-free GET (WPH below), on a background thread.
+# Flags `wp_shadow` and `wp_hist` (real CFG keys, ON by default for recording; false = off).
+WPR = {"every": 60, "keep_days": 30, "cap": 300000, "prune": 0.0, "seen": {}, "play": {}}
+WPH = {"leagues": ("nfl", "ncaaf", "nba", "ncaamb"), "live_every": 300, "pre_every": 7200, "pre_window": 4 * 3600,
+       "per_hour": 240, "per_tick": 12, "gap": 0.5, "keep_days": 45, "cap": 400000, "lines_cap": 50000, "prune": 0.0,
+       "last": {}, "have": {}, "line": {}, "live": {}, "code": {}, "done": {}, "stamps": [], "busy": False, "lock": threading.Lock()}
+
+
+def _wp_tables():
+    store_x("create table if not exists wp_shadow(ts real, ticker text, league text, wp real, play_id text, "
+            "play_age real, feed_age real, model real, blend real, fair real, bid real, ask real, mid real, lead int, "
+            "frac real, screened text)")                    # screened: null = the panel kept the game, else why it was left out
+    if not WPR.get("cols"):
+        have = {r["name"] for r in store_rows("pragma table_info(wp_shadow)")}
+        if "screened" not in have:
+            store_x("alter table wp_shadow add column screened text")
+        have = {r["name"] for r in store_rows("pragma table_info(wp_shadow)")}
+        WPR["cols"] = "screened" in have
+    store_x("create index if not exists wp_shadow_ts on wp_shadow(ts)")
+    store_x("create index if not exists wp_shadow_t on wp_shadow(ticker)")
+    store_x("create table if not exists wp_outcome(ticker text primary key, outcome text, ts real)")
+    store_x("create table if not exists wp_hist(ts real, league text, game text, seq int, play_id text, home_wp real, "
+            "tie real, wall real, home text, away text)")
+    store_x("create unique index if not exists wp_hist_g on wp_hist(game, play_id)")
+    store_x("create index if not exists wp_hist_ts on wp_hist(ts)")
+    store_x("create table if not exists wp_lines(ts real, league text, game text, provider text, details text, "
+            "spread real, total real, over_odds real, under_odds real, home_ml real, away_ml real, home text, "
+            "away text, state text)")
+    store_x("create index if not exists wp_lines_ts on wp_lines(ts)")
+
+
+def _wp_insert(batches):
+    """{table: [rows]} in one transaction under the history lock; best-effort, never raises. Duplicates are ignored."""
+    db = STORE.get("db")
+    if not db:
+        return
+    with _SLOCK:
+        own = not db.in_transaction
+        try:
+            if own:
+                db.execute("begin")
+            for tbl, rows in batches.items():
+                if rows:
+                    db.executemany(f"insert or ignore into {tbl} values({','.join('?' * len(rows[0]))})", rows)
+            if own:
+                db.execute("commit")
+        except Exception as err:
+            if own and db.in_transaction:
+                try:
+                    db.execute("rollback")
+                except Exception:
+                    pass
+            console_note(f"wp recorder: {type(err).__name__}: {err}")
+
+
+def _wp_prune(now):
+    """Oldest-first only: rows past their retention days, then the oldest rows over the ceiling. Nothing else is deleted."""
+    WPR["prune"] = WPH["prune"] = now
+    for tbl, days, cap in (("wp_shadow", WPR["keep_days"], WPR["cap"]), ("wp_hist", WPH["keep_days"], WPH["cap"]),
+                           ("wp_lines", WPH["keep_days"], WPH["lines_cap"]), ("wp_outcome", 60, 100000)):
+        store_x(f"delete from {tbl} where ts < ?", (now - days * 86400,))
+        n = (store_rows(f"select count(*) n from {tbl}") or [{"n": 0}])[0]["n"]
+        while n > cap:                                  # in chunks, so the shared lock is freed between them
+            k = min(n - cap, 5000)
+            store_x(f"delete from {tbl} where rowid in (select rowid from {tbl} order by ts limit ?)", (k,))
+            n -= k
+
+
+def _wp_num(v, lo=None, hi=None):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")) or (lo is not None and v < lo) or (hi is not None and v > hi):
+        return None
+    return v
+
+
+def _wp_why(text):
+    """The panel's plain-English reason a live game was left out, as one short word (for the screened column)."""
+    t = str(text or "").lower()
+    for key, word in (("no live buyers", "no_buyers"), ("jumpy", "spread"), ("nearly decided", "decided"), ("disagree", "disagree"),
+                      ("no live score feed", "no_feed"), ("no fresh live score", "stale"), ("no live score", "stale"),
+                      ("game is over", "over"), ("no pre-game line", "no_line"), ("doesn't show it in play", "not_in_play")):
+        if key in t:
+            return word
+    return "other"
+
+
+def wp_shadow(code, games, now=None, screened=None):
+    """Record ESPN's raw win chance (wp) for each side of a game under way (about every 60 s a ticker), with its play id,
+    how long we have watched that play, the feed's age, our pure model and the 50/50 blend (before calibration), the
+    engine's own live fair, and Kalshi's bid/ask/mid. From cached scores and prices already held: never fetches.
+    Returns rows written; never raises, never reads the tables back into a decision."""
+    try:
+        if not STORE.get("db") or not CFG.get("wp_shadow", True):
+            return 0
+        now = now or time.time()
+        seen, plays, rows = WPR["seen"], WPR["play"], []
+        items = [(e, sides, None) for e, sides in (games or {}).items()]
+        items += [(e, sides, _wp_why(why)) for e, (sides, why) in (screened or {}).items()]   # (#483) games the panel screened out
+        for e, sides, scr in items:
+            for x in sides:
+                if not isinstance(x, dict) or x.get("tie") or not x.get("ticker") or (scr is None and not x.get("live")):
+                    continue
+                t = x["ticker"]
+                if now - seen.get(t, 0) < WPR["every"]:
+                    continue
+                try:
+                    sc = leg_score({"ticker": t, "side": "yes"})          # cached scores only: never fetched here
+                except Exception:
+                    sc = None
+                if not sc or sc.get("state") != "in":
+                    continue
+                seen[t] = now
+                sport = ticker_sport(t) or code
+                wp, pid = _wp_num(sc.get("wp"), 0, 1), sc.get("wp_play")
+                if scr is not None and wp is None and sport not in LIVE_MODEL:
+                    continue                                          # a screened game with no wp and no model: nothing to compare
+                first = plays.get(sc.get("game"))
+                if wp is not None and pid and (not first or first[0] != pid):
+                    plays[sc.get("game")] = first = (pid, now)           # the first time we saw this play
+                age = round(now - first[1], 1) if wp is not None and first and first[0] == pid else None
+                model = blend = None
+                try:
+                    lead, frac = int(sc["me"]) - int(sc["opp"]), float(sc["frac"])
+                    pre = x.get("pre") or pregame_fair(t)
+                    if pre and sport in LIVE_MODEL:
+                        base = calib_fair(sport, pre, t)
+                        model = _wp_num(live_model_chance(sport, base, lead, frac, None), 0, 1)
+                        blend = _wp_num(live_model_chance(sport, base, lead, frac, wp), 0, 1) if wp is not None else model
+                except Exception:
+                    lead = frac = None
+                bid, ask = _wp_num(x.get("bid"), 0, 1), _wp_num(x.get("p"), 0, 1)
+                mid = round((bid + ask) / 2, 4) if bid and ask else None
+                try:
+                    fa = round(score_age(sport, now), 1)
+                except Exception:
+                    fa = None
+                rows.append((round(now, 1), t, sport, wp, pid, age, fa,
+                             None if model is None else round(model, 4), None if blend is None else round(blend, 4),
+                             _wp_num(x.get("fair"), 0, 1) if scr is None else None, bid, ask, mid, lead,
+                             None if frac is None else round(frac, 3), scr))
+        if len(seen) > 20000:
+            for k in [k for k, v in seen.items() if now - v > 3600]:
+                seen.pop(k, None)
+        if len(plays) > 5000:
+            plays.clear()
+        if rows:
+            _wp_tables()
+            if not WPR.get("cols"):                                   # the column could not be added: the old 15-column shape
+                rows = [r[:15] for r in rows]
+            _wp_insert({"wp_shadow": rows})
+        return len(rows)
+    except Exception as err:
+        try:
+            console_note(f"wp recorder: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def wp_resolve(limit=100, now=None):
+    """The settled result of each wp_shadow ticker whose last row is over 3 h old (Kalshi's own result, the same call
+    resolve_live_fairs makes); one that never settles is closed as 'void' after 3 days. Appends wp_outcome rows."""
+    now = now or time.time()
+    if not STORE.get("db"):
+        return 0
+    _wp_tables()
+    rows = store_rows("select ticker, max(ts) last from wp_shadow where ticker not in (select ticker from wp_outcome) "
+                      "group by ticker having max(ts) < ? limit ?", (now - 3 * 3600, limit))
+    res = fetch_results([r["ticker"] for r in rows]) if rows else {}
+    out = []
+    for r in rows:
+        if res.get(r["ticker"]) in ("yes", "no"):
+            out.append((r["ticker"], res[r["ticker"]], now))
+        elif now - r["last"] > 3 * 86400:
+            out.append((r["ticker"], "void", now))
+    if out:
+        _wp_insert({"wp_outcome": out})
+    return len(out)
+
+
+def _wp_wall(v):
+    try:
+        return dt.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def wp_hist_ingest(code, game, data, state=None, now=None):
+    """Record the new plays of a summary's `winprobability` history and its `pickcenter` line (when it changed). `data` is
+    a summary the app already fetched (or wp_hist_fetch just did). Never raises; returns rows written."""
+    try:
+        if not STORE.get("db") or not CFG.get("wp_hist", True) or not isinstance(data, dict):
+            return 0
+        now = now or time.time()
+        game = str(game)
+        comp = (((data.get("header") or {}).get("competitions") or [{}])[0]) or {}
+        home = away = None
+        for c in comp.get("competitors") or []:
+            ab = str((c.get("team") or {}).get("abbreviation") or "")[:12] or None
+            if c.get("homeAway") == "home":
+                home = ab
+            elif c.get("homeAway") == "away":
+                away = ab
+        walls = {}
+        for p in (data.get("plays") or [])[-3000:]:
+            if isinstance(p, dict) and p.get("id") and p.get("wallclock"):
+                walls[str(p["id"])] = _wp_wall(p["wallclock"])
+        hist = [w for w in (data.get("winprobability") or []) if isinstance(w, dict)]
+        have = WPH["have"].get(game, 0)
+        rows = []
+        for i in range(have, len(hist)):
+            w = hist[i]
+            hw = _wp_num(w.get("homeWinPercentage"), 0, 1)
+            if hw is None or not w.get("playId"):
+                continue
+            pid = str(w["playId"])[:40]
+            rows.append((round(now, 1), code, game, i, pid, hw, _wp_num(w.get("tiePercentage"), 0, 1), walls.get(pid), home, away))
+        lines = []
+        for pc in (data.get("pickcenter") or [])[:4]:
+            if not isinstance(pc, dict):
+                continue
+            ho, ao = pc.get("homeTeamOdds") or {}, pc.get("awayTeamOdds") or {}
+            prov = str((pc.get("provider") or {}).get("name") or "")[:30]
+            rec = (str(pc.get("details") or "")[:30], _wp_num(pc.get("spread")), _wp_num(pc.get("overUnder")),
+                   _wp_num(pc.get("overOdds")), _wp_num(pc.get("underOdds")), _wp_num(ho.get("moneyLine")),
+                   _wp_num(ao.get("moneyLine")))
+            if any(v is not None and v != "" for v in rec) and WPH["line"].get((game, prov)) != rec:
+                WPH["line"][(game, prov)] = rec
+                lines.append((round(now, 1), code, game, prov) + rec + (home, away, state))
+        if rows or lines:
+            _wp_tables()
+            _wp_insert({"wp_hist": rows, "wp_lines": lines})
+            WPH["have"][game] = max(have, len(hist))
+        WPH["last"][game] = now                        # a game page's own summary counts: the poller skips it for a while
+        for d in (WPH["have"], WPH["line"], WPH["last"]):
+            if len(d) > 3000:
+                for k in list(d)[:1500]:
+                    d.pop(k, None)
+        return len(rows) + len(lines)
+    except Exception as err:
+        try:
+            console_note(f"wp recorder: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
+
+
+def wp_hist_fetch(code, game, state=None, now=None):
+    """ONE polite public GET of a game's ESPN summary (no key, no login), recorded by wp_hist_ingest. Counts one request
+    per path tried against the hourly ceiling. Never raises; returns rows written."""
+    try:
+        path = (SPORTS.get(code) or LEAGUES.get(code) or {}).get("espn") or ""
+        paths = path if isinstance(path, list) else [path]
+        if not re.fullmatch(r"[0-9]{1,12}", str(game)):
+            return 0
+        for pth in [p for p in paths if p][:2]:
+            WPH["stamps"].append(time.time())
+            r = requests.get(f"https://site.api.espn.com/apis/site/v2/sports/{pth}/summary",
+                             params={"event": str(game)}, timeout=10)
+            data = r.json() if r.ok else {}
+            if isinstance(data, dict) and data.get("header"):
+                return wp_hist_ingest(code, game, data, state, now)
+        return 0
+    except Exception:
+        return 0
+
+
+def _wp_hist_worker(jobs):
+    try:
+        for code, game, state in jobs:
+            if not CFG.get("wp_hist", True):
+                break
+            wp_hist_fetch(code, game, state)
+            time.sleep(WPH["gap"])
+    finally:
+        WPH["busy"] = False
+
+
+def wp_hist_due(code, games, now=None):
+    """[(code, game id, state)] the games to fetch now, at most WPH['per_tick'], and the hourly ceiling is never passed. A game is
+    due only if it has a Kalshi market in `games`, in a league of WPH['leagues'], and then: in play every `live_every` s;
+    before the start once per `pre_every` s inside `pre_window` of the kickoff; once more after it ends (if we saw it live).
+    Pure bookkeeping on cached scores: no request."""
+    now = now or time.time()
+    out = []
+    if code not in WPH["leagues"]:
+        return out
+    WPH["stamps"][:] = [t for t in WPH["stamps"] if now - t < 3600]
+    room = WPH["per_hour"] - len(WPH["stamps"])
+    seen = set()
+    cand = []
+    for e, sides in (games or {}).items():
+        for x in sides:
+            try:
+                if not isinstance(x, dict) or x.get("tie") or not x.get("ticker"):
+                    continue
+                sc = leg_score({"ticker": x["ticker"], "side": "yes"})
+                g = str((sc or {}).get("game") or "")
+                if not g or g in seen or not re.fullmatch(r"[0-9]{1,12}", g):
+                    continue
+                seen.add(g)
+                st, last = sc.get("state"), WPH["last"].get(g, 0)
+                if st == "in":
+                    WPH["live"][g] = now
+                    WPH["code"][g] = code
+                    WPH["done"].pop(g, None)
+                    due = now - last >= WPH["live_every"]
+                elif st == "post":
+                    due = g in WPH["live"] and g not in WPH["done"] and now - last >= 60
+                elif st == "pre":
+                    k = _wp_wall(sc.get("start"))
+                    due = bool(k) and 0 <= k - now <= WPH["pre_window"] and now - last >= WPH["pre_every"]
+                else:
+                    due = False
+                if due:
+                    cand.append((last, g, st))
+            except Exception:
+                continue
+    for g, t in list(WPH["live"].items()):       # a game that has left the panel (over, or screened out) still gets its final fetch
+        if g not in seen and WPH["code"].get(g) == code and g not in WPH["done"] and now - t > 600 and now - WPH["last"].get(g, 0) >= 60:
+            cand.append((WPH["last"].get(g, 0), g, "post"))
+    cand.sort()                                  # least recently fetched first, so no game is starved when there are many
+    return [(code, g, st) for _l, g, st in cand[:max(0, min(room, WPH["per_tick"]))]]
+
+
+def wp_hist_tick(code, games, now=None):
+    """Called from the panel pass: starts at most one background thread (one request at a time, WPH['gap'] s apart) for the
+    games wp_hist_due names. Returns the number queued; never raises, never waits on the network."""
+    try:
+        if not STORE.get("db") or not CFG.get("wp_hist", True):
+            return 0
+        now = now or time.time()
+        with WPH["lock"]:
+            if WPH["busy"]:
+                return 0
+            jobs = wp_hist_due(code, games, now)
+            if not jobs:
+                return 0
+            for _c, g, st in jobs:
+                WPH["last"][g] = now                   # also the back-off if the fetch fails: the next try waits a full period
+                if st == "post":
+                    WPH["done"][g] = now
+            if len(WPH["done"]) > 3000 or len(WPH["live"]) > 3000:
+                WPH["done"].clear()
+                WPH["live"].clear()
+                WPH["code"].clear()
+            WPH["busy"] = True
+        try:
+            threading.Thread(target=_wp_hist_worker, args=(jobs,), daemon=True, name="wp-hist").start()
+        except Exception:
+            WPH["busy"] = False
+            return 0
+        return len(jobs)
+    except Exception:
+        return 0
+
+
+def espn_wp_record(code, games, screened=None):
+    """The one hook in the panel pass: both recorders, each wrapped. Never raises. `screened` = {game: (sides, why)} for the
+    games under way that the panel left out (wide spread, stale score, nearly decided, far from Kalshi): recorded too, marked."""
+    try:
+        extra = {e: sd for e, (sd, _w) in (screened or {}).items()}
+        calls = ((wp_shadow, (code, games), {"screened": screened}), (wp_hist_tick, (code, dict(extra, **(games or {}))), {}))
+    except Exception:
+        calls = ((wp_shadow, (code, games), {}), (wp_hist_tick, (code, games), {}))
+    for fn, a, kw in calls:
+        try:
+            fn(*a, **kw)
+        except Exception:
+            pass
+    try:                                              # the prune runs whichever flag is on, so no table grows unbounded
+        now = time.time()
+        if STORE.get("db") and now - WPR["prune"] > 6 * 3600:
+            _wp_tables()
+            _wp_prune(now)
+    except Exception:
+        pass
 
 
 # ---- broad recorder (watch all games): price paths and signals for EVERY market the engine already fetched. Pete's goal:
