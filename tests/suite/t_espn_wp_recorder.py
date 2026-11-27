@@ -204,7 +204,7 @@ def d2_prune_independent():
 
 def e_unread():
     src = open(os.path.join(REPO, "nfl_combo_planner.py")).read()
-    a, b = src.index("# ---- ESPN win-chance recorder (issue #483"), src.index("# ---- exit_shadow: old")
+    a, b = src.index("# ---- ESPN win-chance recorder (issue #483"), src.index("# ---- broad recorder (watch all games)")
     outside, inside = src[:a] + src[b:], src[a:b]
     tbl = r"wp_(shadow|outcome|hist|lines)\b"
     ok("E nothing outside the recorder reads or writes the tables in SQL", not re.search(r"(from|into|join|table|update|exists)\s+" + tbl, outside, re.I))
