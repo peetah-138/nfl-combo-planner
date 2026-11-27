@@ -24588,8 +24588,95 @@ FAL_NOT_WIRED = (
     ("Market-odds weighting", "it already steers long-shot ideas on its own; no full-auto number depends on it"))
 
 
+# ---------------------------------------------------------------- the autopilot registry (#144, step 1)
+# One list of every self-adjusting full-auto setting, one shared evidence gate, one card log. The paper lessons (bar, sbev,
+# game) are the first three entries; later settings register here and ride the same gate, Undo and freeze. The registry
+# adds control, not behaviour: step sizes, ranges, evidence rules and the loosen-only-back-to-start rule are #602's, unchanged.
+#   Undo last change: restores the previous value and holds THAT setting for AP_HOLD (2 weeks).
+#   Freeze: a frozen setting (one key like "bar:nba", or a whole record like "bar") takes no automatic step or revert.
+#   Brake priority: while the brake is cautious (ap_brake_cautious) nothing loosens anywhere; tightening is still fine.
+#   Errors: any unreadable data or error = no step, and the card says "no change, not enough evidence".
+AP_HOLD = 14 * 86400
+AP_REG = {}                                               # record -> spec; filled below, once the functions exist
+
+
+def ap_register(rec, label, load, min_n, text, bounds, start, tighter_sign):
+    """Add one self-adjusting setting. bounds = {lo, hi, step}; start = its identity value (the loose end);
+    tighter_sign +1 when a bigger number is tighter, -1 when a smaller one is."""
+    AP_REG[rec] = {"label": label, "load": load, "min_n": min_n, "text": text, "bounds": bounds, "start": start,
+                   "sign": tighter_sign}
+
+
+def ap_brake_cautious(st):
+    """THE BRAKE HOOK. True while the full-auto brake is in a cautious state, so nothing may loosen anywhere (tightening
+    still may). Today: the losing-streak / daily-loss brake is tripped. The soft brake plugs in here later; this function
+    is the only place the autopilot looks at the brake, and it never changes it. Reads both the hard brake (st["brake"])
+    and the soft brake's confidence level (st["caution"]["level"] > 0; absent before that lands). Unreadable = cautious."""
+    try:
+        if not isinstance(st, dict):
+            return True
+        if isinstance(st.get("brake"), dict) and st["brake"].get("kind"):
+            return True
+        c = st.get("caution")
+        if c is None:
+            return False
+        if not isinstance(c, dict):
+            return True
+        lv = c.get("level", 0)
+        if isinstance(lv, bool) or not isinstance(lv, (int, float)) or not math.isfinite(lv):
+            return True
+        return lv > 0
+    except Exception:
+        return True
+
+
+def ap_clamp(rec, v):
+    """`v` forced inside the setting's outer bounds (and a game share never above the whole bankroll); None when it isn't a
+    plain finite number. The one place a value is fenced before it is saved."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    b = AP_REG[rec]["bounds"]
+    v = min(max(v, b["lo"]), b["hi"])
+    if rec == "game":
+        v = min(v, 1.0)
+    return int(round(v)) if rec == "sbev" else round(float(v), 4)
+
+
+def _ap_looser(rec, a, b):
+    """True when moving a -> b loosens the setting (toward its start value)."""
+    return (b - a) * AP_REG[rec]["sign"] < -1e-9
+
+
+def _ap_frozen(L, key):
+    f = L.get("frozen") if isinstance(L, dict) and isinstance(L.get("frozen"), dict) else {}
+    try:
+        rec = _fal_split(key)[0]
+    except Exception:
+        rec = None
+    return bool(f.get(key) or f.get(rec))
+
+
+def _ap_held(L, key, now):
+    h = L.get("holds") if isinstance(L, dict) and isinstance(L.get("holds"), dict) else {}
+    try:
+        return float(h.get(key) or 0) > now
+    except (TypeError, ValueError):
+        return True
+
+
+def ap_gate(rec, key, rs, passes, a, b, last_at):
+    """THE shared evidence gate for every registered setting: (ok, evidence, bootstrap low end) for moving a -> b. Needs the
+    setting's own minimum sample, the stepper's evidence (the older 70% picks the step, the newest 30% must agree) and a
+    bootstrap low end above zero, in net dollars after fees. No evidence, no step."""
+    ds = _fal_ds(rs, passes, a, b)
+    ev = knob_evidence(ds, 0, last_at)
+    lb = _guard_bootstrap(ds, last_at, f"fal:{key}:{a}>{b}")
+    clean = all(math.isfinite(d) for _, d, _ in ds)               # a NaN anywhere: no step
+    return bool(clean and len(rs) >= AP_REG[rec]["min_n"](rec) and ev["ok"] and lb > 0), ev, lb
+
+
 def fal_on(st):
-    """Lessons only count while full auto is ON; the master switch defaults to on (only an explicit False turns it off)."""
+    """Autopilot (the Lessons switch, key fa_lessons) only counts while full auto is ON; the master switch defaults to on (only an explicit False turns it off)."""
     return st.get("on") is True and st.get("fa_lessons") is not False
 
 
@@ -24631,7 +24718,7 @@ def _fal_vals(st):
         return out, None
     except Exception:
         return None, ("Full auto's learned numbers couldn't be read, so it approves nothing until they can. "
-                      "Turn Lessons off to carry on without them.")
+                      "Turn Autopilot off to carry on without them.")
 
 
 def _fal_cur(vals, key):
@@ -24711,13 +24798,8 @@ def _fal_ds(rs, passes, a, b):
 
 
 def _fal_judge(rec, key, rs, passes, a, b, last_at):
-    """(ok, evidence, bootstrap low end) for one proposed move. ok needs the record's own sample, the stepper's evidence
-    (older 70% picks it, newest 30% must agree) and a bootstrap low end above zero, in net dollars after fees."""
-    ds = _fal_ds(rs, passes, a, b)
-    ev = knob_evidence(ds, 0, last_at)
-    lb = _guard_bootstrap(ds, last_at, f"fal:{key}:{a}>{b}")
-    clean = all(math.isfinite(d) for _, d, _ in ds)               # a NaN anywhere: no step
-    return bool(clean and len(rs) >= _fal_min_n(rec) and ev["ok"] and lb > 0), ev, lb
+    """Kept name for #602's callers: the shared gate (ap_gate) does the work."""
+    return ap_gate(rec, key, rs, passes, a, b, last_at)
 
 
 def _fal_val_text(rec, v):
@@ -24743,6 +24825,11 @@ def _fal_name(key):
     return f"{league_label(lg)} combo bar" if rec == "bar" else f"{league_label(lg)} Smart Buy bar"
 
 
+ap_register("bar", FAL_NAMES["bar"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["bar"], FAL_START["bar"], 1)
+ap_register("sbev", FAL_NAMES["sbev"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["sbev"], FAL_START["sbev"], 1)
+ap_register("game", FAL_NAMES["game"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["game"], FAL_START["game"], -1)
+
+
 def _fal_plan(st, now):
     """What this look decided, read-only: {'actions': [...], 'status': {record: {...}}}. Raises nothing for one record's
     unreadable data (that record just takes no step); a malformed saved value stops everything (no actions)."""
@@ -24751,12 +24838,13 @@ def _fal_plan(st, now):
         return {"actions": [], "status": {}}
     L = st.get("lessons") if isinstance(st.get("lessons"), dict) else {}
     last, steps, since = L.get("last") or {}, L.get("steps") or {}, L.get("since") or {}
-    actions, status = [], {}
-    for rec in FAL_RECS:
-        s = {"n": None, "min": _fal_min_n(rec), "pass": False, "at": round(now), "note": ""}
+    actions, status, nochange = [], {}, []
+    cautious = ap_brake_cautious(st)
+    for rec, spec in AP_REG.items():
+        s = {"n": None, "min": spec["min_n"](rec), "pass": False, "at": round(now), "note": ""}
         status[rec] = s
         try:
-            by, passes = _fal_load(rec, now)
+            by, passes = spec["load"](rec, now)
             s["n"] = sum(len(v) for v in by.values())
             lr = last.get(rec) if isinstance(last.get(rec), dict) else None
             if lr and not lr.get("judged"):                  # the last step is judged before anything new
@@ -24777,7 +24865,10 @@ def _fal_plan(st, now):
                 else:
                     bad, net = None, round(net, 2)
                 if bad and held:
-                    actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
+                    if cautious and _ap_looser(rec, lr["to"], lr["from"]):
+                        s["note"] = "the brake is cautious: nothing loosens"
+                    else:
+                        actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post), "why": bad})
                 elif bad:
                     pass
                 elif len(post) >= KNOB_HOLD_MIN:
@@ -24788,8 +24879,13 @@ def _fal_plan(st, now):
             cands = []
             for key, rs in by.items():
                 found = []
+                if _ap_frozen(L, key):
+                    continue                                 # frozen by Pete: no new step (a pending revert is still judged)
+                held = _ap_held(L, key, now)
                 for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
-                    ok, ev, lb = _fal_judge(rec, key, rs, passes, _fal_cur(vals, key), new, since.get(key) or 0)
+                    if dirn == "looser" and (cautious or held):
+                        continue                             # brake priority, or held after Pete's Undo: nothing loosens
+                    ok, ev, lb = ap_gate(rec, key, rs, passes, _fal_cur(vals, key), new, since.get(key) or 0)
                     if ok:
                         found.append({"do": "step", "rec": rec, "key": key, "from": _fal_cur(vals, key), "to": new,
                                       "dir": dirn, "ev": ev, "lb": lb})
@@ -24804,7 +24900,8 @@ def _fal_plan(st, now):
                 actions.append(max(cands, key=lambda c: c["lb"]))
         except Exception as err:
             s["note"] = "couldn't read its data, no step (" + type(err).__name__ + ")"
-    return {"actions": actions, "status": status}
+            nochange.append(rec)
+    return {"actions": actions, "status": status, "nochange": nochange}
 
 
 def _fal_apply(s, plan, now):
@@ -24817,7 +24914,7 @@ def _fal_apply(s, plan, now):
     if err:
         return
     L = s.setdefault("lessons", {})
-    for k in ("vals", "steps", "since", "last", "status"):
+    for k in ("vals", "steps", "since", "last", "status", "frozen", "holds", "nochg"):
         if not isinstance(L.get(k), dict):
             L[k] = {}
     if not isinstance(L.get("log"), list):
@@ -24826,10 +24923,21 @@ def _fal_apply(s, plan, now):
     def say(kind, key, text, **extra):
         L["log"].append({"at": round(now), "kind": kind, "key": key, "text": text, **extra})
         del L["log"][:-FAL["log"]]
+    for rec in plan.get("nochange") or []:                   # an unreadable record: say so, at most once a day each
+        if rec in AP_REG and now - float(L["nochg"].get(rec) or 0) >= 86400:
+            say("nochange", rec, f"Autopilot: {FAL_NAMES[rec]}: no change, not enough evidence.")
+            L["nochg"][rec] = round(now)
+    cautious = ap_brake_cautious(s)
     for a in plan.get("actions") or []:
         rec, key = a["rec"], a["key"]
         lr = L["last"].get(rec) if isinstance(L["last"].get(rec), dict) else None
+        if rec not in AP_REG:
+            continue
         if a["do"] == "step":
+            to = ap_clamp(rec, a["to"])                      # the outer fence, once more, right before it is saved
+            if to is None or abs(to - a["to"]) > 1e-9 or _ap_frozen(L, key) \
+                    or (_ap_looser(rec, a["from"], to) and (cautious or _ap_held(L, key, now))):
+                continue
             if now - float(L["steps"].get(rec) or 0) < FAL["week"] or (lr and not lr.get("judged")) \
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
                 continue
@@ -24840,8 +24948,10 @@ def _fal_apply(s, plan, now):
             _fal_set(L, rec, key, a["to"])
             L["steps"][rec], L["since"][key] = round(now), round(now)
             L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
+            L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
         elif lr and not lr.get("judged") and lr.get("key") == key:
-            if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9:
+            if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9 \
+                    and ap_clamp(rec, lr["from"]) is not None and not (cautious and _ap_looser(rec, lr["to"], lr["from"])):
                 why = ("the " + str(a["n"]) + " bets that change affected lost $" + format(-a["net"], ".2f") + " after fees in the week since."
                        if a.get("why", "lost") == "lost" else
                        "its results could not be read." if a.get("why") == "unreadable" else
@@ -24849,9 +24959,10 @@ def _fal_apply(s, plan, now):
                 back = f" to {_fal_val_text(rec, lr['from'])}" if rec == "game" else " where it was"
                 say("revert", key, f"Put the {_fal_name(key)} back{back}: " + why,
                     ev={"net": a["net"], "n": a["n"], "why": a.get("why", "lost"), "from": lr["to"], "to": lr["from"]})
-                _fal_set(L, rec, key, lr["from"])
+                _fal_set(L, rec, key, ap_clamp(rec, lr["from"]))
                 L["steps"][rec], L["since"][key] = round(now), round(now)
                 lr.update(judged=True, reverted=True)
+                L["change"] = {"rec": rec, "key": key, "from": lr["to"], "to": lr["from"], "at": round(now), "kind": "revert"}
             elif a["do"] == "kept":
                 say("kept", key, f"Kept the {_fal_name(key)} change: the {a['n']} bets it affected since made ${a['net']:.2f} "
                     f"after fees." if a["n"] else f"Kept the {_fal_name(key)} change: too few bets since to tell.",
@@ -24875,7 +24986,11 @@ def fal_tick(st, now, log=print):
     if not fal_on(st) or now - FAL_RUN["at"] < FAL["look"]:
         return False
     FAL_RUN["at"] = now
-    plan = _fal_plan(st, now)
+    try:
+        plan = _fal_plan(st, now)
+    except Exception as err:                                 # any error at all: no step
+        log("full auto autopilot: no change:", type(err).__name__, err)
+        return False
     if not plan["status"]:
         return False
     _fa_update(lambda s: _fal_apply(s, plan, now))
@@ -24931,8 +25046,84 @@ def fa_lessons_set(on):
         _fa_update(lambda s: s.update(fa_lessons=bool(on)))
     except Exception as err:
         return False, "Couldn't save that (" + type(err).__name__ + ")."
-    return True, ("Lessons are ON. While full auto is on, it may learn small steps from the paper records."
-                  if on else "Lessons are OFF. Full auto uses its starting numbers, as before.")
+    return True, ("Autopilot is ON. While full auto is on, it may take small steps from the paper records."
+                  if on else "Autopilot is OFF. Full auto uses its starting numbers, as before.")
+
+
+def ap_undo(now=None):
+    """Undo last change: put the setting the autopilot last moved (a step or an automatic revert) back to its previous value
+    and hold THAT setting for two weeks. Works with Autopilot off. Only while the setting is still where the autopilot left
+    it. (ok, message). Never raises."""
+    now = now or time.time()
+    out = {}
+
+    def go(s):
+        L = s.get("lessons")
+        ch = L.get("change") if isinstance(L, dict) and isinstance(L.get("change"), dict) else None
+        if not ch or ch.get("undone"):
+            out["r"] = (False, "Nothing to undo: autopilot hasn't changed anything that is still in place.")
+            return
+        vals, err = _fal_vals(s)
+        rec, key = ch["rec"], ch["key"]
+        back = ap_clamp(rec, ch["from"]) if rec in AP_REG else None
+        if err or back is None or abs(_fal_cur(vals, key) - ch["to"]) > 1e-9:
+            out["r"] = (False, "Nothing to undo: that setting is no longer where autopilot left it.")
+            return
+        if _ap_looser(rec, ch["to"], back) and (ap_brake_cautious(s) or ch.get("kind") == "revert"):
+            out["r"] = (False, "Can't undo that: it would loosen a setting " +
+                        ("the evidence just rejected." if ch.get("kind") == "revert" else "while the brake is cautious."))
+            return
+        for k in ("vals", "since", "last", "holds"):
+            if not isinstance(L.get(k), dict):
+                L[k] = {}
+        if not isinstance(L.get("log"), list):
+            L["log"] = []
+        _fal_set(L, rec, key, back)
+        L["since"][key] = round(now)                         # only bets after this count toward its next step
+        L["holds"][key] = round(now + AP_HOLD)
+        lr = L["last"].get(rec)
+        if isinstance(lr, dict) and lr.get("key") == key:
+            lr["judged"] = True                              # no later automatic revert of what Pete already undid
+        ch["undone"] = True
+        txt = (f"Autopilot: you undid {_fal_name(key)}: {_fal_val_text(rec, ch['to'])} -> {_fal_val_text(rec, back)}. "
+               f"It stays there for 2 weeks.")
+        L["log"].append({"at": round(now), "kind": "undo", "key": key, "text": txt})
+        del L["log"][:-FAL["log"]]
+        out["r"] = (True, txt)
+    try:
+        _fa_update(go)
+    except Exception as err:
+        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+    return out.get("r") or (False, "Couldn't undo that.")
+
+
+def ap_freeze(key, on):
+    """Freeze or unfreeze one setting (a key like "bar:nba", or a whole record: "bar", "sbev", "game"). A frozen setting
+    takes no automatic step or revert. Works with Autopilot off. (ok, message)."""
+    try:
+        if key not in AP_REG:
+            _fal_split(key)
+    except Exception:
+        return False, "That isn't one of autopilot's settings."
+
+    def go(s):
+        if s.get("lessons") is None:
+            s["lessons"] = {}
+        if not isinstance(s["lessons"], dict):
+            raise ValueError("lessons")
+        f = s["lessons"].get("frozen")
+        if not isinstance(f, dict):
+            f = s["lessons"]["frozen"] = {}
+        if on:
+            f[key] = True
+        else:
+            f.pop(key, None)
+    try:
+        _fa_update(go)
+    except Exception as err:
+        return False, "Couldn't save that (" + type(err).__name__ + ")."
+    name = FAL_NAMES.get(key) or _fal_name(key)
+    return True, f"{name} is {'frozen: autopilot leaves it alone' if on else 'unfrozen'}."
 
 
 def fal_view(st):
@@ -24948,17 +25139,30 @@ def fal_view(st):
                 learned.append({"name": _fal_name("game_share"), "text": _fal_val_text("game", vals["game"])})
         stat = L.get("status") if isinstance(L.get("status"), dict) else {}
         recs = []
-        for rec in FAL_RECS:
+        for rec in AP_REG:
             x = stat.get(rec) if isinstance(stat.get(rec), dict) else {}
-            recs.append({"name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", _fal_min_n(rec)),
+            recs.append({"rec": rec, "name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", AP_REG[rec]["min_n"](rec)),
                          "state": "not checked yet" if not x else ("has a clear lesson" if x.get("pass") else "no clear lesson"),
                          "note": x.get("note") or ""})
         log = [e.get("text") for e in (L.get("log") or [])[-5:] if isinstance(e, dict)][::-1]
+        ch = L.get("change") if isinstance(L.get("change"), dict) and not L["change"].get("undone") else None
+        undo = None
+        if ch and vals and ch.get("rec") in AP_REG and abs(_fal_cur(vals, ch["key"]) - ch["to"]) < 1e-9:
+            undo = f"{_fal_name(ch['key'])}: {_fal_val_text(ch['rec'], ch['to'])} back to {_fal_val_text(ch['rec'], ch['from'])}"
+        frozen = sorted(k for k, v in (L.get("frozen") or {}).items() if v) if isinstance(L.get("frozen"), dict) else []
+        holds = []
+        for k, t in sorted((L.get("holds") or {}).items()) if isinstance(L.get("holds"), dict) else []:
+            try:
+                if float(t) > time.time():
+                    holds.append({"name": _fal_name(k), "until": round(float(t))})
+            except Exception:
+                pass                                         # a malformed hold is no hold
         return {"switch": st.get("fa_lessons") is not False, "active": fal_on(st), "learned": learned, "log": log,
+                "undo": undo, "frozen": frozen, "holds": holds, "cautious": ap_brake_cautious(st),
                 "recs": recs, "not_wired": [{"name": n, "why": w} for n, w in FAL_NOT_WIRED], "err": err}
     except Exception as err:
         return {"switch": True, "active": False, "learned": [], "log": [], "recs": [], "not_wired": [],
-                "err": "Lessons couldn't be read (" + type(err).__name__ + ")."}
+                "err": "Autopilot couldn't be read (" + type(err).__name__ + ")."}
 
 
 # ---------------------------------------------------------------- the combo lab and the analytics
