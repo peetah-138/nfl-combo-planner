@@ -12,6 +12,7 @@ Three guard-side fixes. Nothing here adds an automatic buy, sell or hedge, loose
 - **#300, brake footing:** the combo discount at the sale (`rec["disc"]`, already in the decision file) is now stored in
   `sell_log` (new `disc` column, added to old files) and `knob_sale_expect` uses `max(today's discount, the one logged at the
   sale)`, ignoring unusable values. Never lower than before, so the brake can only trip sooner, never later.
+- **Fallback:** if only the `disc` column cannot be added, `sale_store` still stores `live` and `ask` (`STORE["sell_disc"]`).
 - **#302, test only:** `t_money_i.py` adds the `auto_sell_now`-level test (learned 0.99 slip: an offer at 0.98 x the line is
   skipped, 0.995 x sells, 0.97 control sells at 0.98).
 
@@ -23,7 +24,8 @@ Three guard-side fixes. Nothing here adds an automatic buy, sell or hedge, loose
 2. A books-weight (`MKT_W` weights, so `longshot_leg_fair`'s blend vs Kalshi's mid in the 65-80% long-shot band) can stay 0 for up
    to 2 h longer for a group that flaps between not earned and earned. Weights are only ever removed, never added or raised.
    The veto record is in memory, so a restart still clears it, as before.
-3. The Live card's "Lock in arms at $X" figure changes for a league whose arm numbers were tuned. Display only; the sale is unchanged.
+3. A braked league loses the default 12.5% loss cut (existing behaviour: no cut is the strictest while a brake holds), and the brake can now trip sooner, so the default cut is dropped sooner. Worst case about $1 of salvage on a $10 payout per combo that would have been cut. Pinned by `t_money_i.py`.
+4. The Live card's "Lock in arms at $X" figure changes for a league whose arm numbers were tuned. Display only; the sale is unchanged.
 
 Nothing else: no stake, price, floor, slip, cap or buy decision changes.
 

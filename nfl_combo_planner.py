@@ -24527,7 +24527,8 @@ def _ledger_table():
             if have and col not in have:
                 store_x(f"alter table sell_log add column {col} {typ}")
         have = {r.get("name") for r in store_rows("pragma table_info(sell_log)")}
-        STORE["sell_live"] = {"live", "ask", "disc"} <= have   # else the old columns (a busy file): sales are never lost
+        STORE["sell_live"] = {"live", "ask"} <= have   # else the old columns (a busy file): sales are never lost
+        STORE["sell_disc"] = STORE["sell_live"] and "disc" in have   # #300: only `disc` missing keeps live/ask
         STORE["ledger_ok"] = True
 
 
@@ -24766,11 +24767,15 @@ def sale_store(rec):
            rec.get("kind") or ("combo" if is_combo(rec.get("ticker") or "") else _bet_kind(rec.get("ticker") or "")),
            rec.get("side") or "yes", rec.get("offer"), rec.get("cost"), rec.get("pays"), rec.get("frac") or 1.0,
            rec.get("chance"), rec.get("by"), str(rec.get("combo") or "")[:200])
-    if STORE.get("sell_live"):
+    if STORE.get("sell_live") and STORE.get("sell_disc", STORE.get("sell_live")):
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo, live, ask, disc) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 row + (None if lv is None else int(bool(lv)), rec.get("ask"), rec.get("disc")))
-    else:                                         # the new column couldn't be added (a busy file): the sale still counts
+    elif STORE.get("sell_live"):                  # only `disc` couldn't be added: live and ask are still kept
+        store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
+                "by, combo, live, ask) values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                row + (None if lv is None else int(bool(lv)), rec.get("ask")))
+    else:                                         # the new columns couldn't be added (a busy file): the sale still counts
         store_x("insert or ignore into sell_log(ts, ticker, result, why, kind, side, offer, cost, pays, frac, chance, "
                 "by, combo) values(?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
@@ -27748,7 +27753,7 @@ def _knob_brake_sales(st, now, live=False):
     recorded at the sale (knob_sale_expect); a part with no logged chance doesn't count. Counted as soon as it sells
     (no waiting for the game). Only sales after the league's last brake ENDED and within 30 days; never the Pi's rows."""
     _ledger_table()
-    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {'live, ask, disc' if STORE.get('sell_live') else 'null as live, null as ask, null as disc'} "
+    rows = store_rows(f"select ts, ticker, kind, offer, cost, pays, frac, chance, {('live, ask, disc' if STORE.get('sell_disc', STORE.get('sell_live')) else 'live, ask, null as disc') if STORE.get('sell_live') else 'null as live, null as ask, null as disc'} "
                       "from sell_log where result='sold' "
                       "and ts > ? and (\"by\" is null or \"by\" != 'pi') order by ts", (now - KNOB_MONTH,))
     disc = {True: kalshi_discount(True), False: kalshi_discount(False)}

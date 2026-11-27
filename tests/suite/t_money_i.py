@@ -89,3 +89,24 @@ ok("slip 0.99: a real offer at 0.995 x the line sells", len(accepts) == 1, (acce
 E.knob_auto_slip = lambda tks: 0.97
 out = run(LINE * 0.98)
 ok("control: at the starting 0.97 slip the same 0.98 x line offer sells (so the 0.99 skip above is the slip)", len(accepts) == 1, accepts)
+
+# ---- fallback insert: only `disc` missing keeps live and ask (a sale is never lost either way)
+E.store_x("delete from sell_log")
+E.STORE["sell_disc"] = False
+E.sale_store({"at": now - 5, "ticker": "KXNHLGAME-26NOV21PHIBOS-PHI", "result": "sold", "kind": "win", "offer": 7.5,
+              "cost": 5.0, "pays": 10, "chance": 0.8, "live": True, "ask": 0.79, "disc": 0.9})
+got = E.store_rows("select live, ask, disc from sell_log")
+ok("only `disc` unavailable: live and ask are still stored, disc is not", got == [{"live": 1, "ask": 0.79, "disc": None}], got)
+ok("...and the brake still reads the sale", len(E._knob_brake_sales({"brake": {}}, now).get("nhl") or []) == 1)
+E.STORE["sell_disc"] = True
+
+# ---- a braked league loses the default 12.5% loss cut (no cut is the strictest)
+E.CFG.update(loss_cut_default=True)
+E.save_json(E.SMART_FILE, {}); E.SMART_CACHE["at"] = 0
+E.save_json(E.MAIN_SAVED, {"knobs_live": True}); E.CFG["knobs_live"] = True; E.KNOB_SWITCH["on"] = None
+json_ = __import__("json")
+LT = "KXNBAGAME-26NOV19LALBOS-LAL"
+json_.dump({"groups": {}, "brake": {}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+ok("no brake: the default cut is 12.5%", E.smart_params([LT]).get("loss") == 0.125)
+json_.dump({"groups": {}, "brake": {"nba": {"at": now - 10, "until": now + 86400, "mode": "live"}}, "settings": {}}, open(E.KNOBS_FILE, "w")); E.KNOB_STATE_CACHE["d"] = None
+ok("league braked: the default loss cut is dropped", E.smart_params([LT]).get("loss") is None)
