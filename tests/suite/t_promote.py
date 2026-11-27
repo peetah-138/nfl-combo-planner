@@ -330,7 +330,9 @@ ok("G two passes on new games: no push yet (needs 3 batches of newly settled gam
 W.PROMOTE["pushed"].clear()                                   # a restart between the looks: the streak is saved
 sent = W.promote_push_check(reps[2], {}, note)
 names = {s["name"] for s in rep["signals"] if s["state"] == "pass"}
-ok("G third pass on new games: one push per Passing signal, in Pete's words", names and {m for m, k in told} == {f"{n} passed the bar, say go" for n in names} and len(told) == len(names) == 2 and all(k == "promote" for m, k in told))
+ok("G third pass on new games: one push per Passing signal, in Pete's words", names and {m for m, k in told} == {f"{n} passed its paper test 3 times in a row. Tell Claude \"go\" to turn it on." for n in names} and len(told) == len(names) == 2 and all(k == "promote" for m, k in told))
+rdy = [s for s in W.promote_report(q, {}, None, now=1.0)["signals"] if s.get("ready")]
+ok("G (#569) a Ready row says it is ready to turn on and tells Pete to say go to Claude, with no jargon", rdy and all(s["status"] == "Ready to turn on" and "tell Claude \"go\"" in s["reason"] and "strict bar" not in s["reason"] and "Streak" not in s["reason"] for s in rdy))
 os.remove(W.PROMOTE_FILE); W.PROMOTE["pushed"].clear(); os.remove(W.PROMOTE_STREAK_FILE); told.clear()
 for _ in range(6):                                            # refreshing on UNCHANGED data adds nothing, however often it runs
     W.promote_push_check(grow(rep, 70), {}, note)
@@ -361,15 +363,15 @@ os.remove(W.PROMOTE_STREAK_FILE) if os.path.exists(W.PROMOTE_STREAK_FILE) else N
 ok("G the switch (promote_push false) silences it", W.promote_push_check(grow(rep, 500), {"promote_push": False}, lambda *a, **k: told.append(a)) == [] and not told)
 fail_rep = {"signals": [dict(s, state="fail") for s in rep["signals"]]}
 ok("G nothing for Failing or Not enough data", W.promote_push_check(fail_rep, {}, lambda *a, **k: told.append(a)) == [])
-ok("G the message avoids every urgent word, so it goes in the quiet digest", all(not any(w in m.lower() for w in W.Notifier.URGENT) for m, k in [(f"{s['name']} passed the bar, say go", 0) for s in rep["signals"]]))
+ok("G the message avoids every urgent word, so it goes in the quiet digest", all(not any(w in m.lower() for w in W.Notifier.URGENT) for m, k in [(f"{s['name']} passed its paper test 3 times in a row. Tell Claude \"go\" to turn it on.", 0) for s in rep["signals"]]))
 pushed = []
 W.push = lambda *a, **k: pushed.append((a, k))
 class _E: CFG = {}
 n = W.Notifier({"topic": "t"}, _E())
-ok("G through the real notifier it waits for the digest (quiet hours apply), not an instant alert", n.add("Sell when a bet's price slips fast passed the bar, say go", kind="promote") is True and not pushed and len(n.q) == 1)
+ok("G through the real notifier it waits for the digest (quiet hours apply), not an instant alert", n.add("Sell when a bet's price slips fast passed its paper test 3 times in a row. Tell Claude \"go\" to turn it on.", kind="promote") is True and not pushed and len(n.q) == 1)
 os.remove(W.PROMOTE_FILE) if os.path.exists(W.PROMOTE_FILE) else None
 pnames = [name for key, name, what, fn in W.PROMOTE_SIGNALS] + [name for key, name, why in W.PROMOTE_UNMEASURED]
-ok("G every signal name is free of the urgent words", all(not any(w in (nm + " passed the bar, say go").lower() for w in W.Notifier.URGENT) for nm in pnames))
+ok("G every signal name is free of the urgent words", all(not any(w in (nm + " passed its paper test 3 times in a row. Tell Claude \"go\" to turn it on.").lower() for w in W.Notifier.URGENT) for nm in pnames))
 
 # ---- never computed inside a request, cached
 W.PROMOTE.update(report=None, at=0.0, busy=False)

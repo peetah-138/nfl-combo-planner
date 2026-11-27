@@ -2325,12 +2325,12 @@ def promote_report(q, cfg=None, fee=None, now=None):
                     row.update(ready=False, status="Looking good, not proven yet", streak=0,
                                reason="Some combos are missing their games; waiting")
                 elif key in told:      # the one real "go": the stricter bar was cleared on 3 batches of new games and you were told
-                    row.update(ready=True, status="Ready: say go",
-                               reason=f"It cleared the strict bar on {PROMOTE_STREAK} batches of new games, and you were told. Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games.")
+                    row.update(ready=True, status="Ready to turn on",
+                               reason=f"It passed {PROMOTE_STREAK} checks in a row, each on games it had not seen before. To turn it on, tell Claude \"go\". Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games.")
                 else:
                     row.update(ready=False, status="Looking good, not proven yet",
                                reason=f"Made {_pdollars(row['net'])} after fees over {row['n']} bets in {row['games']} games, and it holds up so far. "
-                                      f"Streak {row['streak']} of {PROMOTE_STREAK}: it has to keep holding on new games before you are told it is ready.")
+                                      f"It has passed {row['streak']} of {PROMOTE_STREAK} checks on new games so far. It needs to keep passing before it is ready to turn on.")
         except Exception as err:
             log("promote:", key, type(err).__name__, err)
             row.update(state="wait", status="Not enough data", reason="Could not be read just now.", n=0)
@@ -2341,7 +2341,7 @@ def promote_report(q, cfg=None, fee=None, now=None):
     return {"at": int(now or time.time()), "signals": rows,
             "bar": "A signal passes after at least 20 settled bets that made money after fees, held up in the latest "
                    "games and in both halves of the time, and stay ahead even when the order lands 30 to 60 seconds late (a signal that cannot be checked that way cannot pass). "
-                   "It needs at least 40 games (15 in the latest stretch). You are told only after it clears a stricter bar on three successive batches of newly settled games. Nothing here turns anything on."}
+                   "It needs at least 40 games (15 in the latest stretch). You are told only after it passes a stricter check on three batches of newly settled games in a row. Nothing here turns anything on by itself; to switch one on, tell Claude \"go\"."}
 
 
 def promote_refresh(q, cfg=None, fee=None):
@@ -2386,7 +2386,7 @@ def promote_streak_step(old, s):
 
 def promote_push_check(report, conf, notify, now=None):
     """One push per signal, once it has been Passing on PROMOTE_STREAK refreshes in a row (the streak is saved, so a restart
-    keeps it; any refresh that is not Passing resets it): "<name> passed the bar, say go". Goes through the notifier
+    keeps it; any refresh that is not Passing resets it): "<name> passed its paper test ... Tell Claude go to turn it on". Goes through the notifier
     as a normal (non-urgent) update, so quiet hours and the digest apply. The 'already told' list is saved after the
     message is queued, so a restart does not repeat it. Never turns anything on. Returns the messages queued."""
     if not (conf or {}).get("promote_push", True) or not report:
@@ -2417,7 +2417,7 @@ def promote_push_check(report, conf, notify, now=None):
         for s in report.get("signals", []):
             if s.get("state") != "pass" or s["key"] in told or not s.get("push_ok") or s.get("missing") or streak[s["key"]]["n"] < PROMOTE_STREAK:
                 continue
-            msg = f"{s['name']} passed the bar, say go"
+            msg = f"{s['name']} passed its paper test {PROMOTE_STREAK} times in a row. Tell Claude \"go\" to turn it on."
             notify(msg, kind="promote")
             told[s["key"]] = time.strftime("%Y-%m-%d", time.localtime(now or time.time()))
             PROMOTE["pushed"][s["key"]] = told[s["key"]]

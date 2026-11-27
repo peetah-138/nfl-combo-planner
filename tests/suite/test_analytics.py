@@ -83,7 +83,7 @@ with sync_playwright() as pw:
     hh = pg.locator(".an .hedge-held").inner_text()
     if "Auto-hedges the guards held back" not in hh or "3" not in hh or "2 score feed stale" not in hh or "fresh live score" not in hh: print("PROBLEMS: auto-hedges held back by the guards missing:", hh)
     sel = pg.locator(".an").inner_text()
-    if "late, confirmed" not in sel or "Selling at a loss (a learned cut" not in sel or "after 50% of the game" not in sel:
+    if "Cut losses" not in sel or "only happens late in the game" not in sel or "a 12.5% win chance or lower" not in sel or sel.count("a fresh score") != 1:
         print("PROBLEMS: the loss cut's guards aren't shown in Results > Selling")
     pg.locator(".ant button", has_text="Combo price levels").click(); time.sleep(.3)
     pg.locator(".an").scroll_into_view_if_needed(); pg.locator(".an").screenshot(path="an_phone.png")
