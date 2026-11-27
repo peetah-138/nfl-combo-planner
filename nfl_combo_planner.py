@@ -24121,7 +24121,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if read_positions and not b:
         try:
             _held_all()
-        except Exception as err:
+        except Exception:
             b.append("Couldn't read your Kalshi positions just now, so it buys nothing until it can.")
     out["blockers"] = b
     return out
