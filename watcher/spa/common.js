@@ -214,12 +214,14 @@ function afterPaint(){stagger();segInd();rollNums(document);paintErr();wireScrub
   if(old!=null&&old!==sg&&!reduce)S.burst[k]=now+1500;
   if((S.burst[k]||0)>now){el.classList.add('rowpop','burst');setTimeout(()=>{el.classList.remove('rowpop','burst');if((S.burst[k]||0)<=Date.now())delete S.burst[k];},Math.max(50,S.burst[k]-now));}});}
 /* Numbers roll to their new value frame by frame (~0.65 s, ease-out) with a green/red flash; chance bars slide. */
+let rollBusy=0;   /* number-rolls running right now; past 24 the rest just show the new value (long lists stay smooth, #140) */
 function rollNums(root){const reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;S.bars=S.bars||{};
  root.querySelectorAll('[data-bar]').forEach(el=>{const k=el.dataset.bar,w=el.style.width,old=S.bars[k];S.bars[k]=w;
   if(old==null||old===w||reduce)return;el.style.transition='none';el.style.width=old;void el.offsetWidth;el.style.transition='';el.style.width=w;});
  root.querySelectorAll('[data-num]').forEach(el=>{const k=el.dataset.num,v=parseFloat(el.dataset.v),f=el.dataset.f,pre=el.dataset.pre||'';if(isNaN(v))return;const old=S.nums[k];S.nums[k]=v;
   if(old==null||Math.abs(old-v)<(f==='pct'||f==='spct'||f==='chg'?.0005:.005)||reduce||el.dataset.still)return;el.classList.remove('fl-up','fl-down');void el.offsetWidth;el.classList.add(v>old?'fl-up':'fl-down');
-  const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);};requestAnimationFrame(step);});}
+  if(rollBusy>=24)return;rollBusy++;
+  const t0=performance.now(),dur=650;const step=t=>{const k2=Math.min(1,(t-t0)/dur),e=1-Math.pow(1-k2,3);el.textContent=pre+fmtNum(old+(v-old)*e,f);if(k2<1)requestAnimationFrame(step);else rollBusy--;};requestAnimationFrame(step);});}
 function cget(k){try{const x=JSON.parse(localStorage.getItem('cw_c_'+k)||'null');return x&&Date.now()-x.t<6*3600e3?x.d:null}catch(e){return null}}
 function cput(k,d){try{if(d)localStorage.setItem('cw_c_'+k,JSON.stringify({t:Date.now(),d}))}catch(e){}}
 function warm(v){/* show the last copy straight away while the fresh one loads */

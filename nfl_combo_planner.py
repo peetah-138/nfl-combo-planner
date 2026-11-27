@@ -18530,9 +18530,12 @@ def manual_cap_msg(code, spent, add, budget):
     lg = LEAGUES[code]
     daily = lg["slate"] == "day"
     left = max(0.0, budget - spent)
+    need = math.ceil((spent + add) / 10 - 1e-9) * 10     # the cap slider moves in $10 steps (up to $200), as in cap_msg (#112)
+    if need > 200:
+        need = spent + add
     return (f"That would bring your {lg['name']} spending {'that day' if daily else 'that week (Tue to Mon)'} to "
             f"{money(spent + add)}, over your {money(budget)} cap. You have {money(left)} left. To go ahead, raise "
-            f"it to at least {money(spent + add)} in Settings > Money > {'Daily cap' if daily else 'Weekly cap'} "
+            f"it to at least {money(need)} in Settings > Money > {'Daily cap' if daily else 'Weekly cap'} "
             f"(for {lg['name']}).")
 
 
