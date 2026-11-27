@@ -24137,7 +24137,10 @@ def full_auto_view(paused=False, may_trade=True):
             v["blockers"].append("Waiting for today's panel to be built.")
         if st["on"] and real and real.get("status") == "cancelled":
             v["blockers"].append("Today's panel was cancelled, so it waits for the next one.")
-        v.update({"limits": {k: st[k] for k in FA_LIMITS}, "history": (st.get("history") or [])[-3:],
+        lessons = fal_view(st)
+        if st["on"] and lessons["active"] and lessons["err"]:
+            v["blockers"].append(lessons["err"])
+        v.update({"lessons": lessons, "limits": {k: st[k] for k in FA_LIMITS}, "history": (st.get("history") or [])[-3:],
                   "paper": st.get("paper"), "on_at": st.get("on_at"), "ok": True})
         try:
             v["gate_ready"] = bool(panel_record()["paper"].get("ready"))
@@ -24175,6 +24178,12 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     if not st["on"]:
         return None
     now = now or time.time()
+    if fal_on(st):                                        # (#144) lessons from the paper records: never holds up a pass
+        try:
+            if fal_tick(st, now, log):
+                st = fa_state()
+        except Exception as err:
+            log("full auto lessons:", type(err).__name__, err)
     v = fa_check(st, paused=paused, may_trade=may_trade, now=now, read_positions=True)
     if v["brake"] and not (st.get("brake") or {}).get("kind"):
         _fa_update(lambda s: (s.update(brake=v["brake"]), _fa_note(s, "brake", now, why=v["brake"]["why"])))
@@ -24193,6 +24202,14 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         items = [c for c in ((x or {}).get("items") or []) if _fa_overlap_ok(c)]
     else:
         return None
+    if fal_on(st):                                        # (#144) skip-only: what the learned numbers say to leave out
+        try:
+            items, held = fal_filter(items, st, now)
+        except Exception as err:                          # a malformed value or any error: approve nothing this pass
+            log("full auto lessons: nothing approved:", type(err).__name__, err)
+            return None
+        if held:
+            log(f"full auto lessons: left out {len(held)} bet{'' if len(held) == 1 else 's'}")
     for c in items:
         s = float(c.get("stake") or 0)
         if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01 or len(ids) >= slots:
@@ -24210,6 +24227,394 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         ok, msg = panel_add(ids, "extra")
     log(f"full auto {'approved' if status == 'draft' else 'added'} {len(ids)}: {msg}")
     return {"ok": ok, "ids": ids, "msg": msg}
+
+
+# ---------------------------------------------------------------- full auto learns from the paper books (#144)
+# "Lessons ready" (Pete): a paper or shadow record that has enough data AND passes its bar may move ONE small step of a
+# number that ONLY full auto reads, at most once a week per record, tighter or looser. The numbers are skip-only filters
+# on what full auto would approve or add (never a new bet, never a bigger stake): at their start value each is the
+# identity (today's behaviour), and the start value is also the loose end of the range, so "looser" can only undo an
+# earlier tightening. The manual panel, the live cut-offs, Smart Buy and smart sell never see them.
+#   bar:<league>  League shadow (league_shadow_q): extra points added to the league's live combo cut-off (combos only).
+#   sbev:<league> Smart Buy paper book (sb_paper): an extra expected-dollar bar on $5 (a level of SB_DIAL_BARS).
+#   game_share    Exposure paper log: the most one game may carry, as a share of the full-auto bankroll.
+# A step needs the stepper's own evidence (knob_evidence: the step is chosen on the older 70% of the bets after the
+# last step, the newest 30% must gain too) AND a bootstrap range above zero (_guard_bootstrap), on net dollars after
+# fees, AND the record's own minimum sample. Unreadable data, too few bets or any error: no step. A week after a step
+# the bets it changed are re-scored; a net loss reverts it (and only newer bets count after that). The daily cap, the
+# daily loss limit, the bankroll and the losing-streak brake are never touched. Inert unless full auto is ON; the
+# master switch is st["fa_lessons"] (only an explicit False turns it off). Buying stays in panel_exec.
+FAL = {"week": 7 * 86400, "look": 6 * 3600, "judge_max": 14 * 86400, "days": 60, "log": 30,
+       "bar": {"lo": 0.0, "hi": 5.0, "step": 0.5},          # points over the league's combo cut-off
+       "sbev": {"lo": 0, "hi": 4, "step": 1},                # SB_DIAL_BARS level: none .. +$0.10 expected on $5
+       "game": {"lo": 0.10, "hi": 0.30, "step": 0.025}}      # share of the full-auto bankroll one game may carry
+FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30}            # = today's behaviour (the identity) and the loose end
+FAL_RECS = ("bar", "sbev", "game")
+FAL_NAMES = {"bar": "League shadow (combo bars)", "sbev": "Smart Buy paper book", "game": "Exposure paper log"}
+FAL_RUN = {"at": 0.0}
+FAL_NOT_WIRED = (
+    ("Paper panel", "it is the gate that unlocks full auto itself and has no number to step"),
+    ("Smart Buy shadow and the dial", "the dial already learns by itself every hour; nothing extra to wire"),
+    ("Knob stepper shadow", "it has its own weekly stepper and loss brake for smart sell's numbers"),
+    ("Momentum shadow", "no pass bar is defined, and no full-auto number depends on it"),
+    ("Exit-cap shadow", "it is about selling rules; full auto only approves buys"),
+    ("Smart-sell-more shadow", "it is about selling rules; full auto only approves buys"),
+    ("Flex shadow", "it is about selling rules; full auto only approves buys"),
+    ("Combo shadow trader", "display only; no pass bar is defined"),
+    ("Signal shadow", "no pass bar is defined, and no full-auto number depends on it"),
+    ("Broad shadow", "no pass bar is defined, and no full-auto number depends on it"),
+    ("Slate shadow", "no pass bar is defined, and no full-auto number depends on it"),
+    ("Prop shadow", "no pass bar is defined, and no full-auto number depends on it"),
+    ("Books' weight (mkt fair)", "it already steers long-shot ideas on its own; no full-auto number depends on it"))
+
+
+def fal_on(st):
+    """Lessons only count while full auto is ON; the master switch defaults to on (only an explicit False turns it off)."""
+    return st.get("on") is True and st.get("fa_lessons") is not False
+
+
+def _fal_key(rec, lg=None):
+    return "game_share" if rec == "game" else f"{rec}:{lg}"
+
+
+def _fal_split(key):
+    """('bar', 'nba') from 'bar:nba'; ('game', None) from 'game_share'. Anything else raises (a malformed value)."""
+    if key == "game_share":
+        return "game", None
+    rec, lg = key.split(":", 1)
+    if rec not in ("bar", "sbev") or not lg:
+        raise ValueError(key)
+    return rec, lg
+
+
+def _fal_vals(st):
+    """(values, None) or (None, why). values = {'bar': {league: points}, 'sbev': {league: level}, 'game': share}. Nothing
+    saved yet = the start values. A value that isn't a plain number inside its fixed range is a blocker, never a guess."""
+    out = {"bar": {}, "sbev": {}, "game": FAL_START["game"]}
+    L = st.get("lessons")
+    if L is None:
+        return out, None
+    try:
+        if not isinstance(L, dict) or not isinstance(L.get("vals", {}), dict):
+            raise ValueError("lessons")
+        for key, v in (L.get("vals") or {}).items():
+            rec, lg = _fal_split(key)
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise ValueError(key)
+            b = FAL[rec]
+            if not b["lo"] - 1e-9 <= v <= b["hi"] + 1e-9 or (rec == "sbev" and int(v) != v):
+                raise ValueError(key)
+            if rec == "game":
+                out["game"] = float(v)
+            else:
+                out[rec][lg] = int(v) if rec == "sbev" else float(v)
+        return out, None
+    except Exception:
+        return None, ("Full auto's learned numbers couldn't be read, so it approves nothing until they can. "
+                      "Turn Lessons off to carry on without them.")
+
+
+def _fal_cur(vals, key):
+    rec, lg = _fal_split(key)
+    return vals["game"] if rec == "game" else vals[rec].get(lg, FAL_START[rec])
+
+
+def _fal_moves(rec, cur):
+    """[(direction, new value)]: the tighter and the looser neighbour of `cur`, inside the fixed range. Looser only ever
+    goes back toward the start value, never past it."""
+    b, s0 = FAL[rec], FAL_START[rec]
+    sg = -1 if rec == "game" else 1                          # tighter = a smaller game share, a bigger bar
+    end = b["lo"] if rec == "game" else b["hi"]              # the tight end of the range (the loose end is the start)
+    out = []
+    t = cur + sg * b["step"]
+    if (end - t) * sg >= -1e-9:
+        out.append(("tighter", t))
+    if (cur - s0) * sg > 1e-9:
+        lo = cur - sg * b["step"]
+        out.append(("looser", s0 if (lo - s0) * sg < 0 else lo))
+    return [(d, int(round(v)) if rec == "sbev" else round(v, 4)) for d, v in out]
+
+
+def _fal_min_n(rec):
+    """The record's own minimum sample (the stepper's 10 changed / 20 new bets come on top, in knob_evidence)."""
+    return {"bar": LGSH["k_roi"], "sbev": SB_OPTIN["n"], "game": EXPO["dollar_n"]}[rec]
+
+
+def _fal_load(rec, now):
+    """({key: [row]}, passes) for one record, from its own table. A row is {k: when, d: dollars the bet made after fees,
+    s: stake, ...}; passes(rows, value) says which rows the value would let through. RAISES when the data can't be read
+    (the caller then takes no step)."""
+    if not STORE.get("db"):
+        raise RuntimeError("no database")
+    since = now - FAL["days"] * 86400
+    by = defaultdict(list)
+    if rec == "bar":
+        _league_shadow_q_table()
+        for r in store_rows_strict("select ts, league, pct, cut_now, stake, pnl from league_shadow_q where outcome is not null "
+                                   "and pnl is not null and pass_now=1 and ts>? order by ts", (since,)):
+            by[_fal_key("bar", r["league"])].append({"k": r["ts"], "d": float(r["pnl"]), "s": float(r["stake"] or 0),
+                                                     "pct": float(r["pct"]) * 100, "cut": float(r["cut_now"])})
+        return by, lambda rs, v: [r["pct"] >= r["cut"] + v - 1e-9 for r in rs]
+    if rec == "sbev":
+        _sb_paper_table()
+        for r in store_rows_strict("select ts, league, ev, outcome from sb_paper where role in ('stake','extra') and "
+                                   "source != 'backfill' and ev is not null and plain is not null and outcome is not null "
+                                   "and ts>? order by ts", (since,)):
+            by[_fal_key("sbev", r["league"])].append({"k": r["ts"], "d": float(r["outcome"]), "s": SB_STAKE, "ev": float(r["ev"])})
+        return by, lambda rs, v: [_sb_pass(r["ev"], int(v)) for r in rs]
+    _expo_tables()
+    for r in store_rows_strict("select ts, cost, bank, alloc, net, settled from expo_pos where seed=0 and coalesce(batch,1)<=1 "
+                               "and ts>? order by ts, pos", (since,)):
+        alloc = {str(g): float(a) for g, a in json.loads(r["alloc"] or "{}").items()}
+        done = r["settled"] is not None and r["net"] is not None
+        by["game_share"].append({"k": r["ts"], "d": float(r["net"]) if done else None, "s": float(r["cost"] or 0),
+                                 "bank": float(r["bank"] or 0), "alloc": alloc})
+
+    def passes(rs, v):                                   # replay in order: a game's running total against the cap
+        run, out = defaultdict(float), []
+        for r in rs:
+            cap = v * r["bank"] if r["bank"] > 0 else None
+            blocked = cap is not None and any(run[g] + a > cap + 1e-9 for g, a in r["alloc"].items())
+            out.append(not blocked)
+            if not blocked:
+                for g, a in r["alloc"].items():
+                    run[g] += a
+        return out
+    return by, passes
+
+
+def _fal_ds(rs, passes, a, b):
+    """The knob stepper's per-bet changes [(when, dollars gained, stake)] for moving the value from a to b: the dollars of
+    each bet the move newly lets through, minus those of each it newly stops (0 where nothing changes)."""
+    pa, pb = passes(rs, a), passes(rs, b)
+    return [(r["k"], (int(y) - int(x)) * (r["d"] or 0.0), r["s"]) for r, x, y in zip(rs, pa, pb)]
+
+
+def _fal_judge(rec, key, rs, passes, a, b, last_at):
+    """(ok, evidence, bootstrap low end) for one proposed move. ok needs the record's own sample, the stepper's evidence
+    (older 70% picks it, newest 30% must agree) and a bootstrap low end above zero, in net dollars after fees."""
+    ds = _fal_ds(rs, passes, a, b)
+    ev = knob_evidence(ds, 0, last_at)
+    lb = _guard_bootstrap(ds, last_at, f"fal:{key}:{a}>{b}")
+    return bool(len(rs) >= _fal_min_n(rec) and ev["ok"] and lb > 0), ev, lb
+
+
+def _fal_val_text(rec, v):
+    if rec == "bar":
+        return f"+{v:g} points"
+    if rec == "sbev":
+        return "no extra bar" if int(v) <= 0 else f"${SB_DIAL_BARS[int(v)]:+.2f} expected on $5"
+    return f"{v * 100:g}% of the bankroll"
+
+
+def _fal_name(key):
+    rec, lg = _fal_split(key)
+    if rec == "game":
+        return "per-game limit"
+    return f"{league_label(lg)} combo bar" if rec == "bar" else f"{league_label(lg)} Smart Buy bar"
+
+
+def _fal_plan(st, now):
+    """What this look decided, read-only: {'actions': [...], 'status': {record: {...}}}. Raises nothing for one record's
+    unreadable data (that record just takes no step); a malformed saved value stops everything (no actions)."""
+    vals, err = _fal_vals(st)
+    if err:
+        return {"actions": [], "status": {}}
+    L = st.get("lessons") if isinstance(st.get("lessons"), dict) else {}
+    last, steps, since = L.get("last") or {}, L.get("steps") or {}, L.get("since") or {}
+    actions, status = [], {}
+    for rec in FAL_RECS:
+        s = {"n": None, "min": _fal_min_n(rec), "pass": False, "at": round(now), "note": ""}
+        status[rec] = s
+        try:
+            by, passes = _fal_load(rec, now)
+            s["n"] = sum(len(v) for v in by.values())
+            lr = last.get(rec) if isinstance(last.get(rec), dict) else None
+            if lr and not lr.get("judged"):                  # the last step is judged before anything new
+                age = now - float(lr["at"])
+                if age < FAL["week"]:
+                    s["note"] = "watching its last step"
+                    continue
+                ds = _fal_ds(by.get(lr["key"], []), passes, lr["from"], lr["to"])
+                post = [d for k, d, _ in ds if (k or 0) > lr["at"] and abs(d) > KNOB_EPS]
+                net = round(sum(post), 2)
+                if len(post) >= KNOB_HOLD_MIN and net < -KNOB_EPS and abs(_fal_cur(vals, lr["key"]) - lr["to"]) < 1e-9:
+                    actions.append({"do": "revert", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
+                elif len(post) >= KNOB_HOLD_MIN or age >= FAL["judge_max"]:
+                    actions.append({"do": "kept", "rec": rec, "key": lr["key"], "net": net, "n": len(post)})
+                else:
+                    s["note"] = "watching its last step (too few bets yet)"
+                continue
+            cands = []
+            for key, rs in by.items():
+                found = []
+                for dirn, new in _fal_moves(rec, _fal_cur(vals, key)):
+                    ok, ev, lb = _fal_judge(rec, key, rs, passes, _fal_cur(vals, key), new, since.get(key) or 0)
+                    if ok:
+                        found.append({"do": "step", "rec": rec, "key": key, "from": _fal_cur(vals, key), "to": new,
+                                      "dir": dirn, "ev": ev, "lb": lb})
+                if len(found) == 1:                          # both ways at once = no clear lesson
+                    cands.append(found[0])
+            s["pass"] = bool(cands)
+            if not cands:
+                s["note"] = "no clear lesson yet"
+            elif now - float(steps.get(rec) or 0) < FAL["week"]:
+                s["note"] = "one step a week: next one waits"
+            else:
+                actions.append(max(cands, key=lambda c: c["lb"]))
+        except Exception as err:
+            s["note"] = "couldn't read its data, no step (" + type(err).__name__ + ")"
+    return {"actions": actions, "status": status}
+
+
+def _fal_apply(s, plan, now):
+    """Write a plan into the saved state (inside _fa_update): re-checks that full auto is still on, lessons still allowed,
+    the value still what the plan saw and the record still due, so a change since the look can't double-step."""
+    status = plan.get("status") or {}
+    if not fal_on(s) or s.get("lessons") is not None and not isinstance(s.get("lessons"), dict):
+        return
+    vals, err = _fal_vals(s)
+    if err:
+        return
+    L = s.setdefault("lessons", {})
+    for k in ("vals", "steps", "since", "last", "status"):
+        if not isinstance(L.get(k), dict):
+            L[k] = {}
+    if not isinstance(L.get("log"), list):
+        L["log"] = []
+
+    def say(kind, key, text):
+        L["log"].append({"at": round(now), "kind": kind, "key": key, "text": text})
+        del L["log"][:-FAL["log"]]
+    for a in plan.get("actions") or []:
+        rec, key = a["rec"], a["key"]
+        lr = L["last"].get(rec) if isinstance(L["last"].get(rec), dict) else None
+        if a["do"] == "step":
+            if now - float(L["steps"].get(rec) or 0) < FAL["week"] or (lr and not lr.get("judged")) \
+                    or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
+                continue
+            ev = a["ev"]
+            say("step", key, f"Learned: {_fal_name(key)} {_fal_val_text(rec, a['from'])} -> {_fal_val_text(rec, a['to'])} "
+                f"({'tighter' if a['dir'] == 'tighter' else 'looser'}) because on {ev['band']} past bets it would have changed, "
+                f"it made ${ev['gain']:.2f} more after fees, the newest {ev['hold_n']} agreed (${ev['hold']:+.2f}) and "
+                f"the low end of the range is ${a['lb']:+.2f}.")
+            _fal_set(L, rec, key, a["to"])
+            L["steps"][rec], L["since"][key] = round(now), round(now)
+            L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False}
+        elif lr and not lr.get("judged") and lr.get("key") == key:
+            if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9:
+                say("revert", key, f"Learned: {_fal_name(key)} back {_fal_val_text(rec, lr['to'])} -> {_fal_val_text(rec, lr['from'])} "
+                    f"because the {a['n']} bets that step changed lost ${-a['net']:.2f} after fees in the week since.")
+                _fal_set(L, rec, key, lr["from"])
+                L["steps"][rec], L["since"][key] = round(now), round(now)
+                lr.update(judged=True, reverted=True)
+            elif a["do"] == "kept":
+                say("kept", key, f"Learned: {_fal_name(key)} {_fal_val_text(rec, lr['to'])} kept; the {a['n']} bets "
+                    f"it changed since made ${a['net']:+.2f} after fees." if a["n"] else
+                    f"Learned: {_fal_name(key)} {_fal_val_text(rec, lr['to'])} kept; too few bets since to tell.")
+                lr["judged"] = True
+    L["status"] = status
+    L["checked"] = round(now)
+
+
+def _fal_set(L, rec, key, v):
+    if abs(v - FAL_START[rec]) < 1e-9:
+        L["vals"].pop(key, None)                             # back at the start: nothing saved
+    else:
+        L["vals"][key] = v
+
+
+def fal_tick(st, now, log=print):
+    """At most every FAL['look'] seconds, while full auto is ON with lessons on: judge the last step of each record and
+    take at most one new small step per record per week. Heavy reads happen here, outside the file lock; the write goes
+    through _fa_update, which re-checks it all. True when it wrote. Raises nothing the caller must handle."""
+    if not fal_on(st) or now - FAL_RUN["at"] < FAL["look"]:
+        return False
+    FAL_RUN["at"] = now
+    plan = _fal_plan(st, now)
+    if not plan["status"]:
+        return False
+    _fa_update(lambda s: _fal_apply(s, plan, now))
+    for a in plan["actions"]:
+        log("full auto lessons:", a["do"], a["key"])
+    return True
+
+
+def fal_filter(items, st, now):
+    """(kept, held_back): `items` minus what the learned numbers say to leave out, same order, same stakes. Skip-only: it
+    never adds or resizes a bet. At the start values it returns the items untouched without reading anything. An item
+    whose check can't be made is left out (fail closed). Raises ValueError for a malformed saved value."""
+    vals, err = _fal_vals(st)
+    if err:
+        raise ValueError(err)
+    if not (vals["bar"] or vals["sbev"] or vals["game"] < FAL_START["game"] - 1e-9):
+        return list(items), []
+    ex = None
+    if vals["game"] < FAL_START["game"] - 1e-9:              # strict read of every open bet and order: unreadable = none pass
+        try:
+            ex = {g: float(x["risk"]) for g, x in killer_exposure(now).items()}
+        except Exception:
+            return [], list(items)
+    kept, held = [], []
+    for c in items:
+        try:
+            tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
+            lg = bet_key(tks) if tks else "mix"
+            ok = True
+            e = vals["bar"].get(lg, 0.0)
+            if ok and e > 0 and c.get("kind") == "combo":
+                ok = float(c.get("pct") or 0) >= combo_cutoff(c["code"], len(c["legs"]), c["legs"]) + e / 100 - 1e-9
+            lvl = vals["sbev"].get(lg, 0)
+            if ok and lvl > 0:
+                sim = _sb_sim(c, now)
+                ok = bool(sim) and sim.get("ev") is not None and _sb_pass(sim["ev"], lvl)
+            if ok and ex is not None:
+                games = {overlap_key(l.get("event") or "", l.get("ticker") or "") for l in c.get("legs") or []} - {""}
+                s = float(c.get("stake") or 0)
+                ok = bool(games) and all(ex.get(g, 0.0) + s <= vals["game"] * st["bank"] + 1e-9 for g in games)
+                if ok:
+                    for g in games:
+                        ex[g] = ex.get(g, 0.0) + s
+        except Exception:
+            ok = False
+        (kept if ok else held).append(c)
+    return kept, held
+
+
+def fa_lessons_set(on):
+    """The Lessons master switch, its own tap (never through fa_set). (ok, message)."""
+    try:
+        _fa_update(lambda s: s.update(fa_lessons=bool(on)))
+    except Exception as err:
+        return False, "Couldn't save that (" + type(err).__name__ + ")."
+    return True, ("Lessons are ON. While full auto is on, it may learn small steps from the paper records."
+                  if on else "Lessons are OFF. Full auto uses its starting numbers, as before.")
+
+
+def fal_view(st):
+    """What the full-auto card shows about lessons, from what the last look saved (nothing is computed here). Never raises."""
+    try:
+        L = st.get("lessons") if isinstance(st.get("lessons"), dict) else {}
+        vals, err = _fal_vals(st)
+        learned = []
+        if vals:
+            learned = [{"name": _fal_name(_fal_key("bar", lg)), "text": _fal_val_text("bar", v)} for lg, v in sorted(vals["bar"].items()) if v > 0]
+            learned += [{"name": _fal_name(_fal_key("sbev", lg)), "text": _fal_val_text("sbev", v)} for lg, v in sorted(vals["sbev"].items()) if v > 0]
+            if vals["game"] < FAL_START["game"] - 1e-9:
+                learned.append({"name": _fal_name("game_share"), "text": _fal_val_text("game", vals["game"])})
+        stat = L.get("status") if isinstance(L.get("status"), dict) else {}
+        recs = []
+        for rec in FAL_RECS:
+            x = stat.get(rec) if isinstance(stat.get(rec), dict) else {}
+            recs.append({"name": FAL_NAMES[rec], "n": x.get("n"), "min": x.get("min", _fal_min_n(rec)),
+                         "state": "not checked yet" if not x else ("passes its bar" if x.get("pass") else "no clear lesson"),
+                         "note": x.get("note") or ""})
+        log = [e.get("text") for e in (L.get("log") or [])[-5:] if isinstance(e, dict)][::-1]
+        return {"switch": st.get("fa_lessons") is not False, "active": fal_on(st), "learned": learned, "log": log,
+                "recs": recs, "not_wired": [{"name": n, "why": w} for n, w in FAL_NOT_WIRED], "err": err}
+    except Exception as err:
+        return {"switch": True, "active": False, "learned": [], "log": [], "recs": [], "not_wired": [],
+                "err": "Lessons couldn't be read (" + type(err).__name__ + ")."}
 
 
 # ---------------------------------------------------------------- the combo lab and the analytics
@@ -27883,7 +28288,7 @@ def knob_pass(now=None):
         print("knob pass:", type(err).__name__, err)
         return [], []
     try:                                               # after the result is built: it can never lose or delay a brake alert
-        league_shadow_run(now)                         # per-league shadow numbers (#13): its own table, nothing reads it
+        league_shadow_run(now)                         # per-league shadow numbers (#13): its own table; only `_fal_load` (#144) reads it back
     except Exception as err:
         print("league shadow:", type(err).__name__, err)
     return result
@@ -27958,7 +28363,8 @@ def knob_shadow_view(now=None):
 # what each league's OWN numbers would be if a league learned for itself and borrowed from its sport, then from all
 # leagues, only for what it lacks (`lgsh_blend`: each level moves the value above it toward its own by n/(n+k), the same
 # sample-size weighting calib_fair has always used), and writes them beside the numbers the app uses today in the
-# `league_shadow` table. NOTHING reads that table to decide anything: no cut-off, fair price, size, sell or sport order
+# `league_shadow` table. NOTHING reads that table to decide anything (one exception, #144: `_fal_load` reads the settled rows for the
+# full-auto lessons, which may tighten or loosen a full-auto-only bar by one small step; nothing else, and never the live cut-off): no cut-off, fair price, size, sell or sport order
 # is changed, and the run never writes a settings or learning file (`test_leagueshadow` checks every one of these, and
 # that no decision function mentions `league_shadow`/`LGSH`). It is only shown, read-only, by `league_shadow_view`.
 #   cutoff  each league's combo cut-off by size: today's `_cut_level` against the blended one (all -> sport -> league).
@@ -29436,7 +29842,7 @@ def record_view(view):
     for x in view.get("singles") or []:             # single bets and spreads: their game's story too
         if x.get("state") in ("live", "pre") and x.get("ticker"):
             _legs(x["t"], [x])
-    exposure_paper_pass(view, now)                   # (#335) paper only: never raises, never read by a decision
+    exposure_paper_pass(view, now)                   # (#335) paper only: never raises; read back only by `_fal_load` (#144), a full-auto-only bar
     for e in ev:
         store_x("insert into events values(?,?,?,?)", (now, e["kind"], e.get("combo"), e["text"]))
     if len(last) > 20000:
