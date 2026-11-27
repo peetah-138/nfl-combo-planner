@@ -258,7 +258,7 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
   Settings (#572, #574); Games page sorted by next game; full-auto master switch, OFF by default (#7).
 - **Release 2026.11.26.144:** full-auto hardening (#589) and paper lessons for full auto (#144, #602); loss guards judged on the decisions that really run, tighten-only (#265, #590);
   pregame Buy idea priced like Buy straight (#286), stricter totals curve (#482), skipped-deal scoring (#374); books veto, brake footing, Lock-in card (#551, #300, #302);
-  Best bets board age and paper live bar (#243, #287); scoreboard tags and stricter luck bar (#187); learn nits (#309); display, wording and accessibility batches (#246, #453, #112, #140).
+  Best bets board age and paper live bar (#243, #287); scoreboard tags and stricter luck bar (#187); learn nits (#309); display, wording and accessibility batches (#246, #453, #112, #140); auto-hedge weighed before a below-cost cash-out (#312, #603, Pete opted in 2026-11-27).
 
 ---
 
@@ -272,7 +272,7 @@ Short lines so nothing is lost; the issue has the detail.
   setup and a sheet instead of `confirm()`.
 - **Smart sell on favorites bought above ~67 cents (#375).**
 - **Overlap guard follow-ups:** re-grey after Add anyway (#366), measure it (#367).
-- **Auto cash-out follow-ups:** weigh a hedge before a below-cost sale (#312).
+- **Auto cash-out follow-ups:** (#312 shipped in 144.)
 - **Long shots and cost-carry:** carry "Check Kalshi" from the server (#353, client half done), carry_quote withdrawing Pete's request (#350).
 - **Panel and sizing:** both sides of one game / exposure caps (#335), `_size` rounding (#329), combo fees in sizing (#328),
   samey slate analysis (#332), player-prop recon (#323), market-anchored fair held-out check (#345),
