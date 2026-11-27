@@ -967,6 +967,76 @@ Adds `tools/research/nfl_weather.py`: offline study of whether observed kickoff 
 
 Result (local, ~/dev/research/nfl-weather/RESULT.md): no pass. Wind lowers totals about 2 points in 20 seasons of data, but the sportsbook line already prices much of it, and the Kalshi era has too few bad-weather games (3 to 17 per type in the test window) to show an edge net of fees. All market types INCONCLUSIVE. Shadow-recording list is in RESULT.md.
 
+
+Weather backtest (issue #494): Adds `tools/research/weather_backtest.py`, an offline research script (no trading, no keys, public endpoints only) that backtests Kalshi daily high-temperature markets against the NWS NBS forecast archive from the Iowa Environmental Mesonet. Data is cached outside the repo and never committed. Result of the first run: FAIL (net negative after fee and spread); no app behaviour changes.
+
+#### ESPN win-chance recorder and scorecard (issue #483, proposals 1 to 3; record-only)
+
+**Correction to the brief.** `CLAUDE.md` says ESPN's win chance is football only. That is wrong: ESPN's scoreboard carries a
+win chance (`situation.lastPlay.probability`) for **NBA and college basketball as well**, and the summary endpoint's
+`winprobability` history exists for them too. The live model (`live_model_chance`) already averages ESPN's chance in for
+whatever the feed gives (`sc["wp"]`), so this is only a wording fix; no pricing changes. Which leagues really have it, and
+how fresh it is, is now measured (coverage below) instead of assumed. Fold this correction into the "ESPN's football win
+chance" sentences when folding this file.
+
+**Nothing here decides anything.** No buy, sell, sizing, price, Smart Buy, panel or guard reads anything this adds (a source
+scan test proves it). Pause, rule 8, caps and the Pi are untouched. Everything is append-only, bounded, errors are swallowed
+and it runs off the trading path (the panel pass's one wrapped call, and a background thread for requests).
+
+**Tables (new, in the history file; they join on `ticker` + `ts`, no hot-path table is altered)**
+- **`wp_shadow`**: for a game in play, every side of a game-winner market at most every 60 s (`WPR["every"]`), but the panel pass only runs every ~150 s in play, so in practice a row every ~150 s: ESPN's raw win
+  chance `wp`, its play id (`play_id`), `play_age` (seconds since we FIRST saw that play: the scoreboard has no wall clock for
+  the last play), `feed_age` (the score cache's age), our pure model chance (`model`, no wp), the 50/50 blend with wp
+  (`blend`, both **before** the league's calibration), the engine's live `fair`, Kalshi `bid`/`ask`/`mid`, the lead and the clock
+  share left. A row with `wp` empty means that league/game has none (coverage). Built only from scores and prices already in
+  memory: **no request**. 30 days / 300,000 rows.
+- **`wp_outcome`**: one row per ticker, `yes`/`no`/`void` (void after 3 days unsettled), appended by `wp_resolve` (the watcher's
+  history loop, 100 a pass, Kalshi's own results read the same way `resolve_live_fairs` does). Separate so `wp_shadow` stays
+  append-only.
+- **`wp_hist`**: ESPN's summary `winprobability` history, new plays only (unique on game + play id; home win chance, tie chance, the
+  play's wall clock when the summary has it). 45 days / 400,000 rows.
+- **`wp_lines`**: ESPN's `pickcenter` line (details, spread, total, over/under prices, moneylines) when it changes. 45 days /
+  50,000 rows.
+Retention and the row ceiling prune oldest first only (`_wp_prune`, every 6 h). Flags `wp_shadow` and `wp_hist` are real `CFG`
+keys, ON by default for recording (a saved false is kept).
+
+**Requests (Proposal 2), exact volume**
+- **Reused, free:** the football game page already fetches the ESPN summary; that same answer is ingested (`wp_hist_ingest`), no
+  new request, and it counts as the game's recent look so the poller skips it.
+- **New (key-free public GET of ESPN's summary, `wp_hist_fetch`),** NFL, college football, NBA and men's college basketball only,
+  only for a game that has a Kalshi market in the panel's games:
+  - in play: **1 per game per 300 s = 12 an hour per game** (the panel pass runs every ~150 s, so each pass serves up to 12 due games);
+  - before the start: at most **1 per 2 h**, and only within **4 h** of the kickoff (so 2 at most);
+  - **1 final fetch** after the game ends or leaves the panel for 10 min (only if we saw it in play).
+  - Global ceilings: **240 requests an hour** across all games, at most 12 queued per panel pass, least recently fetched first, one background thread, 0.5 s
+    between requests, 10 s timeout. No key, no login; any error just records nothing.
+  - A typical NBA game (about 2.5 h) is about 2 + 30 + 1 = **~33 requests**; a football game about 3.3 h, ~43; the average is ~39. A
+    heavy night with 12 followed games in play at once is 144 an hour, under the 240 cap. Pete approves this volume in the PR.
+- **Screened-out games are recorded too** (Pete's follow-up): live games the panel leaves out (wide spread, stale or missing score, fair 95%+, fair 8+ points from Kalshi, no buyers, no pre-game line) are passed to the recorder with the panel's reason (`LIVE_WHY`). `wp_shadow.screened` is empty for a game the panel kept, else a short word (`spread`, `stale`, `decided`, `disagree`, `no_buyers`, `no_line`, `no_feed`, `not_in_play`, `over`, `other`); their `fair` is left empty (the engine never priced them). They are followed by the same poller, so they share the same 240/h ceiling, 12 per pass and per-game cadence: more games share the same budget (a very busy night is held at 240/h, least recently fetched first, so the exact per-game numbers above are the ceiling, not a promise for every game). Storage caps are unchanged. Nothing outside the recorder reads them.
+- Switch: `wp_hist` (default ON). Off stops the background GETs and the ingest.
+
+**Scorecard (Proposal 3): `tools/espn_wp_scorecard.py`**
+Read-only (`mode=ro`), no network, aggregates only (no ticker, game id or date), groups under 20 games print "n<20, hidden".
+`python3 tools/espn_wp_scorecard.py --out <file>`. Per league it compares ESPN wp, Kalshi mid, our model and today's 50/50 blend on
+the same rows and settled games: Brier and log score (lower is better) with a game-level bootstrap 95% range; and net dollars per
+$1 staked after the entry fee (the engine's `FEE_RATE`) and the spread (a buy fills at the ask) for one rule, "buy once when a
+source is at least X above the ask, hold to settlement", X chosen on the first 70% of games by time and scored on the last 30%.
+**Pass bar** (as in `docs/EXIT_REPLAY.md`): a source passes in a league when, held out, it beats the blend by at least 1 cent per
+$1, its net is above 0 and its bootstrap range is above 0; it counts only if it passes in 2+ leagues. The scorecard also reports the kept and screened groups apart (each hidden under 20 games, with a count of screened games per reason); the scores headline uses both together, but the pass bar and verdict count only the games the panel kept (screened games are picked for a gap, which would bias an edge); a pooled verdict is shown beside it, informational. Only fully priced rows are scored, so some screened reasons (no buyers, no line) may not appear. A screened game with neither wp nor a model (e.g. soccer) is not recorded. Coverage per league shows
+whether it carries wp at all and how old the last play was (median and 90th percentile of the observed play age) and whether the
+summary history is recorded. Nothing consumes the result; deciding to use wp in pricing is a later, separate, Pete-approved PR.
+
+**Tests**
+`t_espn_wp_recorder.py` (rows and fields, throttle, no request, errors swallowed, flags and unchanged inputs, retention and ceiling,
+**a source scan that nothing outside the recorder touches the tables and nothing reads them but the resolver/prune**, ingest dedupe
+and line-change-only, request rate limits and state rules, the resolver); `t_espn_wp_scorecard.py` (synthetic data with a known
+answer: Brier 0.01 vs 0.25, the pass bar needs 2 leagues, hidden groups, read-only byte-identical file, no ticker strings).
+
+**Storage**
+`wp_shadow` about 150 bytes a row: 2 sides x 1 row a minute x ~150 min = ~300 rows a game, ~45 KB; the 300k-row ceiling is ~45 MB.
+`wp_hist` ~100 bytes x ~400 plays a game = ~40 KB a game; 400k rows ~40 MB. `wp_lines`/`wp_outcome` are small. Worst case under
+~100 MB in total, normally far less.
+
 #### Measure E: batch order-book read (#225), live-feel measurement and next step (#21), draw side tag (#182)
 
 **Section:** Reads and display only. What is bought or sold is unchanged (no stake, price, rule or order touched).
@@ -1195,7 +1265,7 @@ Live numbers that could move: none (a new read-only field).
   file) lets `panel_collect` add started games via `panel_live_games`. A game under way **never uses its pre-game
   fair price**: it gets a fresh live sportsbook line (odds-service line read after the start, ≤ `LIVE_LINE_AGE` 180 s:
   `line_live`/`line_at` from `attach_fair`) or else the **live model** (`live_model_chance`: points sports = normal
-  margin, hockey/soccer = Poisson goals, on the closing line from `closes` as the prior, ESPN's football win chance
+  margin, hockey/soccer = Poisson goals, on the closing line from `closes` as the prior, ESPN's win chance (football, NBA and college basketball, where the feed has it)
   averaged in), calibrated per league by its own record of live chances (`live_fairs` table, `calib_fair(...,
   table="live_fairs")`, resolved in `resolve_closes`). Eligible only with a **fresh score** (`score_age` ≤
   `LIVE_SCORE_AGE` 120 s; missing/stale = out), the game **in play** (never finished), Kalshi bid/ask gap ≤ 6¢, not
@@ -1356,7 +1426,7 @@ an unreadable guard adds nothing). Ids it chose are written to the file's ledger
 
 **Brakes.** `fa_check` trips the streak brake on N consecutive losses among full-auto bets settled after the last reset, and the
 day brake when its settled P/L today is at or under minus the daily loss limit. A trip is saved with a plain-English reason. The
-streak brake stays until Pete taps "Reset the pause" (old losses are not recounted); the day brake ends with the panel day.
+streak brake stays until Pete taps "Reset the pause" (old losses are not recounted); the day brake ends with the panel day. **Since 144/145 the streak brake is a confidence level, not a stop** (see "Autopilot ... confidence level" below): a losing streak steps full auto down to 50% then 25% size, and an old saved streak pause migrates to 25% with a plain card note. The daily loss limit still pauses until the next panel day.
 Blockers also include Pause (watcher or app), a computer that can't trade, cap used up, open limit, no free bankroll, today's
 panel cancelled or not built yet, and a failed positions read (`_held_all` raises: nothing is approved). The shared buy path
 blocks again at buy time.
@@ -1438,6 +1508,200 @@ only), books' weight.
 `tests/suite/t_fa_lessons.py`: off when full auto is off, fail closed on bad data, bounds both ways, revert and keep, weekly
 cap, master switch, identity at start values, manual panel unchanged. `t_leagueshadow.py` and `t_exposure.py` source guards are
 narrowed to allow only `_fal_load` / `_fal_min_n`.
+
+#### Autopilot: the self-improvement registry and the full-auto confidence level (#144, #145)
+
+The paper lessons above are entry one of one registry. Steps 1 to 5 of the self-improvement plan (issue #145) follow; each file below was a PR note folded at release 145.
+
+##### Autopilot registry (#144, step 1 of the self-improvement plan)
+
+The paper lessons (#602) are now the first three entries of one **autopilot registry**. Later self-adjusting settings
+register in the same place and get the same gate, log, Undo and freeze for free. Behaviour of the three existing settings
+is unchanged: same ranges, step sizes (bar 0.5, Smart Buy level 1, game share 2.5 pts), evidence (older 70% picks, newest
+30% must agree, net dollars after fees, bootstrap low end above zero, the record's minimum sample) and one step per record
+per week. No new money movement; loosening still only walks back toward the start value.
+
+**New**
+
+- **One shared gate** `ap_gate`: the #602 evidence check, now the single function every registered setting uses.
+- **Master switch**: the Lessons switch is now labelled **Autopilot**. The stored key is still `fa_lessons`, so Pete's current
+  setting carries over untouched.
+- **Card log**: plain-English lines (what, from -> to, why, dollars behind it). An unreadable record logs
+  "no change, not enough evidence" (at most once a day per record).
+- **Undo last change** (`autopilot_undo`): puts the last moved setting (a step or an automatic revert) back to its previous
+  value and holds that setting for 2 weeks (the hold blocks only loosening); a loosening undo is refused while the brake is cautious, and undoing a revert never restores a looser value; only bets after the undo count toward its next step. Refuses if the value is no
+  longer where autopilot left it. Works with Autopilot off.
+- **Freeze** (`autopilot_freeze`): per setting (`bar:nba`) or per record (`bar`, `sbev`, `game`). A frozen setting takes no
+  new automatic step; a pending step is still judged and reverted.
+- **Brake hook** `ap_brake_cautious(st)`: while it is True nothing loosens anywhere (a losing step is also not walked back to a
+  looser value until the brake clears); tightening is still allowed. It reads the tripped brake and the soft brake's `caution.level` (> 0), failing closed on unreadable state. The soft brake plugs into this one function; the brake logic itself is not touched.
+- **Outer fence** `ap_clamp`: every value is forced inside its bounds (game share also never above the bankroll) right before
+  it is saved; a plan outside the bounds is dropped. Bankroll, daily cap, open bets, streak and loss limit are never written.
+- **Fail closed**: any error in the look, an unreadable table, NaN, or a malformed saved value means no step.
+
+**Not in this step**
+
+Stake size, open-bet count, buy timing, league mix, exit knobs in the same log, and the "at most two settings at once" rule
+(only three settings exist, one step each per week as before) come in later steps.
+
+##### Full auto: the losing-streak brake becomes a confidence level (issue #144; Pete: "It should just adjust.")
+
+A losing streak no longer stops full auto. It stays ON and steps down a level; it steps back up on wins or calm. Only the real
+master switch turns it off. It can only ever be more careful than the saved limits, never looser, and it adds no money movement.
+
+**Levels** (`FA_LADDER`, one row per level; a later adjustable setting plugs in by adding a key to every row and one `_fa_knob` reader):
+- Level 0, Normal: the saved settings exactly (the ceiling; nothing goes above it).
+- Level 1, Cautious 50%: bet size 50%, daily cap 50%, combos must clear their league cut-off by 0.5 more points.
+- Level 2, Cautious 25% (the floor): size 25%, cap 25%, +1.0 point. Never zero, never off.
+Sizes round down to the cent, never under the $2 minimum and never above the normal stake (scaled stakes go through the
+existing `stakes=` argument of `panel_approve` / `panel_add`). The bar is a filter after the lessons filter, combos only (singles
+and spreads/totals are not touched by the bar, only by size and cap); an error in it approves nothing.
+
+**Moves** (`_fa_caution_eval`, pure, saved by the pass in `combo_fullauto.json` as `caution`):
+- Down: normal goes cautious after the streak limit in a row (default 4); while cautious, 2 more losses in a row step down one level.
+- Up: 2 winning (non-loss) full-auto bets in a row step up one level (only the 2 needed are used up), or 3 days with no loss since
+  the last change step up one level. Each step is logged in the history in plain words with its reason.
+- Manual reset ("Back to normal now") returns to normal immediately and resets the loss count.
+- An older saved streak pause is migrated to the lowest level (25%), with a plain card note ("Brake from before this update: tap Back to normal now, or it eases back by itself"). It never buys silently at 50%.
+- Settled bets are replayed in the order the money moved (settle time, else buy time), each bet counted exactly once by its id (a bounded list is saved), so a first-bought bet that settles last still counts. Settled bets are replayed oldest first, one at a time, so a batch settling between passes gives the same level as one at a time. A push (exactly $0) is neutral: not a win, not a loss, no recovery progress.
+
+**Unchanged:** the $20 daily loss limit still pauses until the next panel day, with its "Paused itself" card line. Pause, the Pi,
+rule 8, the paper gate and every cap are untouched.
+
+**The card** shows "Normal" or "Cautious (50%)" with the reason, the effect, and recovery progress (wins so far of 2, about N calm
+days left); the Lessons blurb says the confidence level may step down and back up but never above your settings.
+
+**My picks, easy to change in `FA_LADDER` / `FA_CAUTION`:** 50% and 25%, +0.5 point per level, 2 wins to step up, 3 calm days, 2
+losses to step down. Tests: `t_fullauto.py` (trip is cautious not off, scaling, recovery, floor, never above normal, calm days,
+manual reset, daily loss limit, legacy pause, master switch), `t_fa_lessons.py` unchanged and passing.
+
+##### Exit knobs in the Autopilot log (#145, step 3 of the self-improvement plan)
+
+The weekly knob stepper (#228) already moves smart sell's exit numbers (profit floor, risk weight, loss cut, lock-in and the
+other live knobs) on its own evidence. Those live steps now show in the **same Autopilot log** on the full-auto card, with the
+same Undo, Freeze and master switch. **When and how much a knob moves is untouched**: same candidates, same evidence bar
+(older 70% picks, newest 30% must agree, dollars after fees), one live step per group per run. No new automatic money movement.
+
+**What you see**
+
+- Log line per live step: `NBA Profit floor: 1.7x what you paid -> 1.8x what you paid. Why: 15 of 60 past bets would have ended
+  differently, +$13.50 in all after fees.` plus how it stands on full-auto bets (below). Brake resets show too. The log shows the
+  newest 6 lines of both kinds.
+- **Undo last change** now takes the newest of (a setting change, a knob step). A knob undo puts the group's value back exactly
+  (its own earlier value, or "none" if it had none), makes the group's next step wait for bets after the undo, and holds that knob
+  in that group for 2 weeks (a hold stops only loosening steps, as for the other settings). Refused when the knob has since moved,
+  when the step was made before this change (no record of what was there), or when it would loosen while the brake is cautious.
+- **Freeze**: a new "Smart sell's numbers" row (key `knobs`) freezes every live exit knob; `knob:<name>` (e.g. `knob:smart_floor`)
+  freezes one. A frozen knob shows status "frozen" in the stepper's rows and takes no live step.
+- **Master Autopilot switch**: off (explicit) pauses the live knob steps too (status "paused"). Full auto itself being off does not:
+  the knobs also serve manual smart sell.
+- **Fail closed**: an unreadable or malformed Autopilot control file pauses the live knob steps; a malformed hold counts as held.
+
+**Judged on full-auto bets**
+
+A week after a live step the stepper judges that same step again, with the same replay (fees included), on the full-auto bets
+(the ones full auto placed and anything swapped in for them) settled after the step. Needs 5+ such bets; shown in the log line as
+`On 40 full-auto bets since: +$9.00 after fees.` With no (or too few, or unreadable) full-auto bets the line says
+`Judged on all bets` and the all-bets evidence stands unchanged. It is display only: nothing is reverted automatically.
+
+**Not changed / worth a look**
+
+- The brake hook `ap_brake_cautious` deliberately does **not** gate knob steps (that would change when knobs move); it only
+  refuses an Undo that would loosen.
+- Held and frozen only apply to live steps; shadow ("would step") rows are as before. The hedge cap's system raise is not live and out of scope.
+- Files: `nfl_combo_planner.py` (knob_tune skips + history record, `ap_knob_*` helpers, `ap_undo`, `ap_freeze`, `fal_view`),
+  `watcher/spa/fullauto.js` (one sentence), `tests/suite/t_autopilot_knobs.py`.
+
+##### Autopilot exit knobs: follow-ups to #612 (issue #145)
+
+- **Wording made true.** The card no longer says every step is undone the next week. Only the combo-setting steps are. Smart sell's
+  exit-knob steps are judged again on full-auto bets for display only; nothing undoes them, so the card says to use Undo last
+  change. It also says the knobs keep stepping while full auto is off (the "Waits for full auto" tag is about the combo settings).
+- **Loosening waits for the brake.** While the full-auto brake is cautious (`ap_brake_cautious`: soft level above 0, the hard
+  brake, or anything unreadable = cautious) a live exit-knob step that loosens (`knob_loosens`: profit floor, lock-in, and the
+  rest; the loss guards also still need your OK) is not taken, and shows as "cautious" in the group's last look. Tightening
+  steps still go. A hedge-cap raise waits too (it is a loosening one; it is a test only today). Unreadable full-auto file = cautious.
+- **Undo during the weekly run.** The run reads each league at the start and used to write it back whole at the end, which could
+  silently put an Undone step back. Now, if a league's own values, times or undone marks changed in between (your Undo), the run
+  does not write that league, drops its log lines, says so in plain words, and judges that league again the next day.
+- **Stale knob step.** A newest knob step that has since moved on no longer hides Undo for an older setting change: the card and
+  Undo fall back to that change. With nothing else to undo, Undo still says the knob is no longer where autopilot left it.
+
+No money movement added; only fewer steps ever happen (loosening while cautious, and a run that lost to an Undo).
+
+##### Autopilot moves full auto's open-bet limit (#145, step 4 of the self-improvement plan)
+
+Full auto's "max open bets" (Pete's number, default 15) now moves by itself through the Autopilot registry, as a fourth record
+(`open`, key `open_slots`). Weekly look, one bet at a time, between 8 and 20. Only while full auto and the Autopilot master
+switch are on. No new automatic money movement: the daily cap, bankroll and daily loss limit never move and still bind through
+`room`/`free` in `fa_check`.
+
+**Evidence (new table `fa_slots`)**
+
+- Each full-auto buy is logged with how many bets were open when it was bought (settled later from the panel's profit).
+- When open slots were the ONLY thing stopping a bet (it fit the cap, bankroll and brakes), a "skip" row is logged (throttled,
+  one per bet), with its price. `fa_slot_settle` later settles skips from Kalshi's results, held to the end, after fees.
+  Rows are kept 90 days. All of this swallows errors and never blocks a buy.
+- A limit v "passes" a bet when it was bought or skipped with fewer than v bets open. Judged like the other records: older 70%
+  picks, newest 30% must agree, net dollars after fees, bootstrap low end above zero, minimum sample (25 rows).
+
+**Tighten fast, loosen slow**
+
+- Tightening is the normal weekly step. Loosening needs 14 days since the last move and twice the sample (50 rows).
+- No loosening while the soft brake is cautious, or the setting is held (Undo hold, 14 days) or frozen.
+- Fail closed: unreadable data, a malformed or out-of-range saved value means no step, and the limit falls back to Pete's number.
+
+**What you see**
+
+Log lines on the full-auto card with Undo, Freeze (`open_slots`) and the master switch, e.g. "Open-bet limit: 15 -> 14. Why: the
+15th open one lost on 4 of 9 bets." The "Bets open" line reads "0 of 14 allowed (you set 15; Autopilot moved it)".
+
+**Not changed / worth a look**
+
+- Pete's saved number is the ceiling: learning goes below it (floor 8) and back up to it, never above. Saving a different "Open bets" number clears what was learned; saving only the cap keeps it.
+- Skipped bets in one pass are replayed in order: each adds one to the open count and uses up room and bankroll, so only bets that would really have fit are counted.
+- Replay biases: skipped bets are held to the end (no early sale), paper `pl` has no fee, and taking one more bet may have
+  changed which later bets were available.
+- The skip logging sits in `_full_auto_pass` (the money path) but only records after the decision, inside try/except.
+- Data starts empty: no step until evidence accumulates.
+- Files: `nfl_combo_planner.py`, `watcher/spa/fullauto.js`, `tests/suite/t_autopilot_open.py`, `tests/suite/t_autopilot.py`.
+
+##### Autopilot bar borrow for thin leagues (#145, step 5 of the self-improvement plan)
+
+A league with too little shadow data for its own buy-bar step can now **borrow the other leagues' record** to step its combo
+bar. It rides the autopilot registry (#607) unchanged: the same shared gate (`ap_gate`), card log, Undo, freeze and brake hook.
+
+**Rules**
+
+- **Who borrows**: a league whose own record is below the bar record's minimum sample (`LGSH["k_roi"]`). Its evidence is the
+  pooled rows of every other league, judged by the same gate: the older 70% picks the step, the newest 30% must agree, net
+  dollars after fees, bootstrap low end above zero. Negative or thin group evidence means no step.
+- **Capped, two-way, never stuck**: same 0.5 point steps. A borrowed bar tightens only up to +1.5 in all (tighten-fast), skipping
+  more bets, never buying more. It eases back one step toward the start when the group's evidence supports looser (same gate), or
+  after four weeks with too little own data to confirm it. Easing back is blocked by the brake, a hold or a freeze, like any
+  loosening. A bad step is also reverted by the weekly re-score (a loss, or too few bets in two weeks). With its own data the
+  league moves by its own record.
+- **Scoped hold**: a borrowed step still being judged holds only its own league; other leagues' steps are not blocked.
+- **Exploration floor**: shadow rows keep being logged against the live cut-off (not the borrowed bar), so a thin league keeps
+  collecting the data it needs. The +5 ceiling and one step a record per week still apply.
+- **Brake priority**: no loosening while cautious (a lost borrowed step is not reverted to looser until the brake clears);
+  tightening is still allowed. Freeze (per league or the whole `bar` record), Undo (restores the value, holds it 2 weeks) and
+  the master Autopilot switch all apply.
+- **Fail closed**: unreadable data, NaN or any error means no step.
+- Card log wording says the step used the other leagues' record. No new automatic money movement.
+
+Tests: `tests/suite/t_autopilot_borrow.py`.
+
+##### Full auto: three brake fixes from the release 145 review
+
+- A daily-loss pause from an earlier day no longer counts as cautious. Before, one day at the loss limit left the saved pause
+  in place, so Autopilot's settings, exit knobs, hedge raises and Undo-of-tightening never loosened again. Only a pause from
+  today (or one whose day cannot be read, or a streak pause) still holds things. The daily loss limit still stops buying that
+  day exactly as before, and a caution level above 0 still holds.
+- "Back to normal now" tapped while a pass is running is no longer overwritten: the pass saves its caution step only if the
+  saved caution and reset time are still what it read.
+- The cautious bar now ADDS to the league's learned bar instead of replacing it, so a learned +1.0 plus cautious level 1 needs
+  +1.5. It can only tighten.
 
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
@@ -4080,6 +4344,8 @@ Wording and layout only; nothing here touches buying, selling or sizing.
 - Results cut-losses cell uses "Up to X%" for both its own and the starting value.
 - `knobCard`: the "Couldn't read the numbers" line shows for `null` as well as `{}`, is a live region, and has a Try again button (reloads Results).
 - Flip verdict note leads with the expected-dollars sentence (order only).
+- Buy straight / Live idea cap message says to raise the cap to the next $10 step (the slider's step), like the combo Buy message (#112, release 145).
+- Rolling numbers (prices, chances) animate at most 24 at a time; on a long list the rest just show the new value (#140, release 145).
 
 Tests: `test_singlesell_ui.py` (new wording), `test_knobs_ui.py` (null, Try again, aria-live).
 

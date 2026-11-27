@@ -1,4 +1,4 @@
-# Review lenses: profit and delight
+# Review lenses: profit, delight, security and code
 
 Pete's rule (2026-11-20): **whenever you build anything, it gets a review for profit and delight.**
 Goals, in order: **profit is #1, fun is #2.** Every PR gets four reviews: code, security, profit, delight.
@@ -122,3 +122,47 @@ sees or feels, and the fix. Mark each as:
 - **File an issue** with label `fun` (polish that can wait), linking the PR.
 
 End with a one-line verdict: "delight review: pass" or "delight review: N fixes made, M issues filed".
+
+---
+
+## SECURITY lens
+
+### Checklist
+
+1. **Endpoint auth and CSRF:** does every new or changed endpoint require the same auth as its neighbours? Do
+   state-changing calls reject GET and cross-site requests (token or same-origin check)? Is the Pi still read-only?
+2. **Input validation on new settings:** is every new setting clamped to a range, type-checked and defaulted when
+   unreadable? Can a stale tab, a malformed file or an odd value push it outside its bounds?
+3. **Secrets in logs and tracked files:** no keys, key IDs, topics, emails, tokens or account numbers in logs, error
+   messages, card text, tests or the repo (it is public).
+4. **New outbound calls:** every new request is listed with its host, volume per hour and timeout; key-free public
+   reads only unless Pete approved; errors swallowed without leaking; no request on the trading path.
+5. **Injection in HTML and JS:** anything from Kalshi, ESPN or user input that reaches the page is escaped (no raw
+   `innerHTML` with untrusted text, no `eval`, no inline handlers built from data); SQL uses parameters.
+6. **Money paths:** nothing new buys or sells without Pete's opt-in; Pause, caps and rule 8 are still checked.
+
+### How to report
+
+Findings ranked by exploitability and dollars at risk. Mark each **Fix in this PR** or **File an issue** (label
+`security`). End with "security review: pass" or "security review: N fixes made, M issues filed".
+
+---
+
+## CODE lens
+
+### Checklist
+
+1. **Correctness:** does the code do what the note says, at the edges (empty, NaN, zero, one row, day rollover)?
+   Are the tests checking the behaviour, not the implementation?
+2. **Races:** shared files and tables read then written back whole (an Undo, reset or settle landing in between),
+   background threads, the trading lock held too long, passes that overlap.
+3. **Fail-open error paths:** every `except` on a money or limit path must fail closed (no buy, no step, no loosening)
+   with a logged reason. An unreadable file or state must never read as "fine" or "calm".
+4. **Migrations:** old saved state (files, tables, settings) is read safely and upgraded without silently changing
+   behaviour; a new table or key starts empty and safe; roll back works.
+5. **Scope and cleanliness:** only what the PR says changed; a switch or test for each new behaviour; `ruff` clean.
+
+### How to report
+
+Findings ranked by risk, each with file, function and fix. Mark **Fix in this PR** or **File an issue** (label
+`code`). End with "code review: pass" or "code review: N fixes made, M issues filed".
