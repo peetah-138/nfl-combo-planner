@@ -7748,6 +7748,18 @@ def _score_leg(t, kind, side, code):
     return {"ticker": f"{head}-{ev}-{tail}", "side": side}
 
 
+def _full_game_total(t):
+    """(#482 item 7) True for a league's full-game total series (KXNCAAMBTOTAL-...), False for a first-half, second-half
+    or team total (KXNCAAMB1HTOTAL, KXNBATEAMTOTAL), whose line is not the whole game's points."""
+    head = str(t or "").upper().split("-")[0]
+    for lg in LEAGUES.values():
+        for ser in str(lg.get("series") or "").split(","):
+            base = re.match(r"(KX[A-Z]+?)(GAME|MATCH|FIGHT)$", ser.strip())
+            if base and head == base.group(1) + "TOTAL":
+                return True
+    return False
+
+
 def _line_num(text):
     m = re.search(r"(?:over|by)\s+([\d.]+)", text or "", re.I)
     return float(m.group(1)) if m else None
@@ -7861,6 +7873,7 @@ def open_singles(max_age=30):
                             score_state=(sc or ksc or {}).get("state"), detail=ks_detail)
         dsc = sc or (ksc if ksc and ksc.get("me") is not None and ksc["state"] != "pre" else None)   # the score to show
         team = re.sub(r"\s+(wins by|to win).*$", "", label or "", flags=re.I).strip() or (sc or {}).get("abbr") or t
+        hkind = "other" if kind == "total" and not _full_game_total(t) else kind    # no pace claim for a half or team total
         out.append({"t": t, "ticker": t, "name": team if kind != "total" else (label or t),
                     "opp": (dsc or {}).get("opp_name") or (dsc or {}).get("opp_abbr") or "", "live": chance if state == "live" else None,
                     "sc": {k: dsc.get(k) for k in ("me", "opp", "abbr", "opp_abbr", "detail")} if dsc else None,
@@ -7876,8 +7889,8 @@ def open_singles(max_age=30):
                     "starts": start_label(game_event(m.get("event_ticker") or "")) if state == "pre" and not rs else "",
                     "note": (rs or {}).get("text", ""), "phase": (rs or {}).get("phase", ""),
                     "short": (rs or {}).get("short", ""),
-                    "how": _single_how(kind, side, _line_num(yes_sub), sc) if state in ("live", "over") else
-                    _single_how(kind, side, _line_num(yes_sub), dsc)       # tennis lines count games, not the sets shown
+                    "how": _single_how(hkind, side, _line_num(yes_sub), sc) if state in ("live", "over") else
+                    _single_how(hkind, side, _line_num(yes_sub), dsc)       # tennis lines count games, not the sets shown
                     if dsc and not sc and dsc["state"] in ("in", "post") and (code != "tennis" or kind == "win") else "",
                     "url": game_url(_score_leg(t, "win", "yes", code)["ticker"])
                     if _score_leg(t, "win", "yes", code)["ticker"].startswith(tuple(GAME_SLUG)) else ""})
@@ -17052,6 +17065,28 @@ def line_accuracy():
     return out
 
 
+_MON = {m: i + 1 for i, m in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT NOV DEC".split())}
+
+
+def _event_day_ok(event_ticker, start):
+    """(#482 item 6) True only when a Kalshi event's own date (the '26NOV27' in its ticker) is the ESPN game's local day:
+    the date of the start minus 10 hours (ESPN's start is UTC; a 9pm Pacific game starts after midnight UTC but is still
+    that evening's). One day only, so tonight's book total never prices tomorrow night's rematch. Fails closed: a ticker
+    or start that cannot be read is False (the market is skipped)."""
+    try:
+        m = re.match(r"^(\d{2})([A-Z]{3})(\d{2})", str(event_ticker or "").rsplit("-", 1)[-1])
+        if not m or m.group(2) not in _MON or not start:
+            return False
+        day = dt.date(2000 + int(m.group(1)), _MON[m.group(2)], int(m.group(3)))
+        st = dt.datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        if st.tzinfo is None:
+            return False
+        local = (st.astimezone(dt.timezone.utc) - dt.timedelta(hours=10)).date()
+    except (ValueError, TypeError):
+        return False
+    return day == local
+
+
 def line_candidates(code, everything=False):
     """Spread and total markets where Kalshi's price is clearly below the model's fair chance
     (everything=True: all markets near the sportsbook line, for the Build board)."""
@@ -17071,7 +17106,7 @@ def line_candidates(code, everything=False):
         tail = re.sub(r"^\d{2}[A-Z]{3}\d{2}", "", (m.get("event_ticker") or "").rsplit("-", 1)[-1])
         g = next((gg for gg in lines.values() if gg["home_abbr"] and gg["away_abbr"] and
                   tail in (gg["away_abbr"] + gg["home_abbr"], gg["home_abbr"] + gg["away_abbr"])), None)
-        if not g:
+        if not g or not _event_day_ok(m.get("event_ticker"), g.get("start")):
             continue
         try:
             line = float(strike) if strike is not None else float(re.findall(r"(\d+(?:\.\d+)?)", sub)[-1])
@@ -17681,6 +17716,13 @@ def line_pass(code, alert=None, log=print):
         d = book_depth(x["ticker"])
         if not d or d["thin"]:
             continue                                # thin, or Kalshi's book couldn't be read (429/5xx): no idea
+        try:                                        # (#482 item 7) the Build page's own checks: the learned bar at the real
+            rec, _ = _line_rec_one(code, x, _manual_base(), now, books_now([x["ticker"]]).get(x["ticker"]))   # book, a route to profit
+            fill_n = int(rec["n"]) if rec else 0    # and the expected-dollars floor; anything unreadable (NaN too) = no idea
+        except Exception:
+            rec, fill_n = None, 0
+        if not rec or fill_n < 1:
+            continue
         prev = store_rows("select pct, ts from suggestions where legs=? and n=1 order by ts desc limit 1",
                           (json.dumps([x["ticker"]]),))
         pct = x["fair"] / (x["p"] + single_fee(x["p"]))
@@ -17688,7 +17730,7 @@ def line_pass(code, alert=None, log=print):
             continue
         told = bool(prev) and pct - prev[0]["pct"] < 0.03     # (#push-gate) re-stored after 2h: no second push unless better
         stake = edge_stake(1 + (pct - 1) * 0.7, CFG.get("size_min", 3), CFG.get("size_max", 10), x["fair"])
-        n = max(1, int(stake / (x["p"] + single_fee(x["p"]))))
+        n = max(1, min(int(stake / (x["p"] + single_fee(x["p"]))), fill_n))   # never more than fills inside the edge
         sid = store_suggestion({"legs": [dict(x, event=x["event"] or "")], "fair": stake / x["fair"]},
                                {"pays": float(n), "stake": round(n * (x["p"] + single_fee(x["p"])), 2)}, pct)
         store_x("update suggestions set note=? where id=?",
