@@ -10,7 +10,7 @@ spending, and Pete's limits ($300 bankroll, $30 daily cap, $20 loss limit, Pause
 - **Evidence** (`_share_load`): the paper practice panel (never filtered by shares, so no feedback loop), replayed per day
   under the old and the new share (`_share_passes`: a day's first bet always passes, the running stake total stays within the
   share of the day's base). Net dollars after fees plus closing-line value per league. The shared gate (`ap_gate`: 70/30
-  out-of-sample, bootstrap low end above zero, `FAL_SHARE["min_n"]` = 40 changed bets) decides. A step is the next 5-pt value
+  out-of-sample, bootstrap low end above zero, `FAL_SHARE["min_n"]` = 40 practice bets for the key; the gate's own minimum of changed bets in each split comes on top) decides. A step is the next 5-pt value
   that actually changes which bets pass (`_share_step`), so 100% and the floor can still move.
 - **Tighten fast, loosen slow:** loosening needs twice the sample (`loose_mult` 2), 14 days since the last move
   (`loose_wait`), and non-negative readable closing-line value on the blocked bets (`_share_clv_ok`; unreadable = no loosen).
@@ -19,8 +19,7 @@ spending, and Pete's limits ($300 bankroll, $30 daily cap, $20 loss limit, Pause
 - **Floor:** every league keeps 5%, and its first bet of the day always passes, so it keeps producing evidence. Evidence comes
   from the paper panel, not the held real bets, so a league at the floor can still step back up.
 - **Buy pass** (`FaShareGuard`, wired into `_full_auto_pass` before the open-slot skip logic): skip-only, reads today's
-  full-auto spend; unreadable shares or bets approve nothing. A share-held bet is not logged as an open-slot skip (the #614
-  `fa_slots` evidence stays clean).
+  full-auto spend; unreadable shares or bets approve nothing. Today's spend counts every bet bought today, open or already settled, and is read strictly (unreadable = approve nothing). A share-held bet is filtered out before the open-slot skip logging so the #614 `fa_slots` evidence stays clean (wired in code; not covered by a dedicated test).
 - **Card:** logged on the Autopilot card in plain words with the dollars, with Undo, freeze (whole record or one league) and
   the master switch (`fa_lessons`), like every other autopilot setting. Data starts empty: nothing moves until there is sample.
 - **Tests:** `tests/suite/t_autopilot_share.py` (gate, thin data, loosen/CLV/cautious rules, floor and feedback loop, cap never

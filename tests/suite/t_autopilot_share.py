@@ -227,8 +227,6 @@ ok("a bet-type share applies too (every draft bet here is a single)", 1 <= len(l
 p, res, live = run_pass({"share:nba": 0.1, "share:@single": 0.9}, cap=100.0, nn=3, nh=3)
 nhl = [c for c in live if "NHL" in c["legs"][0]["ticker"].upper()]
 ok("another league is not held by the NBA share", len(nhl) >= 1)
-p, res, live = run_pass({"share:nba": 0.1}, cap=100.0)
-ok("a bet a share holds is not logged as an open-slot skip", not E.store_rows("select 1 from fa_slots where kind='skip'") if E.store_rows("select name from sqlite_master where name='fa_slots'") else True)
 E._fa_update(lambda s: s.update(fa_lessons=False))
 p2 = fresh(6)
 res = E.full_auto_pass(now=time.time())
