@@ -26098,7 +26098,7 @@ def _ap_smart():
         return None
 
 
-def _ap_knob_inforce(name, g, kst, smart, lvval):
+def _knob_ap_inforce(name, g, kst, smart, lvval):
     """The value of a group's exit knob that live smart sell really uses (what the brake judges by), not the stored `lv`:
     smart_tune's newer number can win over an older one the group stepped to."""
     if name in knob_live_names():
@@ -26159,7 +26159,7 @@ def ap_drift_items(st, now=None, kst=None):
                 k = KNOB_BY.get(name)
                 if not k or isinstance(k["start"], dict) or isinstance(cur, (dict, list)) or not _knob_valid(name, cur):
                     continue
-                cur = _ap_knob_inforce(name, g, kst, smart, cur)      # what is really in force, not the stored number
+                cur = _knob_ap_inforce(name, g, kst, smart, cur)      # what is really in force, not the stored number
                 if isinstance(cur, bool) or not (cur is None or isinstance(cur, (int, float))) or not _knob_valid(name, cur):
                     continue
                 start = k["start"]
@@ -26361,7 +26361,7 @@ def _ap_reset_knobs(out, now):
             e = d["groups"].get(it["g"])
             name = it["knob"]
             lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else None
-            if lv is None or name not in lv or _ap_knob_inforce(name, it["g"], d, smart, lv.get(name)) != it["cur"]:
+            if lv is None or name not in lv or _knob_ap_inforce(name, it["g"], d, smart, lv.get(name)) != it["cur"]:
                 continue                                     # moved since the look: left alone
             lat = e["lat"] if isinstance(e.get("lat"), dict) else {}
             v = e["v"] if isinstance(e.get("v"), dict) else {}
