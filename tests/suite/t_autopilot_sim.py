@@ -736,12 +736,22 @@ if __name__ == "__main__":
     # loosening runs: every setting starts tightened with a quiet brake and winning evidence in every table, so the autopilot loosens
     # for real; run A also presses Undo right after its first loosening, run B starts near the top of the ranges (the 150% / 100% ceilings)
     lrun = []
+    DIAG = []
     for tag, seed, days, o in (("loosen_A", 1, 63, {"loosen": True, "undo_first_loosen": True}),
                                ("loosen_B", 2, 49, {"loosen": {**LOOSEN_VALS, "stake_mult": 1.45, "cap_use": 0.95}}),
                                # run C: only the bet-size / cap-use / share trio starts tightened, so the bar (which shares a week with
                                # all three) can't take their slot and the result doesn't depend on who wins the rotation
                                ("loosen_C", 3, 56, {"loosen": {k: v for k, v in LOOSEN_VALS.items() if k in ("share:@single", "share:@combo", "stake_mult", "cap_use")}})):
         r = Run(seed, "boom", days=days, **o); r.label = tag; r.run(); runs.append(r); lrun.append(r); show(r)
+        if tag == "loosen_C":
+            try:
+                by, _ = E._share_load(SIM["t"])
+                L = E.fa_state().get("lessons") or {}
+                DIAG.append({"rows": {k: len(v) for k, v in by.items() if k.startswith("share:@")}, "cap": E.fa_state().get("cap"),
+                             "vals": L.get("vals"), "cq": L.get("cq"), "steps": L.get("steps"), "caution": E.fa_state().get("caution"),
+                             "now": SIM["t"], "hist": len(E.fa_state().get("history") or [])})
+            except Exception as err:
+                DIAG.append(repr(err))
     for tag, o in (("master_off", {"master_off": True}), ("frozen", {"freeze": True}), ("fa_off", {"fa_off": True})):
         r = Run(1, "boom", days=12, loosen=True, **o); r.label = tag + "_loosen"; r.run(); runs.append(r); show(r); untouched(r, tag + "_loosen")
         if tag == "fa_off" and r.stats["bought"]:
@@ -763,7 +773,7 @@ if __name__ == "__main__":
     loose_recs = {e["rec"] for r in lrun for e in r.w.events if e["looser"]}
     for rec in E.AP_REG:
         ok(f"the autopilot loosened its {rec} setting", rec in loose_recs,
-           {r.label: [(e["rec"], e["day"], e["looser"]) for e in r.w.events] for r in lrun})
+           ({r.label: [(e["rec"], e["day"], e["looser"]) for e in r.w.events] for r in lrun}, DIAG))
     ok("a loosening happened early enough for the 12-day controls to prove something",
        any(e["looser"] and e["day"] <= 10 for e in lrun[0].w.events))
     ok("Undo restored the previous value and held it two weeks", bool(lrun[0].undo2 and lrun[0].undo2["res"][0]), lrun[0].undo2)
