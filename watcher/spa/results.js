@@ -1,14 +1,21 @@
 // ---------------- RESULTS
-function resultsSkel(){return pbSkel()+`<div class="kpis">${'<div class="kpi skel" style="height:84px"></div>'.repeat(5)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
+/* One money rule for this screen: dollars and cents always (under $1,000 shows $9.40 and $54.00, never $9 beside $9.40),
+   a sign only where it is a profit or loss, and win = green, loss = red everywhere (display only). */
+const rmoney=x=>x==null||isNaN(+x)?'—':'$'+Math.abs(+x).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const srmoney=x=>x==null||isNaN(+x)?'—':(Math.round(Math.abs(+x)*100)===0?'':(+x>=0?'+':'−'))+rmoney(x);
+const rcls=x=>+x>=0?'up':'down';
+function resultsSkel(){return pbSkel()+`<div class="kpis rk"><div class="kpi skel rkh"></div>${'<div class="kpi skel"></div>'.repeat(4)}</div><div class="chart"><div class="hsk" style="padding:0"><i style="height:12px;width:30%"></i><i style="height:28px;width:44%"></i><i style="height:150px"></i></div></div>`+skel(4);}
+function kpiTiles(d){const pl=d.pl||0,won=d.won||0,cashed=d.cashed||0;
+ return `<div class="kpis rk">
+  <div class="kpi rkh"><span>Profit / loss</span><b class="${rcls(pl)}" data-num="r:pl" data-v="${Math.abs(pl).toFixed(2)}" data-pre="${pl>=0?'+':'−'}" data-still="1">${srmoney(pl)}</b><small class="rkn"><span data-num="r:n" data-v="${d.settled||0}" data-f="int">${d.settled}</span> settled combo${d.settled===1?'':'s'}</small></div>
+  <div class="kpi"><span>Return on stake</span><b class="${d.roi==null?'':rcls(d.roi)}" ${d.roi==null?'':`data-num="r:roi" data-v="${d.roi}" data-f="spct"`}>${d.roi==null?'—':(d.roi>=0?'+':'−')+Math.abs(Math.round(d.roi*100))+'%'}</b></div>
+  <div class="kpi"><span>Best result</span><b class="${d.best==null?'':rcls(d.best)}" ${d.best!=null?`data-num="r:best" data-v="${Math.abs(d.best).toFixed(2)}" data-pre="${d.best>=0?'+':'−'}" data-still="1"`:''}>${srmoney(d.best)}</b></div>
+  <div class="kpi"><span>Won</span><b>${won}</b></div>
+  <div class="kpi"><span>Cashed out</span><b>${cashed}</b></div></div>`;}
 function renderResults(){const d=S.res;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).results?errCard('results'):resultsSkel();return;}
  if(S.scrub){S.resDirty=true;return;}
  const sh=d.shadow;
- m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length?`<div class="card empty" data-ic="📊" style="margin-bottom:16px"><b>No results yet</b>Profit by day and week, and what's working, fill in here as your bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}${pbBlock(d.board===undefined?null:d.board,S.an)}${d.board&&d.board.n?'':`<div class="kpis">
-  <div class="kpi"><span>Profit / loss</span><b class="${d.pl>=0?'up':'down'}" data-num="r:pl" data-v="${Math.abs(d.pl||0).toFixed(2)}" data-pre="${(d.pl||0)>=0?'+':'−'}">${smoney(d.pl)}</b></div>
-  <div class="kpi"><span>Return on stake</span><b ${d.roi==null?'':`data-num="r:roi" data-v="${d.roi}" data-f="spct"`}>${d.roi==null?'—':(d.roi>=0?'+':'')+Math.round(d.roi*100)+'%'}</b></div>
-  <div class="kpi"><span>Settled</span><b><span data-num="r:n" data-v="${d.settled||0}" data-f="int">${d.settled}</span> <small>combos</small></b></div>
-  <div class="kpi"><span>Won · cashed</span><b>${d.won} <small>· ${d.cashed}</small></b></div>
-  <div class="kpi"><span>Best result</span><b class="up" ${d.best!=null?`data-num="r:best" data-v="${Math.abs(d.best).toFixed(2)}" data-pre="${d.best>=0?'+':'−'}"`:''}>${smoney(d.best)}</b></div></div>`}
+ m.innerHTML=`<div class="grid"><div>${!d.settled&&!(d.history||[]).length&&d.board===undefined?`<div class="card empty" data-ic="📊" style="margin-bottom:16px"><b>No results yet</b>Profit and what's working fill in as bets settle.<br><button class="btn acc" onclick="go('build')">See today's bets</button></div>`:''}${pbBlock(d.board===undefined?null:d.board,S.an)}${d.board&&d.board.n||!d.settled?'':kpiTiles(d)}
   ${plChart(d)}
   ${anBlock(S.an)}${promoBlock(S.pr)}${edgeBlock(d)}
   ${historyBlock(d.history||[])}
@@ -28,25 +35,26 @@ function plBars(d){const hist=d.history||[];
 function plChart(d){const bars=plBars(d),n=bars.length,tot=bars.reduce((a,b)=>a+b.pl,0),cnt=bars.reduce((a,b)=>a+b.n,0);
  const sw=`<div class="rng2">${[['day','Day'],['week','Week']].map(([k,l])=>`<button class="${S.plr===k?'on':''}" onclick="setPlr('${k}')">${l}</button>`).join('')}</div>`;
  const sum=`${S.plr==='day'?'Last '+n+' day'+(n===1?'':'s')+' with results':'Last '+n+' week'+(n===1?'':'s')} · ${cnt} bet${cnt===1?'':'s'}`;
- if(!n)return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b>$0</b><small>Nothing settled yet</small></div>${sw}</div><div class="empty" style="padding:22px 10px">Bars show up here as your bets settle.</div></div>`;
+ if(!n)return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b>$0.00</b><small>Nothing settled yet</small></div>${sw}</div><div class="empty" style="padding:22px 10px">Bars show up here as your bets settle.</div></div>`;
  const W=Math.max(300,n*44),H=150,mid=H/2,mx=Math.max(1,...bars.map(b=>Math.abs(b.pl))),bw=Math.min(30,W/n*.62);
  S.scr=S.scr||{};S.scr.pl={n,at:f=>Math.min(n-1,Math.floor(f*n)),
   show:(i,el)=>{const b=bars[i];el.closest('.plc').classList.add('on');el.querySelectorAll('rect.brc').forEach((r,j)=>r.classList.toggle('sel',j===i));
-   const h=el.closest('.plc').querySelector('.plh');h.querySelector('b').textContent=smoney(b.pl);h.querySelector('b').className=b.pl>=0?'up':'down';h.querySelector('small').textContent=`${b.lab} · ${b.n} bet${b.n===1?'':'s'} · tap for the bets`;},
+   const h=el.closest('.plc').querySelector('.plh');h.querySelector('b').textContent=srmoney(b.pl);h.querySelector('b').className=rcls(b.pl);h.querySelector('small').textContent=`${b.lab} · ${b.n} bet${b.n===1?'':'s'} · tap for the bets`;},
   end:el=>{const c=el.closest('.plc');c.classList.remove('on');el.querySelectorAll('rect.brc').forEach(r=>r.classList.remove('sel'));const h=c.querySelector('.plh');
-   h.querySelector('b').textContent=smoney(tot);h.querySelector('b').className=tot>=0?'up':'down';h.querySelector('small').textContent=sum;},
+   h.querySelector('b').textContent=srmoney(tot);h.querySelector('b').className=rcls(tot);h.querySelector('small').textContent=sum;},
   tap:i=>barSheet(bars[i])};
- return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b class="${tot>=0?'up':'down'}">${smoney(tot)}</b><small>${sum}</small></div>${sw}</div>
+ return `<h2>Profit by ${S.plr}</h2><div class="chart plc"><div class="plh"><div><b class="${rcls(tot)}">${srmoney(tot)}</b><small>${sum}</small></div>${sw}</div>
   <div class="scrub" data-scrub="pl"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"><line x1="0" y1="${mid}" x2="${W}" y2="${mid}" stroke="var(--line)" vector-effect="non-scaling-stroke"/>
   ${bars.map((b,i)=>{const h=Math.max(2,Math.abs(b.pl)/mx*(mid-8));return `<rect class="brc" x="${(i+.5)*W/n-bw/2}" y="${b.pl>=0?mid-h:mid}" width="${bw}" height="${h}" rx="4" fill="${b.pl>=0?'var(--yes)':'var(--no)'}"/>`;}).join('')}</svg></div>
   <div class="xl"><span>${esc(bars[0].lab)}</span><span>${n>1?esc(bars[n-1].lab):''}</span></div><div class="hint">Drag across the bars, or tap one to see its bets.</div></div>`;}
+function hnRow(h){return `<div class="hn rs"><span class="res"><i>Result</i><b class="${rcls(h.pl)}">${srmoney(h.pl)}</b></span><span><i>Paid</i><b>${rmoney(h.cost)}</b></span><span><i>Got back</i><b>${rmoney(h.back)}</b></span></div>`;}
 function barSheet(b){if(!b)return;const xs=b.items||[];
  const sd=d=>{if(!d)return '';const x=new Date(d+'T12:00:00');return x.toLocaleDateString([], {month:'short',day:'numeric'});};
  /* Issue #91: the bars group by when the money moved. Show the buy date and the cash-out/settlement date so the grouping explains itself. */
  const when2=h=>{const cd=h.cashed?(h.status==='cashed'?'Cashed out ':'Settled ')+sd(h.cashed):'';const bd=h.bought?'Bought '+sd(h.bought):'';return bd&&cd?bd+' · '+cd:bd||cd;};
- modal(`<h3>${esc(b.lab)}</h3><p><b class="${b.pl>=0?'up':'down'}">${smoney(b.pl)}</b> on ${b.n} bet${b.n===1?'':'s'}</p>
+ modal(`<h3>${esc(b.lab)}</h3><p><b class="${rcls(b.pl)}">${srmoney(b.pl)}</b> on ${b.n} bet${b.n===1?'':'s'}</p>
   <div class="blist">${xs.map(h=>`<div class="hrow2" role="button" tabindex="0" data-t="${esc(h.t)}" onclick="openClosed(this.dataset.t)"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${esc((h.picks||[]).map(short).slice(0,3).join(' + '))}${(h.picks||[]).length>3?' +'+((h.picks||[]).length-3):''}</b><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
-   ${when2(h)?`<div class="m" style="font-size:12px;margin:2px 0 4px">${esc(when2(h))}</div>`:''}<div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
+   ${when2(h)?`<div class="m" style="font-size:12px;margin:2px 0 4px">${esc(when2(h))}</div>`:''}${hnRow(h)}</div>`).join('')||'<div class="m">The bet-by-bet detail for this one is older than the history kept here.</div>'}</div>
   <div class="row"><button class="btn acc" onclick="closeModal()">Done</button></div>`);}
 try{S.hf=Object.assign({sport:'all',res:'all',when:'all',sort:'new'},JSON.parse(localStorage.getItem('cw_hf')||'{}'))}catch(e){S.hf={sport:'all',res:'all',when:'all',sort:'new'}}
 function hset(k,v){hap();S.hf[k]=v;try{localStorage.setItem('cw_hf',JSON.stringify(S.hf))}catch(e){}renderResults();}
@@ -65,10 +73,10 @@ function historyBlock(all){const f=S.hf;const today=new Date();const iso=d=>d.to
    <div class="chips">${chip('res','all','Any result')}${chip('res','won','🏁 Rode it, won')}${chip('res','cashed','💸 Cashed early')}${chip('res','lost','✕ Lost')}${chip('res','profit','Made money')}${chip('res','loss','Lost money')}</div>
    <div class="chips">${chip('when','all','All time')}${chip('when','7','Last 7 days')}${chip('when','30','Last 30 days')}${chip('when','month','This month')}
     <select class="hsort" onchange="hset('sort',this.value)">${[['new','Newest first'],['old','Oldest first'],['best','Biggest win'],['worst','Biggest loss']].map(([v,l])=>`<option value="${v}" ${f.sort===v?'selected':''}>${l}</option>`).join('')}</select></div></div>
-  <div class="m" style="font-size:12.5px;margin:2px 2px 10px">${xs.length} combo${xs.length===1?'':'s'} · ${money(staked)} paid · <b class="${pl>=0?'up':'down'}">${smoney(pl)}</b>${staked?` (${pl>=0?'+':''}${Math.round(pl/staked*100)}%)`:''}</div>
+  <div class="m" style="font-size:12.5px;margin:2px 2px 10px">${xs.length} combo${xs.length===1?'':'s'} · ${rmoney(staked)} paid · <b class="${rcls(pl)}">${srmoney(pl)}</b>${staked?` (${pl>=0?'+':'−'}${Math.abs(Math.round(pl/staked*100))}%)`:''}</div>
   <div class="tbl">${xs.map(h=>`<div class="hrow2" role="button" tabindex="0" data-t="${esc(h.t)}" onclick="openClosed(this.dataset.t)"><div class="hd2"><span class="hs">${(h.sports||[]).map(s=>ICON[s]||'').join('')||'🎲'}</span><b>${dlab(h.day)}</b><span class="m">${(h.sports||[]).map(s=>SPN[s]||s.toUpperCase()).join(' + ')} · ${h.picks.length} pick${h.picks.length===1?'':'s'}</span><span class="verdict ${h.status}" style="margin-left:auto">${h.status==='won'?'RODE IT':h.status==='cashed'?'CASHED':'LOST'}</span></div>
    <div class="legs">${h.picks.map(p=>`<span class="leg">${esc(short(p))}</span>`).join('')}</div>
-   <div class="hn"><span>Paid <b>${money(h.cost)}</b></span><span>Got back <b>${money(h.back)}</b></span><span>Result <b style="color:${h.pl>=0?'var(--yes)':'var(--no)'}">${smoney(h.pl)}</b></span></div></div>`).join('')||'<div class="empty"><b>Nothing matches</b>Try fewer filters.</div>'}</div>`;}
+   ${hnRow(h)}</div>`).join('')||'<div class="empty" data-ic="🔍"><b>Nothing matches</b>Try fewer filters.</div>'}</div>`;}
 function proofCard(p){if(!p)return '';const row=(lab,c,fmt)=>c?`<div class="mini">${lab}<b>${fmt(c.mean)} <span class="m" style="font-weight:500">(${fmt(c.lo)} to ${fmt(c.hi)}, ${c.n})</span></b></div>`:`<div class="mini">${lab}<b class="m">not enough yet</b></div>`;
  const pc=x=>(x>=0?'+':'−')+Math.abs(x*100).toFixed(1)+'%';
  return `<div class="card" style="border-color:${p.tone==='good'?'color-mix(in srgb,var(--yes) 50%,transparent)':p.tone==='bad'?'color-mix(in srgb,var(--no) 50%,transparent)':'var(--line)'}"><h3>Is it working? <span>95% ranges</span></h3>
