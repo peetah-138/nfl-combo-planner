@@ -762,7 +762,8 @@ if __name__ == "__main__":
     ok("the daily cap was the limit at times", any(r.stats["cap_bound"] for r in runs[:5]))
     loose_recs = {e["rec"] for r in lrun for e in r.w.events if e["looser"]}
     for rec in E.AP_REG:
-        ok(f"the autopilot loosened its {rec} setting", rec in loose_recs, sorted(loose_recs))
+        ok(f"the autopilot loosened its {rec} setting", rec in loose_recs,
+           {r.label: [(e["rec"], e["day"], e["looser"]) for e in r.w.events] for r in lrun})
     ok("a loosening happened early enough for the 12-day controls to prove something",
        any(e["looser"] and e["day"] <= 10 for e in lrun[0].w.events))
     ok("Undo restored the previous value and held it two weeks", bool(lrun[0].undo2 and lrun[0].undo2["res"][0]), lrun[0].undo2)
