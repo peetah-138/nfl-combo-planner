@@ -312,7 +312,7 @@ def slots_run(share):
     cs = [{"id": f"s{i}", "kind": "combo", "stake": 5.0, "pays": 9.0, "legs": [{"ticker": NBA.replace("LALBOS", f"LAL{i}BOS")}]} for i in range(3)]
     saved = (E.fa_check, E.panel_get, E._fa_candidates)
     E.fa_check = lambda *a, **k: {"brake": None, "caution": {"changed": False, "level": 0, "events": []}, "blockers": ["x"], "slots_only": True,
-                                  "room": 30.0, "slots": 0, "free": 100.0, "open": 15, "cap": 30.0, "day_loss": 20.0, "loss_today": 0.0, "spent": 0.0}
+                                  "room": 30.0, "slots": 0, "free": 100.0, "open": 15, "cap": 30.0, "day_loss": 20.0, "loss_today": 0.0, "spent": 0.0, "open_stake": 0.0}
     E.panel_get = lambda *a, **k: {"at": NOW, "status": "draft"}
     E._fa_candidates = lambda *a, **k: list(cs)
     try:

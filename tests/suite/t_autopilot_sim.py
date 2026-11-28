@@ -495,8 +495,12 @@ class Run:
             self.v(f"open risk ${risk1} is over the bankroll ${BANK:g} + realized profit")
         if risk1 > BANK + 0.01:
             NOTES.append(f"{self.label}: open risk ${risk1} was over $300 after profits")
-        if new and total > DAYLOSS + real_today + 0.01:
-            self.v(f"a day's stakes ${total} passed the daily loss room (${DAYLOSS:g} + ${real_today} settled today)")
+        open_today = round(sum(b["stake"] for b in self.book.open_bets(wall) if b["day"] == day), 2)   # (#646) a settled loss counts once: only stakes still at risk are held against the room
+        room_top = round(DAYLOSS * (1.0 - E.FA_LOSS_MARGIN) + real_today, 2)
+        if new and open_today > room_top + 0.01:
+            self.v(f"stakes still at risk ${open_today} passed the daily loss room (${DAYLOSS:g} less the cushion, + ${real_today} settled today)")
+        if new and open_today >= room_top - 2.0:
+            self.stats["room_bound"] = self.stats.get("room_bound", 0) + 1
         n_open = len(self.book.open_bets(wall))
         self.stats["max_open"] = max(self.stats["max_open"], n_open)
         if n_open > MAXOPEN:
@@ -759,7 +763,7 @@ if __name__ == "__main__":
     ok("the runs bought bets", all(r.stats["bought"] > 0 for r in runs[:5]))
     ok("some settings tightened", any(r.w.tight for r in runs[:5]))
     ok("the soft brake reached a cautious level", any(r.w.max_level >= 1 for r in runs[:5]))
-    ok("the daily-loss brake tripped", any(r.stats["brake_days"] for r in runs[:5]))
+    ok("the daily-loss brake tripped or the loss room (with its cushion) held buying back", any(r.stats["brake_days"] or r.stats.get("room_bound") for r in runs[:5]))
     ok("the daily cap was the limit at times", any(r.stats["cap_bound"] for r in runs[:5]))
     loose_recs = {e["rec"] for r in lrun for e in r.w.events if e["looser"]}
     for rec in E.AP_REG:
