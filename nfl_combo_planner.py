@@ -24015,7 +24015,149 @@ def panel_settle():
                     changes[c["id"]] = ch
             if changes:
                 _set_items(r["day"], r["mode"], changes)
+    timing_log_pass()                                      # (#8) record-only buy-timing rows; never raises, never buys
     return []
+
+
+# ---- (#8) buy-timing evidence. RECORD ONLY: one flat row per bought panel bet (real, paper and lab), written from
+# panel_settle (every 5 minutes, never on the buy path and never before an order), so a later look can ask "how early before
+# the start, at what price, against what close, for how many net dollars" by hours-before-start bucket and league.
+# Nothing here reads a price from Kalshi or the network (the close comes from the closes table already on disk), nothing
+# decides a buy, a size or a sale, and every failure is swallowed (logged to the console only). Storage is bounded:
+# at most TIMING["batch"] rows written a pass, rows older than TIMING["keep"] or beyond TIMING["max_rows"] trimmed hourly.
+TIMING = {"keep": 120 * 86400, "max_rows": 20000, "batch": 200, "days": 10, "trim_every": 3600}
+TIMING_RUN = {"trim": 0.0}
+TIMING_BUCKETS = (("live", "During the game"), ("lt1h", "Under 1 hour before"), ("1-6h", "1-6 hours before"),
+                  ("6-24h", "6-24 hours before"), ("24h+", "A day or more before"))
+
+
+def timing_bucket(kick, bought_at, live=False):
+    """(bucket id, hours before the start) for a buy. Same cut-offs as the scoreboard: a buy after the start (or one
+    marked live) is "live"; then under 1 hour, 1 up to 6, 6 up to 24, 24 and more (a boundary belongs to the later bucket).
+    (None, None) when either time is missing or not a finite positive number."""
+    try:
+        k, b = float(kick), float(bought_at)
+    except (TypeError, ValueError):
+        return None, None
+    if not (math.isfinite(k) and math.isfinite(b)) or k <= 0 or b <= 0:
+        return None, None
+    h = (k - b) / 3600
+    if live or h < 0:
+        return "live", round(h, 3)
+    for cut, name in ((1, "lt1h"), (6, "1-6h"), (24, "6-24h")):
+        if h < cut:
+            return name, round(h, 3)
+    return "24h+", round(h, 3)
+
+
+def _timing_table():
+    store_x("create table if not exists timing_log(key text primary key, ts real, upd real, mode text, day text, auto int, "
+            "league text, kind text, live int, kick real, bought_at real, hours real, bucket text, p_build real, p_buy real, "
+            "close real, clv real, clv_buy real, stake real, fees real, result text, pl real, pl_real real)")
+    store_x("create index if not exists timing_log_ts on timing_log(ts)")
+
+
+def _timing_close_for(c, closes):
+    """The legs' game-time value multiplied together (None unless every leg has one), from the closes already read."""
+    legs = c.get("legs") or []
+    vals = [closes.get(l.get("ticker")) for l in legs]
+    return math.prod(vals) if legs and all(v for v in vals) else None
+
+
+def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
+    """The flat timing row for one panel item (pure: no I/O). None for an item that was not bought."""
+    if not isinstance(c, dict) or c.get("state") not in ("bought", "paper") or not c.get("id"):
+        return None
+    now = time.time() if now is None else now
+    at = c.get("bought_at") or c.get("at")
+    live = bool(c.get("live"))
+    bucket, hours = timing_bucket(c.get("kick"), at, live)
+    legs = c.get("legs") or []
+    ps = [l.get("p") for l in legs]
+    p_build = math.prod(ps) if legs and all(isinstance(v, (int, float)) and v for v in ps) else None
+    if c.get("kind") == "combo":
+        pays, stake = c.get("pays"), c.get("stake")
+        p_buy = stake / pays if pays and stake else None          # dollars paid per dollar the combo pays
+    else:
+        p_buy = c.get("paid") or c.get("price")
+    p_buy = float(p_buy) if isinstance(p_buy, (int, float)) and p_buy else None
+    close = None if live else _timing_close_for(c, closes or {})
+    clv_buy = round(close / p_buy - 1, 4) if close and p_buy else None
+    k = f"{day}|{c['id']}"
+    auto = 1 if (k in auto_keys or (c.get("swap_of") and f"{day}|{c['swap_of']}" in auto_keys)) else 0
+    return {"key": f"{mode}|{k}", "mode": mode.split("#")[0], "day": day, "auto": auto if mode.startswith("real") else 0,
+            "league": c.get("league") or (league_key(legs[0].get("ticker")) if legs else None), "kind": c.get("kind"),
+            "live": int(live), "kick": c.get("kick"), "bought_at": at, "hours": hours, "bucket": bucket, "p_build": p_build,
+            "p_buy": p_buy, "close": round(close, 4) if close else None, "clv": c.get("clv"), "clv_buy": clv_buy,
+            "stake": c.get("stake"), "fees": fees, "result": c.get("result"), "pl": c.get("pl"), "pl_real": c.get("pl_real")}
+
+
+_TIMING_COLS = ("key", "ts", "upd", "mode", "day", "auto", "league", "kind", "live", "kick", "bought_at", "hours", "bucket",
+                "p_build", "p_buy", "close", "clv", "clv_buy", "stake", "fees", "result", "pl", "pl_real")
+
+
+def _timing_trim(now):
+    """At most hourly: drop rows past TIMING["keep"], then anything beyond the newest TIMING["max_rows"]."""
+    if now - TIMING_RUN["trim"] < TIMING["trim_every"]:
+        return
+    TIMING_RUN["trim"] = now
+    store_x("delete from timing_log where ts < ?", (now - TIMING["keep"],))
+    store_x("delete from timing_log where key in (select key from timing_log order by ts desc limit -1 offset ?)",
+            (TIMING["max_rows"],))
+
+
+def timing_log_pass(now=None, log=console_note):
+    """Write or refresh the timing rows for the last TIMING["days"] days of panel bets. Returns rows written. Never raises."""
+    try:
+        if not STORE["db"]:
+            return 0
+        now = time.time() if now is None else now
+        _panel_table()
+        _timing_table()
+        since = (dt.datetime.now(PACIFIC).date() - dt.timedelta(days=TIMING["days"])).isoformat()
+        auto = set()
+        try:
+            auto = set(fa_state().get("bets") or {})
+        except Exception:
+            pass
+        items = []
+        for r in store_rows("select day, mode, body from panel where (mode in ('real','paper','lab') or mode like 'real#%') "
+                            "and day >= ?", (since,)):
+            try:
+                items += [(r["mode"], r["day"], c) for c in json.loads(r["body"]).get("items", [])]
+            except (ValueError, AttributeError, TypeError):
+                continue
+        items = [x for x in items if isinstance(x[2], dict) and x[2].get("state") in ("bought", "paper")]
+        if not items:
+            _timing_trim(now)
+            return 0
+        tks = {l.get("ticker") for _, _, c in items for l in (c.get("legs") or []) if l.get("ticker")}
+        closes = close_prices(sorted(tks), mid=True) if tks else {}
+        led = {r["ticker"]: (r["fees"] or 0) + (r["sell_fees"] or 0) for r in store_rows("select ticker, fees, sell_fees from ledger")} \
+            if STORE.get("ledger_ok") else {}
+        have = {r["key"]: (r["result"], r["close"], r["pl_real"], r["clv"]) for r in
+                store_rows("select key, result, close, pl_real, clv from timing_log where ts >= ?", (now - TIMING["keep"],))}
+        wrote = 0
+        for mode, day, c in items:
+            if wrote >= TIMING["batch"]:
+                break
+            fee = led.get(_panel_ticker(c)) if mode.startswith("real") else None
+            row = timing_row(mode, day, c, auto, closes, round(fee, 4) if fee is not None else None, now)
+            if not row or have.get(row["key"]) == (row["result"], row["close"], row["pl_real"], row["clv"]):
+                continue
+            row.update(ts=now, upd=now)
+            store_x("insert into timing_log(" + ",".join(_TIMING_COLS) + ") values(" + ",".join("?" * len(_TIMING_COLS)) + ") "
+                    "on conflict(key) do update set " + ",".join(f"{k}=excluded.{k}" for k in _TIMING_COLS if k not in ("key", "ts")),
+                    tuple(row[k] for k in _TIMING_COLS))
+            wrote += 1
+        _timing_trim(now)
+        return wrote
+    except Exception as err:
+        try:
+            log(f"timing log: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
 
 
 PANEL_FILL_TOL = (0.10, 0.03)   # a ledger row is this panel bet's own when its cost is within max($0.10, 3%) of it
