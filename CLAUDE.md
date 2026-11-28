@@ -1980,6 +1980,259 @@ Added (no behavior change):
   records may legitimately sit below the defaults; needs Pete), #647 and the odds.lock part of #649.
 - Tests: `t_timing_log.py`.
 
+**Release 150: Release 148 review follow-ups: delight nits and autopilot reset hardening (issues #664, #665).**
+
+Display only (#664): drift lines read "Name: from X to Y, tighter" instead of an arrow (VoiceOver says "from ... to ...");
+the games card has `aria-label="<team> vs <opponent>, open game"`; a finished game's empty `.gl.none` line is `display:none`
+(`.gc.done .gl.none`); `settings.css` `.fadw` uses `--mute` (`--muted` is not defined in the web app); the Back to start
+sheet shows "It is frozen..." only when `one.frozen && one.reset_ok`, and its refusal text uses `--no` (`--red` is undefined).
+Test: `t_delight_nits_664.py`; the drift lines are asserted exactly in `t_autopilot_drift.py`. Not changed: the card heading
+stays "Drift since start" (the issue's wording note had no concrete replacement).
+
+Tighten-only (#665): (1) `_ap_reset_knobs` `note()` re-reads the saved full-auto file with `_ap_raw_fa()` first and writes
+nothing when it is unreadable (the pinned exit numbers stay; the message says the hold and log line were not saved).
+(2) A reset that would LOOSEN an exit number is also refused while smart sell's own per-league knob brake is on in any league
+(`_ap_knob_braked`, the same any-league test the live sellers use; an unreadable knob state counts as braked), on the card
+(`ap_drift_view`), in `ap_reset`, and again inside the knob-file write in case the brake started after the look. A reset
+that tightens is unaffected. (3) `ap_reset` and `ap_drift_view` judge the full-auto brake on both the repaired copy and the
+saved file (`ap_brake_cautious(raw)`); today a damaged caution record is already refused by `_ap_raw_fa`, so this is
+defence in depth. Skipped: `_event_day_ok` UTC-10h window (Asia/Australia games skipped) because widening it would loosen
+a fail-closed guard; it stays as is, watch the skip counts.
+Tests: `t_autopilot_drift.py` (#665 block).
+
+**Release 150: Button feedback follow-ups (UI only).**
+
+Three fixes to `watcher/spa/press.js` after the Opus review of the button-feedback change. No request body, endpoint,
+amount or server code changed.
+
+1. One Cash out / Place hedge at a time per combo, even if the sheet is closed and reopened from the Live card while the
+   first is still pending. `S.fbFly[ticker]` is set when the request goes out and cleared when the answer arrives or the
+   request fails. `sell()`, `hedge()`, `fbSell()` and `fbHedge()` check it and show "still going through" instead.
+2. A refusal that arrives after the sheet was closed or replaced now shows as a red toast (the button is no longer on
+   screen). Unclear outcomes still open the Check Kalshi sheet.
+3. Only the Mac's known refusal messages show red. Any other `ok:false`, including "That didn't work: <error>" (which can
+   mean the outcome is unknown), is treated as Check Kalshi.
+
+Tests: `tests/suite/test_buttonfeedback_ui.py` covers each case for both Cash out and Place hedge.
+
+**Release 150: Button feedback (visual only, haptics-independent).**
+
+With haptics off, every button that moves money or state now shows the same sequence on screen:
+pressed (instant darken/scale), then pending (spinner, "Buying…", disabled, aria-busy, width locked so nothing jumps),
+then a result: green check, red "Didn't go through" with the reason in plain words, or amber "Check Kalshi" when the
+answer is unknown. An unknown answer is never shown as Bought/Sold/Hedged and never offers a blind retry (rule 8).
+
+New files: `watcher/spa/press.js` (helper: fbPend / fbEnd / fbIdle / fbKind / fbNote, hidden `#fbsr` live region) and
+`watcher/spa/press.css`. No request body, order logic or server code changed.
+
+Buttons covered: Buy (build), Buy idea, Long-shot buy, Buy straight, Sell straight, Cash out, Place hedge, Move money
+between pots, Panel approve/add, Restart panel, Stop panel.
+
+New guards (a second tap while pending does nothing): Cash out, Place hedge, Restart panel, Stop panel. Existing guards
+(S.buying, S.ibuy, s.sending, S.pSend, S.lsBusy) are kept and tested.
+
+Behaviour changes worth a look in review: Place hedge no longer closes the sheet before sending; a Panel request timeout
+now reads as "may or may not have gone through" (check) instead of a plain failure; a bought idea now ends on the Bought sheet.
+
+**Release 150: Faster browser refresh (issue 21, package 1).**
+
+Browser-only pacing change in `watcher/spa/` (`common.js` constants, `boot.js`, `moments.js`). Nothing in the watcher,
+`game.js`, `games.*`, buy/sell logic or any external API is touched; the browser still only calls our own server.
+
+- `TICK_GATE_MS` 1500 (was 4000): a stream "tick" refetches Live/Games when the last load is over 1.5 s old.
+- Fallback poll every `POLL_EVERY_MS` 5000 (was 12000). It skips when the last load is under `POLL_SSE_SKIP_MS` 30000
+  while the stream is up (unchanged), or under `POLL_NOSSE_SKIP_MS` 4000 when the stream is down (was 30000 only when up,
+  so a down stream polled every 12 s). A hidden tab never polls (floor unchanged).
+- Returning to the tab reloads Live or Games (was Live only) if the last load is over `FG_RELOAD_MIN_MS` 5000 old.
+- Game-page redraw gate (4 s, `game.js` package) and server cadence are not changed here.
+
+Test: `tests/suite/t_spa_refresh.py` (exact values and where each is used).
+
+**Release 150: Faster game page (package 3).**
+
+Browser-only pacing change for the open game sheet (`watcher/spa/game.js`, constants in `common.js`, one gate in `moments.js`).
+The browser still only calls our own server. Server pacing (the 36/min, 4 s score pacer), engine score ages, `game_detail`
+`max_age` and all buy/sell code are untouched, so ESPN and Kalshi volume cannot rise from this change.
+
+- Stream tick redraws an open game after `GAME_TICK_GATE_MS` 3000 (was 4000).
+- Fallback timer runs every `GAME_POLL_EVERY_MS` 2000 and redraws if the last draw is over `GAME_POLL_SKIP_MS` 3500 (was 5500).
+  A hidden tab never polls.
+- Returning to the tab with a game open redraws at once if the last draw is over `FG_RELOAD_MIN_MS` 5000 (the same gate Live and Games use).
+- The existing "Updated / Prices ... scores ..." line on the game sheet greys (class `old`) after `GAME_STALE_S` 20 s (was 60 s) so stale data is visible.
+
+Test: `tests/suite/t_game_refresh.py`.
+
+**Release 150: Faster server cadence (faster-updates plan, package 2).**
+
+Display freshness only. The web app's Live snapshot is now rebuilt every 5 s while a game is on (was 8 s) and its ESPN
+score cache is 5 s (was 8 s); idle stays 30 s. Constants at the top of `watcher/combo_watcher.py` (`LIVE_FAST_SECS`,
+`SCORES_FAST_SECS`, `SCORES_FLOOR_SECS` 4, `SCORES_BACKOFF_SECS` 8, ...). When a Live rebuild finishes the web app
+publishes an extra `tick` on the BUS (at most one per `LIVE_TICK_MIN_GAP_SECS` = 2 s) so open pages refetch when data is new.
+
+Rate-limit safety: `ScorePacer` wraps the web app's `fetch_scores`. Never faster than 4 s by default; at most
+`SCORES_CALLS_PER_MIN_CAP` (36) ESPN scoreboard reads a minute across leagues (over it the cached copy is served);
+after 2 failed reads in a row (error, no new timestamp, or an empty board after a non-empty one, which is how a 429 looks)
+the age falls back to 8 s and doubles per further failure up to 60 s; one good read resets it. Kalshi call volume is
+unchanged (the account cache is not touched).
+
+Never touches: the watcher engine's `E.SCORES_MAX_AGE` (8 s), `SL_FEED_AGE`, `LIVE_SCORE_AGE`, `SINGLES_SELL_AGE`, any
+`max_age=0` guard read, buy/sell/stop-loss logic, Pause, caps, rule 8.
+
+Test: `t_server_cadence.py`.
+
+Review follow-ups (tighten only): while backing off, the score age is the longer of the normal age and the back-off (an idle board stays at 30s); failures are counted per league so a good read in one league cannot reset another; a failed read is never retried outside the pacer, the cached copy is served instead.
+
+**Release 150: Field motion (package M1).**
+
+The in-game field strip now moves. Display only: nothing here reads or changes a price, bet, cap, Pause or rule 8.
+New files `watcher/spa/field.js` and `field.css` (listed in `MANIFEST.json` after `game.css` and `game_tabs.js`);
+`game.js` and `game_tabs.js` are untouched: `field.js` wraps `gameAfterPaint`, `pbpRefresh` and `pbpFx` at load and
+swallows its own errors.
+
+- Ball and arrow glide from the old spot (a long gain hops in an arc); the drive trail grows in the team colour; the
+  first-down line slides and locks in; touchdown, field goal, safety, turnover, possession-change and red-zone moments
+  (banner, colour wash, end-zone pulse, ghost ball, uprights, crowd twinkle); richer team-coloured end zones; new
+  play-by-play rows slide in (30 ms stagger, at most 6) and scoring rows pulse their rail.
+- Honest motion: events fire only between two real consecutive snapshots (not after a gap over 90 s, not after a stale
+  one, not when live and replay switch). The live dot pulses only while the game is live AND the feed is fresh; stale is
+  a grey still dot. Reduced motion, a hidden tab or a stale feed means the final state only; loops pause offscreen.
+- Only transform/opacity (WAAPI `translate`/`scale`), no layout shift, taps never delayed, numbers always final.
+  Tokens from polish E are not merged yet, so durations use local values.
+
+Tests: `t_field_motion.py` with `fixtures/field_replay.json` (exact values for yard-to-position, first-down line,
+event classification, drive trail, glide kind, the animate-or-snap decision).
+
+**Release 150: Live motion (package M2).**
+
+Display only: nothing here reads or changes a price, bet, cap, Pause or rule 8. All of it lives in `watcher/spa/live.js`
+(one small block at the end, called once from `renderLive` inside a try/catch) and `watcher/spa/live.css`. Only transform and
+opacity animate, on the `--dur-*` tokens, and every block has its own reduced-motion rule.
+
+- **Honest live dot.** The Live dots (hero and on in-play leg chips) pulse with a spreading ring only while the feed is fresh and
+  the tab is visible. A stale feed (older than 60 s, network down, live link dropped) turns them grey and still. A hidden tab
+  pauses them.
+- **Leg hit.** When a leg turns into a win between two real consecutive refreshes, its chip pops once and a green ring spreads
+  from it. A leg that turns into a loss only dims once (sober, no shake, no red flash).
+- **Combo win and loss.** A combo that just won gets a gold sheen across the row (twice) and its verdict pill pops. A combo that
+  just lost fades in grey, nothing else. A combo that first appears already settled is not celebrated.
+- **Hot combos.** A pending combo whose real Kalshi offer is 80% or more of what it pays (or one flagged as a moment) gets a slow
+  soft sheen while the feed is fresh. At most two rows at once, closest to paying first; estimates never count.
+- **First paint.** Leg chips settle in 30 ms apart after their row (first six), on the first paint of the tab only.
+- Existing and untouched: number roll on worth-now and the offer (`rollNums`), row stagger, `.fl-up/.fl-down` flashes.
+
+Honest motion: moments fire only between two real snapshots (not after a gap over 90 s, not when the earlier one was stale, not
+while hidden, never with reduced motion). Numbers are always final in the DOM.
+
+Tests: `t_live_motion.py` (exact values for the hit/miss/win/loss diff, the gate, and the hot-combo rule).
+
+**Release 150: Motion M3: Games tab, game sheet, Results.**
+
+Display only. Nothing here touches a price, bet, cap, Pause or rule, and nothing fetches. New `watcher/spa/motion3.js` and `motion3.css` (last in their lists) wrap `renderGames`, `renderResults` and `paintGame`; each hook is in try/catch so an error leaves the page as drawn. Only transform and opacity animate, on the `--dur-*` tokens.
+
+- **Honest motion.** A moment fires only between two real consecutive pictures: never on the first paint, after a gap over 90 s, after a stale picture, on a stale feed (page `.old` threshold, 60 s), in a hidden tab, or with reduced motion. Stale or hidden also hides the "+N" chips and pauses running animations.
+- **Games tab.** A live score that goes up flips its digits and a "+7" rises off it (green for your side, grey for the other). A win-chance move of 3+ points shows a "+8 pts" chip; 10+ also sweeps a highlight across the bar. The bar is now a transform (`scaleX`, `data-m3b`) that eases from its old value, not a width. A card that just finished gets a win pop or a slow loss dim and keeps a calm tint (win) or dim (loss); spread and total cards are left plain. First paint or skeleton-to-content: cards rise in six at a time, 30 ms apart, and content fades in over a skeleton (the skeleton is never copied, so nothing is on the page twice).
+- **Game sheet.** The scoreboard digits flip with a "+N" chip (`data-still` keeps the number roll off them), the win-chance number gets its move chip and a pop on a 10+ point move; first open staggers the KPI tiles and fades the chart in.
+- **Results.** Numbers keep the existing roll; a real profit also pops the P/L figure once it has landed. Profit bars grow from their baseline, history rows settle in 30 ms apart, a winning row gets a thin green underline, a loss just fades.
+- Tests: `t_motion_m3.py` (pure logic under node: gate, score and chance moves, final tone, diff gating, bar slide, stagger, tone, count text).
+
+**Release 150: Celebrations, pull-to-refresh, boot and page transitions (package M4).**
+
+Display only: nothing here reads or changes a price, bet, cap, Pause or rule 8; it fetches nothing.
+New files `watcher/spa/motion4.js` and `motion4.css` (last in the css order, `motion4.js` before `moments.js` in
+`MANIFEST.json`); `moments.js` and `boot.js` call into it. `live.js`, `build_cards.js`, `games.*`, `game.*`,
+`results.*`, `common.js` and every money or server file are untouched.
+
+- **Wins celebrate.** A big hit gets two confetti bursts (40 then 24 pieces, seeded, three shapes, drift and spin),
+  a gold shimmer sweeping the payout, sparks leaving the number, and the label and profit chip rising in turn. A
+  combo that wins gets one 32-piece burst; a sale at a real profit gets a small 18-piece burst, sparks off the check,
+  and a soft glow on the amount and profit chip.
+- **Losses stay sober.** A flat or losing sale gets no confetti and no sparks: a slower, opacity-only fade and a grey
+  check or dash, no spring and no colour alarm.
+- **Pull to refresh.** A halo ripples while the refresh really runs, the check pops when it lands. If the Mac link is
+  down when it ends, the check becomes a grey dash, so the gesture never claims fresh data it did not get.
+- **Boot.** The app opens under a brand-mark cover (painted by `<body>` on the first frame, so no white flash). It
+  lifts once the first load finishes (held at least 0.45 s, gone by 1.5 s at the latest, and by itself after 2.4 s
+  even if the script never runs), and the header settles in. It never blocks a tap.
+- **Page transitions.** On a tab change the first six blocks rise 30 ms apart (never on a refresh); the browser's
+  cross-fade is a quick fade-out and a rise; the chosen tab pops.
+- **Rules kept.** Only transform and opacity (plus glow shadows on small elements), tokens `--dur-*`, `--elev-*`,
+  `--ease`, `--out`, `--spring`. Reduced motion gets the final state only (no splash, no confetti, no stagger). Loops
+  pause when the page is hidden; confetti is capped at 40 per burst and 64 on screen and removed when done, and
+  skipped on a hidden page. `common.js` poll timing (#674) is not touched.
+
+Tests: `t_motion_m4.py` (seeded confetti plan and caps, win/flat/loss tone, burst sizes, the motion gate, the
+pull-to-refresh ending and the splash timing).
+
+**Release 150: Polish A: Live / Your Combos (display only).**
+
+Pete: the app is nowhere near Kalshi-level mobile polish. This is the Live tab's share (`watcher/spa/live.js`, new `live.css`
+in `MANIFEST.json`, `tests/suite/test_polish_a_ui.py`). No money logic changed: no seller, buyer, threshold, guard or
+endpoint is touched; only what is drawn.
+
+- **Auto cash-out off is said once.** `autoNote()` draws one quiet note above Your combos ("Auto cash-out is off. Nothing
+  sells on its own; offers below still update." plus a 44px Settings button) when `live.auto_sell === false` and something is
+  riding. While it is off, a card hides its "Smart sell - off in Settings" chip (`ssChip`) and the "Take profit / Loss cut" lines
+  (`ssLines`). A bet set to "I'll sell it" keeps its chip. With the switch on nothing is hidden and there is no note.
+  The engine still sends the same `smart_profit` / `loss_chip` text; the page just does not repeat it.
+- **One money rule on Live.** `lm()` (amount) and `lsm()` (signed change) always show cents ("$2.00", "$54.00", "$1,234.50",
+  true minus "−$0.37", never "-$0.00"). Every card, single row, the hero, Do now and the settled pill use them, so the numbers in a row
+  share decimals. The number roller gets two formats (`'lusd'`, `'labs'`) added to `fmtNum` from `live.js`, so a rolling cell
+  does not snap back to `$13` when it animates; `common.js` is untouched (swap to the foundation helper if it lands).
+- **Card hierarchy (phone).** Worth now leads (big, with its change on one line, "Offer now" for a real Kalshi offer,
+  "Worth now" for an estimate), the chance sits beside it, what it paid and what it pays are the quiet second row, the next
+  event line stays under the name. CSS only (`live.css`, grid order); the markup keeps the table order for the desktop table.
+- **44px taps** on the filter chips (now one horizontally scrolling row), settled-filter chips, section toggles, the % / $ switch,
+  the Smart sell chip, the card's action buttons and the new note's button.
+- **No jumps, skeletons not spinners.** First paint shows three card-height skeleton blocks (`liveCardSkel`); asking Kalshi for an
+  offer shows a shimmer pill instead of a spinner and the Ask button keeps its width (`.askb`).
+- **Not done here (other packages own them):** type/space/radius tokens, shared freshness pill and the shared money helper
+  (foundation), section header redesign (`ideas.js`).
+- **Tests:** `test_polish_a_ui.py` compares exact strings for `lm`/`lsm`/roller formats, the settled pill, the note (once, off
+  only), hidden chip/lines, the labels and numbers of an estimate, real-offer and cashed card, the skeleton and Ask button, and
+  at 390px light and dark: one note, no "off in Settings" anywhere, taps >= 44px, worth-now above paid, no sideways scroll.
+
+**Release 150: Polish D: Build and Settings chips, calmer phone Settings (display only).**
+
+Changed (looks only; no setting, value, switch, save or Mac action changes, every control is still reachable):
+
+- The Build league chips, the Build lines-type chips and the Settings sport chips were 32px tall and wrapped to three rows (about 215px above the
+  content on Build). They are now one sideways row (`.chips.chrow`, in `build.css`): 44px chips, 8px gap, a 28px fade at the right edge, and the
+  chosen chip scrolled into view (`chrowFit()`, scrolls the row only; Build keeps the row's scroll across redraws). Build's chip row went from about 205px to 48px.
+- Settings jump chips are 44px tall. On a phone the grid's 32px gap no longer stacks between the title, Mac line, search and chips (`.set{gap:0}`
+  under 1100px) and card spacing is 12px (8px when folded).
+- A folded Settings section now keeps its one-line summary under the title (ellipsis), next to the existing "N of M on" badge.
+- The Mac line, when its status can't be read, is grey (not the red alarm dot) and says "status can't be read right now".
+- Not changed here: `app.css` tokens, `common.js`, `motion.css`, `chrome.css`, `haptics.js` (package E). The Settings search, jump chips, folds and
+  the Build and Settings skeletons already existed (#212), so nothing was added there. The Knobs card already used 44px chips.
+- The chips carry `data-hsw="0"` (no iOS tick switch), like the game tabs and Settings jump chips, so a sideways drag that starts on a chip still scrolls the row.
+
+Tests: `tests/suite/st_polish_d.py` pins the exact CSS and markup values above; `test_settings_scroll` no longer expects switches on the sport chips.
+
+**Release 150: Games tab and game sheet polish (package B, display only).**
+
+- Game cards: one "Your pick" tag in the card header (not on the team row), team names clamp to two lines, scores are tabular and right-aligned, the empty chance row still keeps its height (kept from #664), bet chips stay on one row (two chips, then "+N"), section headers are 44px tall with plain helper text, bet-type chips are 44px.
+- States: a loading skeleton (`aria-busy`) while games load, a plain "Games didn't load" card with Try again, and empty states ("No games to watch yet", "No games for this bet type" with Show all games).
+- Game sheet: a friendly "This game didn't load" (Try again) or "This game isn't on the board" instead of "Game not found"; tabs are 44px; small labels are at least 11px; numbers are tabular; the buy bar is opaque, pinned, has safe-area padding and a one-line note that the price can differ slightly from the chance above; buy buttons carry a spoken label.
+- Not done: a skeleton on tab switch (the tab data is already loaded, the swap is instant). `scoreboard.*` is the Results profit scoreboard (another package) and was left alone.
+
+Tests: `tests/suite/test_games_polish.py`; `test_gamecard_opp`, `test_makeover2` and `t_nomoney_batch5` updated for the new markup.
+
+**Release 150: Results screen polish (display only).**
+
+Changed (no computed number changes, only how they are shown):
+
+- The top tiles are now the profit or loss number first and largest, with "3 settled combos" under it (it used to wrap to three
+  lines), then four equal tiles: Return on stake, Best result, Won, Cashed out ("Won - cashed 1 . 1" was cryptic).
+- One money format on Results: dollars and cents always (`$9.40`, `$54.00`, `$1,234.50`), a sign only on a profit or loss.
+  Win is green and loss is red everywhere, including Return on stake and the history rows.
+- History rows lead with the Result, then Paid and Got back in aligned columns. The filter chips, sort menu, Day/Week toggle and
+  What's working tabs are 44px tall.
+- Loading shows a matching skeleton (one tall tile, four small). With nothing settled the tiles are hidden instead of showing zeros.
+- The profit tiles no longer roll their money number (the roll used the old rounding); percent and counts still roll.
+- The cut-losses explanation (#570) was already shortened on develop; left as is.
+
+Tests: `tests/suite/test_polish_results.py` (exact strings, 44px, skeleton, empty state).
+
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
