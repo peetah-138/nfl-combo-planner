@@ -10,13 +10,25 @@ function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';i
 function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';
  const pre=c==='won'?'✓ ':c==='lost'?'✕ ':['up','down','live'].includes(c)?'<i class="pd"></i>':'';
  const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':l.phase==='waiting'?'Not started yet':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
- return `<span class="leg ${c}" title="${tip}">${pre}${esc(betChip(l))}${sc}</span>`;}
+ return `<span class="leg ${c}" data-lk="${esc(l.ticker||'')}" title="${tip}">${pre}${esc(betChip(l))}${sc}</span>`;}
 function legTags(ls){const o=[...ls].sort((a,b)=>(b.state==='live')-(a.state==='live')||(b.res==='yes')-(a.res==='yes'));
  const max=7;return o.slice(0,max).map(legTag).join('')+(o.length>max?`<span class="leg">+${o.length-max}</span>`:'');}
 const PLACE_END=new Set(['City','Orleans','York','Bay','Angeles','Vegas','Francisco','Diego','Jersey','England','Louis','Antonio','Lake','Jose','Carolina','Florida','Dakota','Mexico','Virginia','Kentucky','Michigan','Illinois','Texas','Tech','State','Coast']);
 function short(n){n=String(n||'');const p=n.split(' ');if(p.length<2||n.length<=14)return n;const last=p[p.length-1];
  if(PLACE_END.has(last))return p.slice(0,-1).map(w=>w[0]+'.').join('')+' '+last;   // "San Francisco" -> "S. Francisco", never just "City"
  return last;}
+/* Polish package A (display only, no money logic): ONE money rule for the Live tab. Every dollar figure shows cents
+   (the same decimals in a row, so "$2.00 / $9.00 / $1.82" line up), thousands get commas, a negative or a loss shows
+   the true minus. lm() is a plain amount, lsm() a signed change (zero reads "$0.00", never "+$0.00" or "-$0.00").
+   The number roller formats through fmtNum, so the two formats below ('lusd' amount, 'labs' absolute amount) are
+   added to it here; common.js is untouched. */
+const lmFmt=new Intl.NumberFormat('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+function lm(x){if(x==null||x===''||isNaN(+x))return '\u2014';const c=Math.round(+x*100);return (c<0?'\u2212':'')+'$'+lmFmt.format(Math.abs(c)/100);}
+function lsm(x){if(x==null||x===''||isNaN(+x))return '\u2014';const c=Math.round(+x*100);return (c>0?'+':'')+lm(x);}
+try{if(typeof fmtNum==='function'&&!fmtNum.lm){const _fn=fmtNum;fmtNum=function(v,f){return f==='lusd'?lm(v):f==='labs'?lm(Math.abs(v)):_fn(v,f);};fmtNum.lm=1;}}catch(e){}
+/* The one calm note that replaces the three per-card "off in Settings" lines when Auto cash-out is off. */
+function autoOff(){return !!(S.live&&S.live.auto_sell===false);}
+function autoNote(n){return autoOff()&&n>0?`<div class="anote" role="note"><span><b>Auto cash-out is off.</b> Nothing sells on its own; offers below still update.</span><button class="btn ghost" onclick="go('settings')">Settings</button></div>`:'';}
 function plOf(c){return c.group==='won'?(c.pays||0)-c.cost:c.group==='cashed'?(c.back||0)-c.cost:c.group==='lost'?-c.cost:0;}
 function doneWord(ts){   // issue #207, display only: the day a settled bet's money moved, in the phone's own time zone
  const x=new Date(ts*1000);if(!ts||isNaN(x))return '';const now=new Date();
@@ -24,7 +36,7 @@ function doneWord(ts){   // issue #207, display only: the day a settled bet's mo
  if(n===0)return 'Today';if(n===1)return 'Yesterday';
  return x.toLocaleDateString('en-US',x.getFullYear()===now.getFullYear()?{weekday:'short',month:'short',day:'numeric'}:{weekday:'short',month:'short',day:'numeric',year:'numeric'}).replace(/,/g,'');}
 function doneKey(c){return c.done_at||Date.parse(String(c.week||'')+'T12:00:00')/1000||0;}   // when it settled; else its slate day (the old order)
-function plPill(c){const v=plOf(c);return `<div class="verdict pl ${v>0.004?'won':v<-0.004?'lost':'cashed'}"><b>${v>=0?'+':'−'}${money(Math.abs(v))}</b><small>${c.group==='won'?'Won':c.group==='cashed'?'Cashed out':'Lost'}</small></div>`;}
+function plPill(c){const v=plOf(c);return `<div class="verdict pl ${v>0.004?'won':v<-0.004?'lost':'cashed'}"><b>${lsm(v)}</b><small>${c.group==='won'?'Won':c.group==='cashed'?'Cashed out':'Lost'}</small></div>`;}
 try{S.sf=JSON.parse(localStorage.getItem('cw_sf')||'null')||{o:'all',sp:'all',sort:'new'}}catch(e){S.sf={o:'all',sp:'all',sort:'new'}}
 function setSf(k,v){hap('selection');S.sf[k]=v;try{localStorage.setItem('cw_sf',JSON.stringify(S.sf))}catch(e){}renderLive();}
 function settledBar(cs){const done=cs.filter(c=>c.group!=='pending');const f=S.sf;const sps=[...new Set(done.flatMap(c=>c.sports))].filter(s=>SPN[s]);
@@ -33,7 +45,7 @@ function settledBar(cs){const done=cs.filter(c=>c.group!=='pending');const f=S.s
  return `<div class="sbar"><div class="chips">${ch('o','all','All')}${ch('o','profit','Profit')}${ch('o','loss','Loss')}${ch('o','won','Won')}${ch('o','cashed','Cashed early')}${ch('o','lost','Lost')}</div>
   ${sps.length>1?`<div class="chips">${ch('sp','all','All sports')}${sps.map(s=>ch('sp',s,(ICON[s]||'')+' '+SPN[s])).join('')}</div>`:''}
   <div class="chips">${ch('sort','new','Newest')}${ch('sort','best','Biggest profit')}${ch('sort','worst','Biggest loss')}${ch('sort','pay','Biggest payout')}</div>
-  <div class="snet">${n} settled · net <b class="${net>=0?'up':'down'}">${net>=0?'+':'−'}${money(Math.abs(net))}</b></div></div>`;}
+  <div class="snet">${n} settled · net <b class="${net>=0?'up':'down'}">${net>=0?'+':'−'}${lm(Math.abs(net))}</b></div></div>`;}
 function settledOk(c){const f=S.sf,v=plOf(c);return (f.o==='all'||(f.o==='profit'&&v>0)||(f.o==='loss'&&v<0)||f.o===c.group)&&(f.sp==='all'||c.sports.includes(f.sp));}
 /* A combo smart sell looks after (not "I'll sell it") shows SELL only when smart sell would sell it now (nudge, #210):
    the older Let it ride plan's verdict flips on the Mac's estimated offer, so on its own it says HOLD and its sentence is
@@ -52,9 +64,10 @@ function legendFor(pend){const on=new Set();pend.forEach(c=>c.legs.forEach(l=>{c
  const it=[['up','<i class="pd"></i>Winning now'],['down','<i class="pd"></i>Losing now'],['live','<i class="pd"></i>Tied'],['won','✓ Won'],['lost','✕ Lost']].filter(x=>on.has(x[0]));
  return `<div class="legend">${it.map(x=>`<span class="leg ${x[0]}">${x[1]}</span>`).join('')}</div>`;}
 /* while a finger is on the chart the page holds still; the refresh that came in meanwhile paints on release */
-function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPaint();if(S.ideaOpen)ideaSheet();}
+function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPaint();try{lvFx();}catch(e){}if(S.ideaOpen)ideaSheet();}
 function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="height:12px;width:46%"></i><i style="height:42px;width:58%"></i><i style="height:22px;width:40%"></i></div>
- <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+skel(4);}
+ <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+liveCardSkel(3);}
+function liveCardSkel(n){return Array.from({length:n},()=>'<div class="skel lcsk" aria-hidden="true"></div>').join('');}   /* card-shaped: same height as a real card, so nothing jumps when data lands */
 function _renderLive(){const d=S.live;const m=$('#main');
  if(!d){m.innerHTML=(S.lerr||{}).live?errCard('live'):liveSkel();return;}
  if(d.error){m.innerHTML=`<div class="card empty err" data-ic="⚠️"><b>Couldn't load your combos</b>${esc(d.error)}<br><button class="btn acc" onclick="retry('live',this)">Try again</button></div>`;return;}
@@ -69,7 +82,8 @@ function _renderLive(){const d=S.live;const m=$('#main');
  ${heroLive(d,pend,sOpen,sumW,sumS,dl)}
 
  ${recapCard()}${momentBar(cs)}${doNow(d,cs)}
- ${foldHead('combos','Your combos',S.filter==='done'?shown.length:pend.length,`<span class="r chips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="hap('selection');S.filter='${k}';renderLive()">${l}</button>`).join('')}</span>`)}
+ ${autoNote(pend.length+sOpen.length)}
+ ${foldHead('combos','Your combos',S.filter==='done'?shown.length:pend.length,`<span class="r chips lchips">${[['all','Riding'],['live','Live now'],...sports.filter(s=>SPN[s]).map(s=>[s,(ICON[s]||'')+' '+SPN[s]]),['done','Settled']].map(([k,l])=>`<button class="chip ${S.filter===k?'on':''}" onclick="hap('selection');S.filter='${k}';renderLive()">${l}</button>`).join('')}</span>`)}
  ${foldB('combos')}
  ${S.filter==='done'?settledBar(cs):''}
  ${S.filter!=='done'?legendFor(pend):''}
@@ -93,15 +107,15 @@ function doNow(d,cs){const pend=cs.filter(c=>c.group==='pending');
  const nS=(d.singles||[]).filter(x=>x.state==='live'||x.state==='pre').length,nAll=pend.length+nS;
  if(!items.length)return (nAll?`<div class="calm"><i></i><span><b>Nothing to do right now.</b> ${nAll} bet${nAll>1?'s':''} riding · ${d.auto_sell===false?'the Mac tells you the moment one is worth selling.':'smart sell is watching them.'}</span></div>`:'')+ib;
  return `<h2>Do now <span class="n">${items.length}</span></h2><div class="doit">${items.slice(0,4).map(({c,kind})=>{
-  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>Holding is worth<b>${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell at<b>${cents(c.threshold)}+</b></div>`:c.thr_over?`<div>Sell at<b>Not until it pays more</b></div>`:''}<div>You paid<b>${money(c.cost)}</b></div></div>`;
-  if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${money(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
+  const nums=`<div class="dnums"><div>${c.offer_real?'Offer now':'Likely offer'}<b>${c.offer_real?'':'≈ '}${lm(offNow(c))}</b></div><div>Holding is worth<b>${lm(c.hold_ce!=null?c.hold_ce:c.hold_value)}</b></div>${c.threshold?`<div>Sell at<b>${cents(c.threshold)}+</b></div>`:c.thr_over?`<div>Sell at<b>Not until it pays more</b></div>`:''}<div>You paid<b>${lm(c.cost)}</b></div></div>`;
+  if(kind==='sell')return `<div class="dcard"><div><h4>${esc(c.label)}: cash out ${c.verdict==='half'?'half ':''}for ${lm(c.offer)}</h4><p>${esc(c.why||'')}</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn ghost" data-t="${esc(c.t)}" onclick="act('keep',this.dataset.t)">Keep</button><button class="btn yes" data-t="${esc(c.t)}" onclick="sell(this.dataset.t)">Cash out</button></div></div>`;
-  if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${money(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${money(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
+  if(kind==='overpay')return `<div class="dcard"><div><h4>${esc(c.label)}: Kalshi is overpaying, ${lm(c.offer)}</h4><p>That's ${Math.round((c.overpay-1)*100)}% more than the combo is worth at the market's own chances (${lm(c.fair_value)}). Let it ride says hold; the price says sell. Your call.</p>${nums}</div>
    <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn yes" data-t="${esc(c.t)}" onclick="sell(this.dataset.t)">Cash out</button></div></div>`;
-  if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${money(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${money(c.hedge.cost)} pays out whichever side wins.</p>${hedgeNums(c)}<p class="hnote">Dismiss hides this for today. It comes back if the hedge price or the amount it locks in changes by 20% and at least 50¢.</p></div>
+  if(kind==='hedge')return `<div class="dcard warn"><div><h4>${esc(c.label)}: lock in ${lm(c.hedge.locked)} with a hedge</h4><p>One game left. Buying ${esc(short(c.hedge.name))} for ${lm(c.hedge.cost)} pays out whichever side wins.</p>${hedgeNums(c)}<p class="hnote">Dismiss hides this for today. It comes back if the hedge price or the amount it locks in changes by 20% and at least 50¢.</p></div>
    <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" data-t="${esc(c.t)}" onclick="hedge(this.dataset.t)">Hedge</button><button class="btn ghost hdis" data-t="${esc(c.t)}" aria-label="Dismiss this hedge suggestion" onclick="hedgeDismiss(this.dataset.t)">Dismiss</button></div></div>`;
   return `<div class="dcard warn"><div><h4>${esc(c.label)}: check Kalshi's price</h4><p>${esc(c.why||'The plan says this one may be worth selling. Get a real offer to decide.')}</p>${nums}</div>
-   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" data-t="${esc(c.t)}" ${S.busy[c.t]?'disabled':''} onclick="ask(this.dataset.t)">${S.busy[c.t]?'<span class="spin" aria-hidden="true"></span> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+ib;}
+   <div class="dbtns"><button class="btn ghost" data-t="${esc(c.t)}" onclick="openCombo(this.dataset.t)">Details</button><button class="btn acc" data-t="${esc(c.t)}" ${S.busy[c.t]?'disabled':''} onclick="ask(this.dataset.t)">${S.busy[c.t]?'<i class="bsk" aria-hidden="true"></i> Asking…':'Get offer'}</button></div></div>`;}).join('')}</div>`+ib;}
 /* Buy-idea cards say which game they are for (display only): league, matchup, start time or live score, the pick in
    plain words, and what the price means. Every field is optional; one the Mac couldn't tell is simply left out. */
 function ideaWhen(li){if(!li)return '';if(li.score)return li.score;if(li.live)return 'Under way';
@@ -114,14 +128,14 @@ function ideaLeg(li){if(!li||!(li.plain||li.game))return '';const tk=/^[A-Z0-9._
  return `<div class="ileg" ${tk?`data-t="${esc(tk)}" onclick="openGame(this.dataset.t)"`:''}><span class="ilg">${esc(li.icon||'')} ${esc(li.league_name||'')}</span><b>${esc(li.plain||'')}</b><small>${esc([li.game,ideaWhen(li)].filter(Boolean).join(' · '))}</small></div>`;}
 function ideaFacts(x){if(x.price_c==null||x.fair_c==null)return '';
  return `<div class="dnums ifacts"><div>Kalshi price<b>${Math.round(x.price_c)}¢</b></div><div>Fair price<b>${Math.round(x.fair_c)}¢</b></div><div>Edge<b class="${(x.edge||0)>=0?'up':'down'}">${(x.edge||0)>=0?'+':'−'}${Math.abs(Math.round((x.edge||0)*100))}% expected</b></div>
-  <div>Chance to win<b>${pct(x.chance)}</b></div><div>Stake → if it wins<b>${money(x.stake)} → ${money(x.pays)}</b></div><div>Expected profit<b class="${(x.profit||0)>0?'up':(x.profit||0)<0?'down':''}">${(x.profit||0)>0?'+':''}${(x.profit||0)<0?'−'+money(Math.abs(x.profit)):money(x.profit)}</b></div></div>`;}
+  <div>Chance to win<b>${pct(x.chance)}</b></div><div>Stake → if it wins<b>${lm(x.stake)} → ${lm(x.pays)}</b></div><div>Expected profit<b class="${(x.profit||0)>0?'up':(x.profit||0)<0?'down':''}">${(x.profit||0)>0?'+':''}${(x.profit||0)<0?'−'+lm(Math.abs(x.profit)):lm(x.profit)}</b></div></div>`;}
 function sweat(c){if(c.group!=='pending'||c.legs.length<2)return '';const w=c.legs.filter(l=>l.res==='yes').length;
  const seg=c.legs.map(l=>l.res==='yes'?'w':l.res==='no'?'x':(!l.res&&l.state==='live'&&(l.live??l.chance)>=.5)?'u':'').sort((a,b)=>'wux'.indexOf(a)>-1&&'wux'.indexOf(b)>-1?'wux'.indexOf(a)-'wux'.indexOf(b):a?-1:b?1:0);
  return `<span class="sweat" title="${w} of ${c.legs.length} picks won">${seg.map(s=>`<i class="${s}"></i>`).join('')}</span>`;}
 /* the moment bar: only when smart sell would sell it now, on a real offer (nudge, #210) */
 function momentBar(cs){const m=cs.filter(c=>c.group==='pending'&&c.moment&&c.nudge&&c.offer).sort((a,b)=>(b.offer-b.cost)-(a.offer-a.cost));if(!m.length)return '';
  const auto=S.live&&S.live.auto_sell;const more=m.length>1?`<div class="m" style="font-size:12px;margin:-6px 4px 12px">${m.length-1} more combo${m.length>2?'s are':' is'} at a good point too. They're marked with a green edge below.</div>`:'';
- return m.slice(0,1).map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${money(c.offer)} on ${money(c.cost)} paid (${smoney(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
+ return m.slice(0,1).map(c=>`<div class="moment-bar"><div><b>💸 ${auto?'Cashing out':'Good time to cash out'}: ${esc(c.label)}</b><span>Kalshi offers ${lm(c.offer)} on ${lm(c.cost)} paid (${lsm(c.offer-c.cost)}). ${c.moment.why==='take profit'?'It reached your take-profit level.':c.moment.why==='lock in'?'It\'s slipping from its high.':c.moment.why==='checkpoint'?'The early games came through.':'Locking in beats the risk of holding.'}</span></div>
   ${auto?'<span class="tag good">Auto</span>':`<button class="btn yes" data-t="${esc(c.t)}" onclick="sell(this.dataset.t)">Cash out</button>`}</div>`).join('')+more;}
 /* Change vs what was paid (GitHub #100, display only): the same number the row already shows (offNow / worth), set against
    the same cost. S.chg = both | pct | usd, remembered per phone like the Day/Week switch (cw_chg) and kept on <html data-chg>:
@@ -134,14 +148,14 @@ try{document.documentElement.dataset.chg=S.chg}catch(e){}
 function setChg(k){if(!['both','pct','usd'].includes(k))return;S.chg=k;try{localStorage.setItem('cw_chg',k)}catch(e){}document.documentElement.dataset.chg=k;
  document.querySelectorAll('.chgsw button').forEach(b=>{const on=b.dataset.k===k;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on?'true':'false');});}
 /* #572: the hedge card names its four numbers by what each one is, so the look-alike dollar figures are told apart. Wording only. */
-function hedgeNums(c){return `<div class="dnums"><div>Hedge costs<b>${money(c.hedge.cost)}</b></div><div>Locks in<b>${money(c.hedge.locked)}</b></div><div>${c.offer_real?'Cash-out offer':'Likely cash-out'}<b>${c.offer_real?'':'≈ '}${money(offNow(c))}</b></div><div>You paid<b>${money(c.cost)}</b></div></div>`;}
+function hedgeNums(c){return `<div class="dnums"><div>Hedge costs<b>${lm(c.hedge.cost)}</b></div><div>Locks in<b>${lm(c.hedge.locked)}</b></div><div>${c.offer_real?'Cash-out offer':'Likely cash-out'}<b>${c.offer_real?'':'≈ '}${lm(offNow(c))}</b></div><div>You paid<b>${lm(c.cost)}</b></div></div>`;}
 function chgSw(){return `<span class="chgsw" role="group" aria-label="Show change as">${[['both','% + $'],['pct','%'],['usd','$']].map(([k,l])=>`<button data-k="${k}" aria-pressed="${S.chg===k}" class="${S.chg===k?'on':''}" onclick="setChg('${k}')">${l}</button>`).join('')}</span>`;}
 function chgBar(){return `<div class="chgbar"><span>Change vs paid</span>${chgSw()}</div>`;}
 function chgState(x){return x>0?'up':x<0?'down':'flat';}
 function chgHtml(k,now,paid,est){if(now==null||!(paid>0))return '';const d=now-paid,p=d/paid;const r=rndm(p*100),c=rndm(d*100);
  const pre=est?'≈ ':'';return `<span class="chg${est?' est':''}" data-b="${chgState(r!==0?r:c)}" data-p="${chgState(r)}" data-u="${chgState(c)}"><span class="cp" data-num="${k}%" data-v="${p.toFixed(4)}" data-f="chg" data-pre="${pre}">${pre}${fmtNum(p,'chg')}</span><span class="cd" data-num="${k}$" data-v="${d.toFixed(2)}" data-f="chgd" data-pre="${pre}">${pre}${fmtNum(d,'chgd')}</span></span>`;}
 function heroChg(dl,St,roll,est){
- const dv=roll?`<span class="cd" data-num="h:dl" data-v="${dl.toFixed(2)}" data-f="absm">${money(Math.abs(dl))}</span>`:`<span class="cd">${money(Math.abs(dl))}</span>`;
+ const dv=roll?`<span class="cd" data-num="h:dl" data-v="${dl.toFixed(2)}" data-f="labs">${lm(Math.abs(dl))}</span>`:`<span class="cd">${lm(Math.abs(dl))}</span>`;
  const pv=!St?'':roll?`<span class="cp" data-num="h:dp" data-v="${(dl/St).toFixed(4)}" data-f="chg">${fmtNum(dl/St,'chg')}</span>`:`<span class="cp">${fmtNum(dl/St,'chg')}</span>`;
  return `<span class="dch${est?' est':''}${St?'':' nop'}">${dv}${pv}</span>`;}
 const SKIND={win:'To win',spread:'Spread',total:'Total',other:'Single bet'};
@@ -160,13 +174,13 @@ function heroLive(d,pend,sOpen,W,St,dl){const n=pend.length+sOpen.length;const l
  const ring=v=>{const r=9,c=2*Math.PI*r;return `<svg class="ring" viewBox="0 0 22 22"><circle cx="11" cy="11" r="${r}" fill="none" stroke="var(--line)" stroke-width="3"/><circle cx="11" cy="11" r="${r}" fill="none" stroke="${v>=.5?'var(--yes)':'var(--acc)'}" stroke-width="3" stroke-linecap="round" stroke-dasharray="${(c*Math.max(0,Math.min(1,v))).toFixed(1)} ${c.toFixed(1)}" transform="rotate(-90 11 11)"/></svg>`;};
  const glow=cls==='up'?'var(--yesbg)':cls==='down'?'var(--nobg)':'transparent';
  return `<div class="kpis hero" style="--hglow:${glow}"><div class="hv"><span class="hl">${live?'<i class="livedot"></i> Live · ':''}Worth now on Kalshi<span class="fresh" data-fr="L">${frTxt('L')}</span></span>
-   <div class="hrow"><b class="big" data-num="h:kalshi" data-v="${K.toFixed(2)}">${money(K)}</b>
-   <span class="hest" aria-label="Our estimate if you sold everything now: ${money(W)}"><small>If sold now</small><b data-num="h:worth" data-v="${W.toFixed(2)}" data-pre="${est?'≈ ':''}"${still?' data-still="1"':''}>${est?'≈ ':''}${money(W)}</b></span></div>
-   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(kd,St,moves,false)} <span style="font-weight:500;opacity:.8">vs ${money(St)} in</span></span></div>
+   <div class="hrow"><b class="big" data-num="h:kalshi" data-v="${K.toFixed(2)}" data-f="lusd">${lm(K)}</b>
+   <span class="hest" aria-label="Our estimate if you sold everything now: ${lm(W)}"><small>If sold now</small><b data-num="h:worth" data-v="${W.toFixed(2)}" data-f="lusd" data-pre="${est?'≈ ':''}"${still?' data-still="1"':''}>${est?'≈ ':''}${lm(W)}</b></span></div>
+   <span class="delta ${cls}">${cls==='up'?'▲':cls==='down'?'▼':'•'} ${heroChg(kd,St,moves,false)} <span style="font-weight:500;opacity:.8">vs ${lm(St)} in</span></span></div>
   <div class="hs"><div><span class="hk">Riding</span><b><span data-num="h:n" data-v="${n}" data-f="int">${n}</span> bet${n===1?'':'s'}</b><small>${pend.length} combo${pend.length===1?'':'s'} · ${sOpen.length} single${sOpen.length===1?'':'s'}</small></div>
-   <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}">${money(St)}</b><small>in play right now</small></div>
+   <div><span class="hk">Staked</span><b data-num="h:st" data-v="${St.toFixed(2)}" data-f="lusd">${lm(St)}</b><small>in play right now</small></div>
    <div><span class="hk">Chance one pays</span><b>${n?ring(ch):''}<span data-num="h:ch" data-v="${ch.toFixed(4)}" data-f="pct">${n?pct(ch):'—'}</span></b><small>${n?'at least one bet wins':'nothing riding'}</small></div>
-   <div><span class="hk">Most it can pay</span><b class="up" data-num="h:most" data-v="${most.toFixed(2)}">${money(most)}</b><small>biggest single bet ${money(big)}</small></div></div></div>`;}
+   <div><span class="hk">Most it can pay</span><b class="up" data-num="h:most" data-v="${most.toFixed(2)}" data-f="lusd">${lm(most)}</b><small>biggest single bet ${lm(big)}</small></div></div></div>`;}
 function singlesLive(d){const all=d.singles||[];
  const ss=all.filter(x=>S.filter==='all'||S.filter==='done'?true:S.filter==='live'?x.state==='live':x.sport===S.filter);
  if(!all.length)return '';
@@ -174,14 +188,15 @@ function singlesLive(d){const all=d.singles||[];
  ${foldB('singles')}${ss.some(x=>x.worth!=null&&x.cost>0)?chgBar():''}<div class="tbl stbl"><div class="thead"><div>Bet</div><div>Game</div><div class="num">Paid</div><div class="num">Pays</div><div class="num">Chance</div><div class="num">Worth now</div><div></div></div>
  ${ss.map(rowSingle).join('')||'<div class="empty" data-ic="🗒️"><b>Nothing here</b>No single bets or spreads in this view.</div>'}</div>
  ${foldE()}`;}
-const cents=x=>'$'+(+x).toFixed(2);   /* sell lines in cents: money() rounds $12.70 up to "$13" (#371) */
-function ssChip(x){const off=S.live&&S.live.auto_sell===false;
+const cents=x=>'$'+(+x).toFixed(2);   /* sell lines in cents: lm() rounds $12.70 up to "$13" (#371) */
+function ssChip(x){if(autoOff()&&!x.self)return '';   /* one shared note says it (autoNote); no per-card chip */
+ const off=false;
  const isC=x.smart_txt!==undefined,at=x.sell_at!=null?x.sell_at:isC?x.smart_at:x.threshold,over=x.sell_at!=null?x.sell_over:isC?x.smart_over:(x.sell_over!=null?x.sell_over:x.thr_over);   /* combos carry threshold/thr_over (#376) */
  const hint=x.self||off?'':(isC&&(x.smart_profit||x.loss_chip))?'':(isC&&x.smart_chip)?` · ${esc(x.smart_chip)}`:at?` · sells at ${cents(at)}+`:over?` · no offer can beat waiting`:'';   /* never a line above what it pays (#371) */
  return `<button class="ss ${x.self?'me':''} ${off&&!x.self?'dim':''}" data-t="${esc(x.t)}" onclick="event.stopPropagation();selfSell(this.dataset.t,${!x.self})">${x.self?'✋ I\'ll sell it':'🤖 Smart sell'+(off?' · off in Settings':hint)}</button>`;}
 async function selfSell(t,mine){hap();const d=S.live;for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=mine;renderLive();
  const r=await api('/app/api/act',{a:'selfsell',t,on:mine}).catch(()=>({ok:false}));toast(r.msg||'Couldn\'t reach the Mac.',3500);if(!r.ok){for(const x of [...(d.singles||[]),...(d.combos||[])])if(x.t===t)x.self=!mine;renderLive();}}
-function ssLines(x){if(x.self||!(x.smart_profit||x.loss_chip))return '';   /* Smart sell: its two jobs, one block (display only) */
+function ssLines(x){if(x.self||autoOff()||!(x.smart_profit||x.loss_chip))return '';   /* Smart sell: its two jobs, one block (display only) */
  const ln=t=>{const i=t.indexOf(':');return `<span><b>${esc(t.slice(0,i+1))}</b>${esc(t.slice(i+1))}</span>`;};
  return `<div class="sslines">${[x.smart_profit,x.loss_chip].filter(Boolean).map(ln).join('')}</div>`;}
 function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won</span>':'<span class="tag bad">Lost</span>'):x.state==='live'||x.on?'<span class="tag live">Live</span>':x.state==='over'?'<span class="tag">Settling</span>':x.phase==='probably_over'||x.phase==='over'?'<span class="tag">Waiting on Kalshi</span>':'';
@@ -189,27 +204,27 @@ function rowSingle(x){const st=x.res?(x.res==='yes'?'<span class="tag good">Won<
  const cls=/^(Covering|On track|Winning)/.test(x.how||'')?'up':/^(Not|Losing)/.test(x.how||'')?'down':'';
  return `<div class="trow srow1" data-key="s:${x.t}" data-sig="${esc(x.score||'')}" data-t="${esc(x.t)}" onclick="openGame(this.dataset.t)"><div class="name"><b>${ICON[x.sport]||'🎯'} ${esc(betPlain(x))}${x.own?' <span class="own">You, on Kalshi</span>':' <span class="own app">From the app</span>'}</b>${x.state==='live'||x.state==='pre'?ssChip(x):''}<span>${x.matchup?esc(SKIND[x.kind]||'')+(SKIND[x.kind]?' · ':'')+betWhere(x):esc(SKIND[x.kind]||'')}${x.matchup?'':(()=>{const g=(x.game||'').replace(/:\s*(Spread|Total.*)$/i,'').replace(/\s*Winner\??$/i,'').replace(/\?$/,'');return g&&g.toLowerCase()!==(x.label||'').toLowerCase()?' · '+esc(g):'';})()}</span></div>
   <div class="legs"><span class="${cls}">${esc(line)}</span> ${st}${x.url?` <a href="${esc(x.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
-  <div class="numwrap"><div class="num" data-l="Paid">${money(x.cost)}</div><div class="num" data-l="Pays">${money(x.pays)}</div>
+  <div class="numwrap"><div class="num" data-l="Paid">${lm(x.cost)}</div><div class="num" data-l="Pays">${lm(x.pays)}</div>
   <div class="num" data-l="Chance">${x.chance!=null?`<span data-num="sc:${x.t}" data-v="${x.chance}" data-f="pct">${pct(x.chance)}</span>`:'—'}${x.chance!=null?`<div class="bar"><i data-bar="sb:${x.t}" style="width:${Math.max(1,Math.min(100,x.chance*100))}%"></i></div>`:''}</div>
-  <div class="num" data-l="Worth now">${x.worth!=null?`<span data-num="w:${x.t}" data-v="${x.worth}">${money(x.worth)}</span>${chgHtml('sc:'+x.t,x.worth,x.cost,false)}`:'—'}</div></div><div class="verdict"></div>${typeof ssActs==='function'?ssActs(x):''}</div>`;}
+  <div class="num" data-l="Worth now">${x.worth!=null?`<span data-num="w:${x.t}" data-v="${x.worth}" data-f="lusd">${lm(x.worth)}</span>${chgHtml('sc:'+x.t,x.worth,x.cost,false)}`:'—'}</div></div><div class="verdict"></div>${typeof ssActs==='function'?ssActs(x):''}</div>`;}
 function offNow(c){return(!c.offer_real&&c.offer_live!=null&&c.offer!=null)?c.offer_live:c.offer;}   // display-only; same rule as the hero (hero_worth)
 function rowLive(c){const [vc,vt]=verdictOf(c);const open=S.open[c.t];
  const oLive=offNow(c);const oEst=!c.offer_real;
- const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${money(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${money(oLive)}</b><small>${c.offer_real?'vs '+money(c.hold_value)+' holding':'estimate'}</small>${chgHtml('oc:'+c.t,oLive,c.cost,oEst)}`:'<small>—</small>';
+ const offer=c.group!=='pending'?(c.group==='cashed'?`<b>${lm(c.back)}</b><small>cashed out</small>`:'—'):c.offer!=null?`<b data-num="o:${c.t}" data-v="${oLive}" data-f="lusd" data-pre="${oEst?'≈ ':''}">${oEst?'≈ ':''}${lm(oLive)}</b><small>${c.offer_real?'vs '+lm(c.hold_value)+' holding':'estimate'}</small>${chgHtml('oc:'+c.t,oLive,c.cost,oEst)}`:'<small>—</small>';
  return `<div class="trow ${c.moment?'hot':''}" data-key="c:${c.t}" data-sig="${esc(c.legs.map(l=>l.score||'').join('|'))}" data-t="${esc(c.t)}" onclick="tog(this.dataset.t)"><div class="name"><b>${ICON[c.sports[0]]||''} ${esc(c.label)}${sweat(c)}${c.own?' <span class="own">You, on Kalshi</span>':''}</b>${c.group==='pending'?ssChip(c)+ssLines(c):''}<span>${esc(nextLine(c))}</span>${c.group!=='pending'&&c.done_at&&doneWord(c.done_at)?`<span class="sdt">${esc(doneWord(c.done_at))}</span>`:''}</div>
   <div class="legs">${legTags(c.legs)}</div>
-  <div class="numwrap"><div class="num" data-l="Paid">${money(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${money(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>
+  <div class="numwrap"><div class="num" data-l="Paid">${lm(c.cost)}</div><div class="num" data-l="${c.group==='cashed'?'Would pay':'Pays'}">${lm(c.group==='cashed'?(c.full||c.pays):c.pays)}${c.group==='cashed'&&c.full?'<small style="display:block" class="m">if held</small>':''}</div>
   <div class="num" data-l="To hit">${c.group==='pending'?`<span data-num="p:${c.t}" data-v="${c.p}" data-f="pct">${pct(c.p)}</span>`:'—'}${c.group==='pending'?`<div class="bar"><i data-bar="pb:${c.t}" style="width:${Math.max(1,Math.min(100,c.p*100))}%"></i></div>`:''}</div>
-  <div class="num offer" data-l="Offer">${offer}</div></div>${c.group==='pending'?`<div class="verdict ${vc}">${vt}</div>`:plPill(c)}</div>
+  <div class="num offer" data-l="${c.group!=='pending'?(c.group==='cashed'?'Cashed out':'Offer'):c.offer_real?'Offer now':'Worth now'}">${offer}</div></div>${c.group==='pending'?`<div class="verdict ${vc}">${vt}</div>`:plPill(c)}</div>
   ${open?`<div class="exp">${c.legs.map(l=>`<div class="lrow" style="cursor:pointer" data-t="${esc(l.ticker)}" onclick="event.stopPropagation();openGame(this.dataset.t)"><span class="mark ${legCls(l)}">${l.res==='yes'?'✓':l.res==='no'?'✕':''}</span>
    <div class="who"><b>${ICON[l.sport]||''} ${esc(betPlain(l))}</b> <span>${l.matchup?betWhere(l)+' · ':l.opp?'vs '+esc(l.opp)+' · ':''}${esc(l.score||(!l.res&&l.note)||l.starts||(l.res==='yes'?'won':l.res==='no'?'lost':''))}</span>${l.url?` <a href="${esc(l.url)}" target="_blank" onclick="event.stopPropagation()">game ↗</a>`:''}</div>
    <b>${l.res?'':pct(l.live!=null?l.live:l.chance)}${l.live!=null&&!l.res?' <span class="m" style="font-weight:500;font-size:11px">live</span>':''}</b></div>`).join('')}
    ${whyShown(c)&&c.group==='pending'?`<div class="why">${esc(whyShown(c))}</div>`:''}
-   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${money(c.offer)}</b> · holding is worth about ${money(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sells once the offer reaches ${cents(c.threshold)}`:c.thr_over?' · no offer can beat waiting':''}`:'Ask Kalshi what it will pay for this combo right now.'}${c.smart_txt&&!c.self&&S.live.auto_sell!==false?`<br>${esc(c.smart_txt)}`:''}${c.lock_at&&!c.self&&S.live.auto_sell!==false?` Protects a profit once the offer has reached ${cents(c.lock_at)}.`:''}</span>
+   ${c.group==='pending'?`<div class="acts"><span class="s">${c.offer_real?`Kalshi offers <b>${lm(c.offer)}</b> · holding is worth about ${lm(c.hold_ce!=null?c.hold_ce:c.hold_value)}${c.threshold?` · sells once the offer reaches ${cents(c.threshold)}`:c.thr_over?' · no offer can beat waiting':''}`:'Ask Kalshi what it will pay for this combo right now.'}${c.smart_txt&&!c.self&&S.live.auto_sell!==false?`<br>${esc(c.smart_txt)}`:''}${c.lock_at&&!c.self&&S.live.auto_sell!==false?` Protects a profit once the offer has reached ${cents(c.lock_at)}.`:''}</span>
     <button class="btn ghost" data-t="${esc(c.t)}" onclick="event.stopPropagation();openCombo(this.dataset.t)">Details</button>
-    ${c.hedge&&!c.hedge.done?`<button class="btn" onclick="event.stopPropagation();hedge('${c.t}')">Hedge ${esc(short(c.hedge.name))} · ${money(c.hedge.cost)}</button>`:''}
-    <button class="btn" ${S.busy[c.t]?'disabled':''} data-t="${esc(c.t)}" onclick="event.stopPropagation();ask(this.dataset.t)">${S.busy[c.t]?'<span class="spin" aria-hidden="true"></span> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
-    ${c.offer_real?`<button class="btn yes" data-t="${esc(c.t)}" onclick="event.stopPropagation();sell(this.dataset.t)">Cash out ${money(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
+    ${c.hedge&&!c.hedge.done?`<button class="btn" onclick="event.stopPropagation();hedge('${c.t}')">Hedge ${esc(short(c.hedge.name))} · ${lm(c.hedge.cost)}</button>`:''}
+    <button class="btn askb" ${S.busy[c.t]?'disabled':''} data-t="${esc(c.t)}" onclick="event.stopPropagation();ask(this.dataset.t)">${S.busy[c.t]?'<i class="bsk" aria-hidden="true"></i> Asking…':c.offer_real?'New offer':'Get cash-out offer'}</button>
+    ${c.offer_real?`<button class="btn yes" data-t="${esc(c.t)}" onclick="event.stopPropagation();sell(this.dataset.t)">Cash out ${lm(c.offer)}</button>`:''}</div>`:''}</div>`:''}`;}
 function tog(t){S.open[t]=!S.open[t];renderLive();}
 /* Moments rows can be cleared (display only): a row's X hides it for today on this phone, kept across reloads. */
 function momGone(){try{const o=JSON.parse(localStorage.getItem('cw_mom_x')||'null');const d=new Date().toDateString();return o&&o.d===d&&Array.isArray(o.t)?o.t:[];}catch(e){return [];}}
@@ -221,12 +236,12 @@ function ago2(t){const s=Math.max(0,Date.now()/1000-t);return s<60?'now':s<3600?
 function sideLive(d){const gs=d.games||[];const r=d.risk;
  return moments()+ordersCard(d)+`<div class="card"><h3>Games you need <span>${gs.length}</span></h3>${gs.slice(0,8).map(g=>`<div class="g" style="cursor:pointer" data-t="${esc(g.ticker||'')}" onclick="openGame(this.dataset.t)"><div class="t">${ICON[g.sport]||''} ${esc(g.name)}${g.state==='live'&&g.phase!=='probably_over'&&g.phase!=='waiting'?'<span class="tag">LIVE</span>':''}</div>
   <div class="e">${g.state==='live'&&g.sc?`<b>${g.sc.me}–${g.sc.opp}</b>${esc(g.sc.detail||'')}`:`<b>${pct(g.chance)}</b>${esc(g.short||g.starts||'')}`}</div>
-  <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${money(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
- ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${money(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
+  <div class="x">In ${g.combos} combo${g.combos>1?'s':''} · ${lm(g.pays)} riding</div></div>`).join('')||'<div class="m">Nothing pending.</div>'}</div>
+ ${r?`<div class="card"><h3>If ${esc(short(r.name))} lose <span>biggest risk</span></h3><div class="mini">Combos out<b>${r.combos} of ${d.riding}</b></div><div class="mini">Payout riding<b>${lm(r.pays)}</b></div><div class="mini">${esc(short(r.name))} to win<b>${pct(r.chance)}</b></div></div>`:''}
  ${todayCard(d)}`;}
-function todayCard(d){const t=d.today;if(!t)return `<div class="card"><h3>Finished <span>recently</span></h3><div class="mini">Won or cashed<b class="up">${money(d.locked)}</b></div><div class="mini">Holding is worth<b>${money(d.hold_value)}</b></div></div>`;
+function todayCard(d){const t=d.today;if(!t)return `<div class="card"><h3>Finished <span>recently</span></h3><div class="mini">Won or cashed<b class="up">${lm(d.locked)}</b></div><div class="mini">Holding is worth<b>${lm(d.hold_value)}</b></div></div>`;
  const n=t.won+t.cashed+t.lost;const bits=[t.won?`${t.won} won`:'',t.cashed?`${t.cashed} cashed`:'',t.lost?`${t.lost} lost`:''].filter(Boolean).join(' · ');
- return `<div class="card"><h3>Today <span>${n?bits:'nothing finished yet'}</span></h3>${n?`<div class="mini">Paid back<b>${money(t.back)}</b></div><div class="mini">They cost<b>${money(t.cost)}</b></div><div class="mini">Profit today<b class="${t.pl>=0?'up':'down'}">${smoney(t.pl)}</b></div>`:''}${d.week_pl!=null?`<div class="mini">Last 7 days<b class="${d.week_pl>=0?'up':'down'}">${smoney(d.week_pl)}</b></div>`:''}<div class="mini">Still riding is worth<b>${money(d.hold_value)}</b></div></div>`;}
+ return `<div class="card"><h3>Today <span>${n?bits:'nothing finished yet'}</span></h3>${n?`<div class="mini">Paid back<b>${lm(t.back)}</b></div><div class="mini">They cost<b>${lm(t.cost)}</b></div><div class="mini">Profit today<b class="${t.pl>=0?'up':'down'}">${lsm(t.pl)}</b></div>`:''}${d.week_pl!=null?`<div class="mini">Last 7 days<b class="${d.week_pl>=0?'up':'down'}">${lsm(d.week_pl)}</b></div>`:''}<div class="mini">Still riding is worth<b>${lm(d.hold_value)}</b></div></div>`;}
 /* Dismiss a hedge card (display only): hides that one suggestion for today on the Mac, so a reload keeps it hidden; it comes
    back if what it locks in or costs moves 20% and $0.50, or tomorrow. The Hedge button and auto-hedge are not touched. */
 async function hedgeDismiss(t){hap();const c=((S.live&&S.live.combos)||[]).find(x=>x.t===t);if(c)c.hedge_dismissed=true;renderLive();
@@ -235,11 +250,51 @@ async function hedgeDismiss(t){hap();const c=((S.live&&S.live.combos)||[]).find(
  toast(r.msg,3500);}
 async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await api('/app/api/act',{a:'ask',t});S.busy[t]=false;
  hap(r.ok?'success':'error');if(!r.ok)toast(r.msg||'No offer came in.');await load('live',true);}
-function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;
- modal(`<h3>Cash out ${esc(c.label)} for ${money(c.offer)}?</h3><p>You paid ${money(c.cost)} (${smoney(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${money(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
+function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;if(fbFlying(t)){fbBusyToast();return;}
+ modal(`<h3>Cash out ${esc(c.label)} for ${lm(c.offer)}?</h3><p>You paid ${lm(c.cost)} (${lsm(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${lm(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn yes" id="sellgo" data-t="${esc(t)}" onclick="doSell(this.dataset.t)">Cash out</button></div>`);}
-async function doSell(t){hap();const c=(S.live.combos||[]).find(x=>x.t===t)||{};$('#sellgo').innerHTML='<span class="spin" aria-hidden="true"></span>';const r=await api('/app/api/act',{a:'go',t});closeModal();
- if(r.ok&&/^✅/.test(r.msg||'')){S.momSeen=S.momSeen||{};S.momSeen['s:'+t]=1;setTimeout(()=>soldSheet({label:momName(c),back:r.offer!=null?r.offer:c.offer,cost:c.cost}),360);}   // the Sold moment
- else{hap(r.ok?'success':'error');toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);}load('live',true);}
-async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${money(c.hedge.cost)}, so you collect about ${money(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" data-t="${esc(t)}" onclick="var t=this.dataset.t;closeModal();api('/app/api/act',{a:'hedgego',t}).then(r=>{toast(r.msg||'Done.',5000);load('live',true)})">Place hedge</button></div>`);}
+async function doSell(t){return fbSell(t);}   // press.js: pending, result, one tap at a time
+async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(fbFlying(t)){fbBusyToast();return;}modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${lm(c.hedge.cost)}, so you collect about ${lm(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" data-t="${esc(t)}" onclick="fbHedge(this)">Place hedge</button></div>`);}
 async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}
+
+/* ---- Live motion (package M2). Display only: it reads what the page already drew and adds motion on top; it never changes a
+   number, a price, a bet or a sale, and an error in here is swallowed. Only transform and opacity (see live.css, --dur-* tokens).
+   Honest motion: a leg-hit or win moment fires only between two real consecutive snapshots (not after a gap over 90 s, not
+   when the feed was stale, not while the tab is hidden, never with reduced motion). The live dot pulses only while the feed is
+   fresh and goes grey and still when it is not. Pure logic is first and unit-tested from Node (t_live_motion.py). */
+const LV_GAP_MS=90000,LV_STALE_S=60,LV_HOT=.8,LV_HOT_MAX=2;
+// One flat picture of the Live list: every leg's result and every combo's group, keyed so two pictures can be compared.
+function lvSnap(combos){const legs={},grp={};for(const c of combos||[]){if(!c||!c.t)continue;grp[c.t]=c.group||'';
+ for(const l of c.legs||[])legs[c.t+'|'+(l.ticker||'')]=l.res||'';}return {legs,grp};}
+// May motion run at all? Reduced motion and a hidden tab never; a stale feed never.
+function lvGate(o){return !(o.reduce||o.hidden||o.stale);}
+// What just changed between two consecutive real pictures: legs that turned into a hit or a miss, combos that turned into a win or
+// a loss. Nothing when there is no earlier picture, the gap is long, the earlier one was stale, or motion is gated off.
+function lvDiff(prev,next,c){const o={hits:[],misses:[],won:[],lost:[]};
+ if(!prev||!next||!lvGate(c)||c.prevStale||c.prevAt==null||(c.now-c.prevAt)>LV_GAP_MS||c.now<c.prevAt)return o;
+ for(const k of Object.keys(next.legs)){if(!(k in prev.legs))continue;const a=prev.legs[k],b=next.legs[k];
+  if(a!=='yes'&&b==='yes')o.hits.push(k);else if(a!=='no'&&b==='no')o.misses.push(k);}
+ for(const t of Object.keys(next.grp)){const a=prev.grp[t],b=next.grp[t];if(a!=='pending'||a===b)continue;
+  if(b==='won')o.won.push(t);else if(b==='lost')o.lost.push(t);}
+ return o;}
+// Is this pending combo close to paying out (offer at 80%+ of what it pays) or flagged as a moment? Only real Kalshi offers count.
+function lvHot(c){if(!c||c.group!=='pending')return false;if(c.moment)return true;
+ return !!c.offer_real&&c.pays>0&&c.offer!=null&&c.offer>=LV_HOT*c.pays;}
+// The tickets that get the slow sheen: at most two at once (battery), the closest to paying first.
+function lvHotPick(combos){return (combos||[]).filter(lvHot).sort((a,b)=>(b.offer||0)/(b.pays||1)-(a.offer||0)/(a.pays||1)).slice(0,LV_HOT_MAX).map(c=>c.t);}
+function lvStale(){try{const b=typeof frBuilt==='function'?frBuilt('L'):null;
+ return b==null||b>LV_STALE_S||(typeof netIsDown==='function'&&netIsDown())||(typeof S!=='undefined'&&S.live_ok===false&&!!S.esEver);}catch(e){return true;}}
+const lvReduce=()=>typeof matchMedia==='function'&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+function lvFlag(){try{const m=document.getElementById('main');if(!m)return;const fresh=!lvStale()&&!document.hidden;
+ m.classList.toggle('lvfresh',fresh);m.classList.toggle('lvstale',lvStale());m.classList.toggle('lvhid',!!document.hidden);}catch(e){}}
+function lvFx(){const m=document.getElementById('main');const d=S.live;if(!m||!d||d.error)return;
+ const now=Date.now(),snap=lvSnap(d.combos),prev=S._lvPrev;lvFlag();
+ const stale=lvStale();
+ const o=lvDiff(prev&&prev.snap,snap,{now,prevAt:prev&&prev.at,prevStale:prev&&prev.stale,reduce:lvReduce(),hidden:document.hidden,stale});
+ S._lvPrev={snap,at:now,stale};   // every paint is an observation: the gap is measured from the last time we looked
+ const hot=new Set(lvHotPick(d.combos));
+ m.querySelectorAll('.trow[data-key^="c:"]').forEach(r=>{const t=r.dataset.t;r.classList.toggle('lvhot',hot.has(t));
+  if(o.won.includes(t))r.classList.add('lvwin');else if(o.lost.includes(t))r.classList.add('lvloss');
+  r.querySelectorAll('.leg[data-lk]').forEach(e=>{const k=t+'|'+e.dataset.lk;if(o.hits.includes(k))e.classList.add('lvhit');else if(o.misses.includes(k))e.classList.add('lvmiss');});});
+ if(!lvFx.wired){lvFx.wired=1;document.addEventListener('visibilitychange',lvFlag);setInterval(lvFlag,5000);}}
+if(typeof module!=='undefined'&&module.exports)module.exports={lvSnap,lvGate,lvDiff,lvHot,lvHotPick,LV_GAP_MS,LV_STALE_S};

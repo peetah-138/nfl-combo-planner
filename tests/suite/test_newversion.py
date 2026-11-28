@@ -63,7 +63,7 @@ with sync_playwright() as pw:
     errs = []; pg.on("pageerror", lambda e: errs.append(str(e)))
     def fresh_page():
         pg.goto(B + "/app"); until(pg, "!!(S.live&&S.live.fresh)", 25)
-        pg.evaluate("try{sessionStorage.clear();localStorage.removeItem('cw_vrl')}catch(e){}; window.__m=1; window.__haps=[]; window.__vp=verPoll; verPoll=()=>{}; const h=window.hap; window.hap=function(k){window.__haps.push(k||'light');return h.apply(this,arguments)}")
+        pg.evaluate("try{sessionStorage.clear();localStorage.removeItem('cw_vrl')}catch(e){}; window.__m=1; window.__haps=[]; window.__vp=verPoll; verPoll=()=>{}; S.lastLoad=Date.now()+3600000; const h=window.hap; window.hap=function(k){window.__haps.push(k||'light');return h.apply(this,arguments)}")
     # the page itself: the version is filled in, never cached
     resp = pg.request.get(B + "/app")
     A = state["A"]

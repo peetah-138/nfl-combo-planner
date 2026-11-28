@@ -11,13 +11,14 @@ function soldSheet(o){const back=+o.back||0,cost=+o.cost||0,pl=back-cost,up=pl>=
   <div class="tkt"><div>You paid<b>${money(cost)}</b></div><div>Got back<b>${money(back)}</b></div></div>
   <p>${up?(o.auto?'Smart sell took the offer because it beat holding.':'Locked in. The money is back in your balance.'):(o.auto?'Smart sell cut this one before it slid further.':'Some of it came back. On to the next one.')}</p>
   ${niceBtn(up?'Nice':'Done')}</div>`);
- rollNums($('#sheet'));clearTimeout(S.okT);}   // #140: no auto-close, so a real tap on the big button lands the tick
+ rollNums($('#sheet'));clearTimeout(S.okT);
+ if(Motion4.soldTone(back,cost)==='win'){setTimeout(()=>{celebrate(Motion4.burstCounts('sold')[0]);Motion4.sparks($('#sheet .okcard svg'),12);},520);}}   // M4: a profit celebrates; flat and loss do not (#140: no auto-close, so a real tap on the big button lands the tick)
 function bigWin(c){const pays=+c.pays||0,cost=+c.cost||0,reduce=matchMedia('(prefers-reduced-motion: reduce)').matches;
  document.querySelectorAll('.bigwin').forEach(e=>e.remove());const box=document.createElement('div');box.className='bigwin';
  box.innerHTML=`<i class="ring2"></i><i class="ring2 b"></i><div class="bw"><div class="ey">Big hit</div><div class="amt">${money(reduce?pays:0)}</div><div class="lb">${esc(momName(c))}</div>
   <div class="mx">+${money(pays-cost)}${cost?` · ${(pays/cost).toFixed(1)}× your money`:''}</div><br><button class="btn acc nice" type="button" aria-label="Nice, close">Nice</button></div>`;
  const close=()=>{box.classList.add('out');setTimeout(()=>box.remove(),380);};box.addEventListener('click',e=>{if(e.target.closest&&e.target.closest('.nice'))hap('success');close();});document.body.appendChild(box);
- hap('success');setTimeout(()=>hap('success'),650);if(!reduce){celebrate();setTimeout(celebrate,700);
+ hap('success');setTimeout(()=>hap('success'),650);if(!reduce){const bc=Motion4.burstCounts('big');celebrate(bc[0]);setTimeout(()=>celebrate(bc[1]),700);setTimeout(()=>Motion4.sparks(box.querySelector('.amt'),14),900);
   const a=box.querySelector('.amt'),t0=performance.now();const step=t=>{const k=Math.min(1,(t-t0)/1400),e=1-Math.pow(1-k,4);a.textContent=money(pays*e);if(k<1)requestAnimationFrame(step);};requestAnimationFrame(step);}
  }   // #140: stays until tapped (it used to close itself after 9 s, so the tap tick never landed)
 function isBig(c){const p=(+c.pays||0)-(+c.cost||0);return p>=50||(p>=15&&c.cost>0&&c.pays/c.cost>=5);}
@@ -62,14 +63,12 @@ function okSheet(title,amt,sub,bad){hap(bad?'error':'success');modal(`<div class
 /* #453: a buy whose reply was lost (or came back unclear) leaves a note that stays until tapped, not a 6 second toast.
    Shown as a sheet when none is open, else as a long toast. Display only; it sends nothing. */
 function checkLive(msg,title){if(!$('#modal').classList.contains('on'))okSheet(title||'Check Live',null,msg,true);else{hap('error');toast((title||'Check Live')+': '+msg,9000,'bad');}}
-function celebrate(){hap('success');const box=document.createElement('div');box.className='confetti';const cols=['#4f8cff','#3ecf8e','#ffb020','#ff6b9a','#b48cff'];
- for(let i=0;i<70;i++){const s=document.createElement('i');s.style.left=Math.random()*100+'vw';s.style.background=cols[i%cols.length];s.style.animationDelay=Math.random()*.4+'s';s.style.transform=`rotate(${Math.random()*360}deg)`;box.appendChild(s);}
- document.body.appendChild(box);setTimeout(()=>box.remove(),2600);}
+function celebrate(n,seed){hap('success');if(typeof Motion4!=='undefined')Motion4.confetti(n==null?32:n,{seed});}   // M4: one capped, transform-only layer; none on reduced motion or a hidden page
 function connect(){if(!window.EventSource)return;try{const es=new EventSource('/app/events');S.es=es;
  es.onopen=()=>{S.live_ok=true;S.esEver=true;stat();};
  es.onerror=()=>{S.live_ok=false;stat();};
  es.onmessage=e=>{let ev;try{ev=JSON.parse(e.data)}catch(x){return}
-  if(ev.kind==='tick'){moneyTick(ev.money);if(typeof verPoll==='function')verPoll();if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>4000)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>4000&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
+  if(ev.kind==='tick'){moneyTick(ev.money);if(typeof verPoll==='function')verPoll();if(S.gameOpen&&$('#modal').classList.contains('on')){if(Date.now()-(S.gameAt||0)>GAME_TICK_GATE_MS)drawGame();return;}if(['live','games'].includes(S.view)&&Date.now()-(S.lastLoad||0)>TICK_GATE_MS&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}return;}
   S.events=(S.events||[]).concat([ev]).slice(-30);
   if(ev.kind==='settled'&&/ won$/.test(ev.text||'')){const c=((S.live&&S.live.combos)||[]).find(x=>x.t===ev.combo);if(c)winMoment(c);else celebrate();}
   if(['score','advice','alert','settled','idea'].includes(ev.kind)){const k=ev.kind+'|'+ev.text;S.seen=S.seen||{};if(Date.now()-(S.seen[k]||0)>90000){S.seen[k]=Date.now();toast(ev.text,ev.kind==='score'?6000:ev.kind==='advice'?7000:4500,ev.kind==='score'?(ev.good?'good':'bad'):null,ev.kind==='advice'&&comboOk(ev.combo)?()=>openCombo(ev.combo):null);}}

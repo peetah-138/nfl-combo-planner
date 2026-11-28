@@ -22,7 +22,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.28.149"
+WATCHER_VERSION = "2026.11.28.150"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "loss_cut_default", "learned_guards", "mkt_hold",
@@ -1387,6 +1387,64 @@ class Bus:
 
 
 BUS = Bus()
+
+# How often the web app's own display numbers refresh (display only: the engine loop, stop-loss, smart sell, auto
+# cash-out and every buy/sell decision read their own data with their own ages and are untouched by any of this).
+LIVE_FAST_SECS, LIVE_SLOW_SECS = 5, 30       # a Live snapshot is served this long (game on / nothing on) before a rebuild
+SCORES_FAST_SECS, SCORES_SLOW_SECS = 5, 30   # this app keeps a league's ESPN scores this long (game on / nothing on)
+SCORES_FLOOR_SECS = 4                        # the default score age is never below this, however the knobs are set
+SCORES_BACKOFF_SECS = 8                      # the old fast age: scores fall back to it after SCORES_FAIL_LIMIT bad reads
+SCORES_BACKOFF_MAX_SECS = 60                 # each further bad read doubles the age, up to this
+SCORES_FAIL_LIMIT = 2                        # bad reads in a row (error, 429 or empty answer) before backing off
+SCORES_CALLS_PER_MIN_CAP = 36                # ESPN scoreboard reads per minute across all leagues; over it, serve the cache
+LIVE_TICK_MIN_GAP_SECS = 2                   # at most one extra "new data" tick this often
+
+
+class ScorePacer:
+    """Keeps the faster score reads inside ESPN's comfort zone: a ceiling on reads per minute, and a back-off when
+    reads fail. Pure bookkeeping (no network); the web app wraps its scoreboard read with it."""
+
+    def __init__(self, clock=time.time):
+        self.clock, self.fails, self.calls = clock, {}, []     # fails: consecutive bad reads per league
+
+    def max_age(self, fast, code=None):
+        """How old a league's scores may be before they are read again. Backing off only ever lengthens it."""
+        normal = max(SCORES_FAST_SECS if fast else SCORES_SLOW_SECS, SCORES_FLOOR_SECS)
+        return max(normal, self.backoff_age(code))
+
+    def backoff_age(self, code=None):
+        """The minimum age while this league's reads are failing (0 when they are not)."""
+        n = self.fails.get(code, 0)
+        if n < SCORES_FAIL_LIMIT:
+            return 0
+        return min(SCORES_BACKOFF_SECS * 2 ** (n - SCORES_FAIL_LIMIT), SCORES_BACKOFF_MAX_SECS)
+
+    def allow(self):
+        """True when one more read fits under the per-minute ceiling."""
+        now = self.clock()
+        self.calls = [t for t in self.calls if now - t < 60]
+        return len(self.calls) < SCORES_CALLS_PER_MIN_CAP
+
+    def record_call(self):
+        self.calls.append(self.clock())
+
+    def note(self, ok, code=None):
+        """A good read resets only that league's count."""
+        self.fails[code] = 0 if ok else self.fails.get(code, 0) + 1
+
+
+class TickGate:
+    """Lets the 'new data is ready' tick out at most once per LIVE_TICK_MIN_GAP_SECS."""
+
+    def __init__(self, clock=time.time):
+        self.clock, self.last = clock, 0.0
+
+    def ready(self):
+        now = self.clock()
+        if now - self.last < LIVE_TICK_MIN_GAP_SECS:
+            return False
+        self.last = now
+        return True
 
 
 def is_local(handler):
@@ -3203,9 +3261,42 @@ def webapp_main():
 
     # How fresh the page's numbers are kept (display only: the watcher's own loop, smart sell, auto cash-out and
     # every buy/sell decision read their own data and are untouched by any of this).
-    LIVE_FAST, LIVE_SLOW = 8, 30             # seconds a Live snapshot is served before a new one is built
-    SCORES_FAST, SCORES_SLOW = 8, 30         # seconds this app keeps a league's scores (default was 45)
+    LIVE_FAST, LIVE_SLOW = LIVE_FAST_SECS, LIVE_SLOW_SECS          # seconds a Live snapshot is served before a new one is built
+    SCORES_FAST = SCORES_FAST_SECS  # seconds this app keeps a league's scores (default was 45)
     A.SCORES_MAX_AGE = SCORES_FAST
+    PACER, TICKS = ScorePacer(), TickGate()
+
+    _orig_fetch_scores = A.fetch_scores
+
+    def paced_fetch_scores(max_age=None, code=None):
+        """ESPN scoreboard read with a per-minute ceiling and a per-league back-off after failures (display only; this
+        is the web app's copy of the engine; a call with an explicit max_age, which every trading guard makes, is passed straight through unpaced). A failure is
+        never retried here: the cached copy is served until the paced age allows the next read."""
+        if max_age is not None:    # an explicit age is a trading guard (_game_over, live_side_fair): never pace or stretch it
+            return _orig_fetch_scores(max_age=max_age, code=code)
+        c = code or A.LEAGUE["code"]
+        got = A.SCORES_BY.get(c) or {"at": 0, "by": {}}
+        try:
+            sp = A.SPORTS.get(c) or {}
+            age = A.SCORES_MAX_AGE if max_age is None else max_age
+            if max_age is None:
+                age = max(age, SCORES_FLOOR_SECS)
+            age = max(age, PACER.backoff_age(c))
+            if not sp.get("espn") or sp.get("feed") or time.time() - got["at"] < age:
+                return _orig_fetch_scores(max_age=age, code=c)
+            if not PACER.allow():                    # ceiling reached: serve the cached copy
+                return got["by"]
+            PACER.record_call()
+            by = _orig_fetch_scores(max_age=age, code=c)
+            now_got = A.SCORES_BY.get(c) or {}
+            # a failed read keeps the old timestamp; a 429 or error page comes back as an empty board
+            PACER.note(not ((now_got.get("at") or 0) <= (got.get("at") or 0) or (not by and got.get("by"))), c)
+            return by
+        except Exception:
+            PACER.note(False, c)
+            return got["by"]
+
+    A.fetch_scores = paced_fetch_scores
 
     def games_live():
         """Is any game under way in the scores this app last read?"""
@@ -3229,7 +3320,7 @@ def webapp_main():
         """Quick score and snapshot refreshes only while a game is live; relaxed otherwise."""
         fast = games_live()
         LIVE["fast"] = fast
-        A.SCORES_MAX_AGE = SCORES_FAST if fast else SCORES_SLOW
+        A.SCORES_MAX_AGE = PACER.max_age(fast)
 
     def live_refresh():
         try:
@@ -3290,6 +3381,8 @@ def webapp_main():
                     A.mine_page(live=True)
                     LIVE.update(at=time.time(), built=time.time(), data=jsonable(A.MINE.get("view") or {}))
                     set_pace()
+                    if TICKS.ready():                    # new numbers are ready: open pages refetch now, not at the next loop pass
+                        BUS.publish({"kind": "tick", "money": getattr(A, "money_seen", float)()})
                 except Exception as err:
                     if not LIVE["data"]:
                         raise

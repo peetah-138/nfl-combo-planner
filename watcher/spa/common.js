@@ -1,5 +1,7 @@
 const TOK="__CWTOK__",LOCAL=__CWLOCAL__,PAGE_VER="__CWVER__";
 const $=s=>document.querySelector(s);
+/* Browser refresh pacing (our own server only; a hidden tab never polls). */
+const TICK_GATE_MS=1500,POLL_EVERY_MS=5000,POLL_SSE_SKIP_MS=30000,POLL_NOSSE_SKIP_MS=4000,FG_RELOAD_MIN_MS=5000,GAME_TICK_GATE_MS=3000,GAME_POLL_EVERY_MS=2000,GAME_POLL_SKIP_MS=3500,GAME_STALE_S=20;
 const apiRaw=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
 /* Every POST in flight is counted (update.js never reloads under one), and a money result holds a reload for 15 s so its message can be read. */
 const VER_HOLD_ACTS=['buy','go','hedgego','singlebuy','pot_move','panel_approve','panel_add','panel_cancel','panel_restart'];
@@ -68,6 +70,13 @@ function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.sty
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
+/* FMT-BEGIN one money rule for every row (display only; money() above stays for old callers):
+   under $100 always show cents ($9.40, $12.00, $0.50); $100 and over whole dollars with commas ($154, $1,250).
+   fmtMoney(-9.4) = −$9.40; fmtSigned(9.4) = +$9.40, fmtSigned(-9.4) = −$9.40, zero = +$0.00; null/NaN/non-numbers = —.
+   Rounds to the cent first, so 99.996 reads $100 and -0.004 reads $0.00 (never −$0.00). */
+const fmtMoney=x=>{if(x==null||x===''||!isFinite(+x))return'\u2014';const c=Math.round(Math.abs(+x)*100),t=c<10000?(c/100).toFixed(2):Math.round(c/100).toLocaleString('en-US');return(+x<0&&c>0?'\u2212':'')+'$'+t;};
+const fmtSigned=x=>x==null||x===''||!isFinite(+x)?'\u2014':(+x<0&&Math.round(Math.abs(+x)*100)>0?'\u2212':'+')+fmtMoney(Math.abs(+x));
+/* FMT-END */
 const pct=x=>x==null?'—':x>=.995&&x<1?'>99%':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
 const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ahl:'AHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
 const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ahl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
@@ -244,9 +253,9 @@ function agoTxt(a){return a<3?'just now':a<90?Math.round(a)+'s ago':Math.round(a
 function frLive(k){const o=S.fr[k];return !!(o&&o.f.live);}                                                   // is a game under way (server says)
 function frTxt(k){const b=frBuilt(k);if(b==null)return '';const s=frScores(k);
  return(!frLive(k)||s==null)?'Updated '+agoTxt(b):'Prices '+agoTxt(b)+' · scores '+agoTxt(s);}
-function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frBuilt(k)||0)>60);});}
+function frTick(){document.querySelectorAll('[data-fr]').forEach(e=>{const k=e.dataset.fr,t=frTxt(k);if(e.textContent!==t)e.textContent=t;e.classList.toggle('old',(frBuilt(k)||0)>(k==='G'?GAME_STALE_S:60));});}
 setInterval(()=>{frTick();clkTick();if(S.netShown||S.netDown||S.live_ok===false)netBanner();},1000);
-setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>5500)drawGame();},2000);
+setInterval(()=>{if(!document.hidden&&S.gameOpen&&$('#modal').classList.contains('on')&&Date.now()-(S.gameAt||0)>GAME_POLL_SKIP_MS)drawGame();},GAME_POLL_EVERY_MS);
 async function load(v,fresh){try{warm(v);
  if(v==='live'){const prev=S.liveNet?S.live:null;S.live=await api('/app/api/live'+(fresh?'?fresh=1'+ovQ('&'):ovQ('?')));head(S.live);cput('live',S.live);frSet('L',S.live.fresh);try{liveMoments(prev,S.live)}catch(e){}S.liveNet=true;}
  if(v==='build'){const lg=S.lg,pv=S.pview||'all';const [b,p]=await Promise.all([api('/app/api/build?lg='+lg+(fresh?'&fresh=1':'')+ovQ('&')),api('/app/api/panel?v='+pv+ovQ('&')).catch(()=>null)]);
@@ -283,4 +292,6 @@ function paintErr(){document.querySelectorAll('.berr').forEach(e=>e.remove());co
 function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> '+esc(label||b.textContent.trim());}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
-function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
+/* card-shaped loading placeholders (css .skel-card); skel(n) kept for old callers */
+function skelCards(n){return Array.from({length:n||3},()=>'<div class="skel-card" aria-hidden="true"><i class="skel-line big w60"></i><i class="skel-line w80"></i><i class="skel-line w40"></i></div>').join('');}
+function skel(n){return skelCards(n);}

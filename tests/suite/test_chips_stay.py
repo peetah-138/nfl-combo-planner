@@ -18,7 +18,7 @@ SLOW = r"""(() => { const f = window.fetch; window.__hold = 0;
   if (window.__hold && /\/app\/api\/(build|panel)\?/.test(String(u))) return p.then(r => new Promise(res => setTimeout(() => res(r), window.__hold)));
   return p; }; })()"""
 ROW = r"""(() => [...document.querySelectorAll('#main > .chips:first-child .chip')].map(b => { const r = b.getBoundingClientRect();
-  return { t: b.textContent.trim(), on: b.classList.contains('on'), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width) }; }))()"""
+  return { t: b.textContent.trim(), on: b.classList.contains('on'), x: b.offsetLeft, y: Math.round(r.top), w: Math.round(r.width) }; }))()"""
 def same(a, b, tapped=None):
     """same chips, same order, same places; the tapped chip may be a few pixels off (its press feedback shrinks it for a moment)"""
     if [c["t"] for c in a] != [c["t"] for c in b]: return False

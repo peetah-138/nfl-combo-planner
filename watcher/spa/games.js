@@ -3,7 +3,14 @@
    the clock, the chance line over the game with a glowing end dot, and the bets riding on it. When someone scores the
    card pulses (green when it's your side, red when it's theirs), the number bumps and the phone ticks. Tap to push
    into the game page. */
-function gamesSkel(){return `<div class="gsk-h"><i></i></div><div class="games">${Array.from({length:4},()=>`<div class="gsk"><i style="height:11px;width:38%"></i><i style="height:20px;width:70%"></i><i style="height:20px;width:55%"></i><i style="height:46px"></i><i style="height:22px;width:60%"></i></div>`).join('')}</div>`;}
+function gamesSkel(){return `<div class="gsk-h"><i></i></div><div class="games" aria-busy="true" aria-label="Loading games">${Array.from({length:4},()=>`<div class="gsk"><i class="s1"></i><i class="s2"></i><i class="s3"></i><i class="s4"></i><i class="s5"></i></div>`).join('')}</div>`;}
+/* Plain-English states (display only). One place for the wording so the page never prints a raw error. */
+function gamesErr(){return `<div class="card empty err" data-ic="⚠️"><b>Games didn't load</b>Check your connection, then try again. Your bets are not affected.<br><button class="btn acc" onclick="retry('games',this)">Try again</button></div>`;}
+function gamesEmpty(all){return `<div class="card empty" data-ic="🏟️"><b>${all?'No games for this bet type':'No games to watch yet'}</b>${all?'Pick another bet type above to see your other games.':'When you have money on a game, it shows up here with the live score and your chance to win.'}<br>${all?'<button class="btn acc" onclick="setGtype(\'all\')">Show all games</button>':'<button class="btn acc" onclick="go(\'build\')">See today\'s bets</button>'}</div>`;}
+/* Bet chips: one row, never more than two, then "+N" (so a card never grows to three rows of chips). */
+const G_CHIPS=2;
+function gBets(g){const all=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.plain||x.label||'')}</span>`)].filter(Boolean);
+ return all.slice(0,G_CHIPS).join('')+(all.length>G_CHIPS?`<span class="bt more" aria-label="${all.length-G_CHIPS} more bets">+${all.length-G_CHIPS}</span>`:'');}
 function miniLine(pts,col){if(!pts||pts.length<2)return `<div class="mline"><svg viewBox="0 0 300 46" preserveAspectRatio="none"><line x1="0" x2="300" y1="23" y2="23" stroke="var(--line)" stroke-width="2" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"/></svg></div>`;
  const t0=pts[0][0],t1=pts[pts.length-1][0],X=t=>(t-t0)/Math.max(1,t1-t0)*300,Y=v=>42-Math.max(0,Math.min(1,v))*38;
  const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');const ly=Y(pts[pts.length-1][1]);const id='mg'+Math.random().toString(36).slice(2,7);
@@ -31,15 +38,15 @@ function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chanc
  const what=g.kind==='spread'?'to cover':g.kind==='total'?'to hit':live?'to win now':'to win';
  // both teams and both scores on every card: the full opponent name, else the short code from the score; no score (tennis/UFC) = no number, never a fake 0
  const shown=sc&&(live||fin),myPts=shown&&sc.me!=null?sc.me:null,oppPts=shown&&sc.opp!=null?sc.opp:null,oppNm=g.opp||(sc&&sc.opp_abbr)||'';
- const bets=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.plain||x.label||'')}</span>`)].join('');
+ const bets=gBets(g);
  const head=live?`<span class="lv"><i></i>${esc((sc&&sc.detail)||'Live')}</span>`:fin?`<span>Final${sc&&sc.detail?' · '+esc(sc.detail):''}</span>`:g.state==='over'||g.phase==='probably_over'?'<span>Probably finished</span>':g.phase==='waiting'?'<span>Not started yet</span>':`<span>${esc(g.short||g.starts||'Upcoming')}</span>`;
- return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" data-t="${esc(g.ticker||'')}" role="button" tabindex="0" onclick="openGame(this.dataset.t)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openGame(this.dataset.t);}">
-  <div class="gh"><span>${ICON[g.sport]||''} ${esc(SPN[g.sport]||g.sport||'')}</span>${head}</div>
-  <div class="tms"><div class="gtr me"><span class="nm">${esc(g.kind==='total'&&g.matchup?g.matchup:g.name)}</span><span class="mine">YOURS</span>${myPts!=null?`<b class="pts ${sg?'bump':''}">${esc(String(myPts))}</b>`:''}</div>
-   ${oppNm||oppPts!=null?`<div class="gtr them"><span class="nm">${esc(oppNm||'Opponent')}</span>${oppPts!=null?`<b class="pts">${esc(String(oppPts))}</b>`:''}</div>`:''}</div>
+ return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" data-t="${esc(g.ticker||'')}" role="button" tabindex="0" aria-label="${esc((g.kind==='total'&&g.matchup?g.matchup:g.name)+(oppNm?' vs '+oppNm:''))}, open game" onclick="openGame(this.dataset.t)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openGame(this.dataset.t);}">
+  <div class="gh"><span class="gsp">${ICON[g.sport]||''} ${esc(SPN[g.sport]||g.sport||'')}<span class="mine">Your pick</span></span>${head}</div>
+  <div class="tms"><div class="gtr me"><span class="nm" title="${esc(g.kind==='total'&&g.matchup?g.matchup:g.name)}">${esc(g.kind==='total'&&g.matchup?g.matchup:g.name)}</span>${myPts!=null?`<b class="pts ${sg?'bump':''}">${esc(String(myPts))}</b>`:''}</div>
+   ${oppNm||oppPts!=null?`<div class="gtr them"><span class="nm" title="${esc(oppNm||'Opponent')}">${esc(oppNm||'Opponent')}</span>${oppPts!=null?`<b class="pts">${esc(String(oppPts))}</b>`:''}</div>`:''}</div>
   ${g.matchup&&g.kind&&g.kind!=='total'&&!oppNm&&oppPts==null?`<div class="gmu">${esc(g.matchup)}${g.found===false?' <i class="nf" title="Kalshi has no matching game on our schedule feed yet; this does not mean the bet is wrong">game not found</i>':''}</div>`:''}${g.kind==='total'&&g.found===false?'<div class="gmu"><i class="nf" title="Kalshi has no matching game on our schedule feed yet; this does not mean the bet is wrong">game not found</i></div>':''}
   <div class="gl${ch==null?' none':''}"><div class="ch"><b class="${ch==null?'':ch>=.5?'up':'down'}" ${ch!=null?`data-num="gch:${esc(g.ticker||g.name)}" data-v="${ch}" data-f="pct"`:''}>${ch==null?'—':pct(ch)}</b><small>${what}</small>
-   <div class="gbar"><i data-bar="gb:${esc(g.ticker||g.name)}" style="width:${ch==null?0:Math.max(2,Math.min(100,ch*100))}%;background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
+   <div class="gbar"><i data-m3b="${esc(g.ticker||g.name)}" data-v="${ch==null?0:Math.max(2,Math.min(100,ch*100))/100}" style="transform:scaleX(${ch==null?0:Math.max(2,Math.min(100,ch*100))/100});background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
   <div class="bets">${bets}</div><div class="gft"><span class="rd">${money(g.pays)} riding</span><span class="go">Open game ›</span></div></div>`;}
 function scoreWatch(gs){/* who scored since the last paint: your side, or theirs */
  S.gsc=S.gsc||{};S.gscore={};let any=null;
@@ -67,14 +74,14 @@ function gTypeRow(all,cur){const n={};all.forEach(g=>gKinds(g).forEach(k=>{n[k]=
  if(have.length<2)return {row:'',cur:'all'};if(cur!=='all'&&!n[cur])cur='all';
  const chip=(k,t,c)=>`<button class="chip ${cur===k?'on':''}" aria-pressed="${cur===k}" onclick="setGtype('${k}')">${t} <span class="n">${c}</span></button>`;
  return {row:`<div class="chips btchips" role="group" aria-label="Bet type">${chip('all','All',all.length)}${have.map(([k,t])=>chip(k,t,n[k])).join('')}</div>`,cur};}
-function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
+function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?gamesErr():gamesSkel();return;}
  const allG=(d.games||[]).slice().sort(gameOrder);const tr=gTypeRow(allG,S.gtype||'all');S.gtype=tr.cur;
  const keepX=(document.querySelector('.btchips')||{}).scrollLeft||0;
- const gs=tr.cur==='all'?allG:allG.filter(g=>gKinds(g).has(tr.cur));if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
+ const gs=tr.cur==='all'?allG:allG.filter(g=>gKinds(g).has(tr.cur));if(!gs.length){m.innerHTML=(tr.row||'')+gamesEmpty(allG.length>0);return;}
  scoreWatch(allG);setTimeout(warmShown,400);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
- m.innerHTML=tr.row+(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
-  +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
-  +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
-  +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');
+ m.innerHTML=tr.row+(d.fresh?`<div class="fresh gfresh" data-fr="N">${frTxt('N')}</div>`:'')+(live.length?`<h2 class="gsec"><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
+  +(rest.length?`<h2 class="gsec">Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
+  +(fin.length?`<h2 class="gsec">Finished <span class="n">${fin.length}</span></h2><div class="m gnote">These games are over. Kalshi pays out once the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
+  +(idle.length?`<h2 class="gsec">Probably finished <span class="n">${idle.length}</span></h2><div class="m gnote">We have no live score for these. They are most likely over. Kalshi pays out once the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');
  const br=document.querySelector('.btchips');if(br&&keepX)br.scrollLeft=keepX;}

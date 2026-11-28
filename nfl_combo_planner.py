@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.28.149"
+VERSION = "2026.11.28.150"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -26434,7 +26434,7 @@ def ap_drift_items(st, now=None, kst=None):
         out.append({"key": key, "rec": rec, "group": AP_DRIFT_REC_GROUP[rec], "name": name, "start": start, "cur": cur,
                     "start_text": _ap_short(rec, start), "cur_text": _ap_short(rec, cur),
                     "dir": "tighter" if tighter else "looser", "loosens": _ap_looser(rec, cur, start),
-                    "line": f"{name}: {_ap_short(rec, start)} → {_ap_short(rec, cur)}, {'tighter' if tighter else 'looser'}",
+                    "line": f"{name}: from {_ap_short(rec, start)} to {_ap_short(rec, cur)}, {'tighter' if tighter else 'looser'}",
                     "note": note, "resettable": True, "why_not": ""})
     for lg, v in sorted(vals["bar"].items()):
         add("bar", _fal_key("bar", lg), FAL_START["bar"], v, "borrowed from the other leagues' record" if src.get(_fal_key("bar", lg)) == "borrow" else "")
@@ -26476,7 +26476,7 @@ def ap_drift_items(st, now=None, kst=None):
                 out.append({"key": f"knob:{g}:{name}", "rec": "knob", "group": "sell", "name": label, "start": start, "cur": cur,
                             "start_text": knob_say(u, start), "cur_text": knob_say(u, cur), "dir": word,
                             "loosens": bool(knob_loosens(name, cur, start)), "g": g, "knob": name,
-                            "line": f"{label}: {knob_say(u, start)} → {knob_say(u, cur)}, {word}", "note": "",
+                            "line": f"{label}: from {knob_say(u, start)} to {knob_say(u, cur)}, {word}", "note": "",
                             "resettable": True, "why_not": ""})
     except Exception as err:
         console_note("autopilot drift: " + repr(err))
@@ -26484,14 +26484,26 @@ def ap_drift_items(st, now=None, kst=None):
     return out, None
 
 
-def _ap_reset_why(item, cautious, quiet):
-    """(allowed, plain reason when not): may a reset move this setting to its start right now? A reset that loosens waits for a calm brake."""
+def _ap_knob_braked(kst, now):
+    """True while smart sell's own per-league knob brake is on anywhere (the same any-league test the live sellers use), or when
+    the knob state can't be read (fail closed: unreadable = braked). #665: only ever blocks a reset that would loosen."""
+    try:
+        return bool(_knob_braked_any(kst if kst is not None else knob_state(), now))
+    except Exception:
+        return True
+
+
+def _ap_reset_why(item, cautious, quiet, league_brake=False):
+    """(allowed, plain reason when not): may a reset move this setting to its start right now? A reset that loosens waits for a calm brake
+    (the full-auto brake, and for an exit number also smart sell's own league brake)."""
     if not item["resettable"]:
         return False, item["why_not"]
     if not item["loosens"]:
         return True, ""
     if cautious:
         return False, "The brake is being careful, so nothing is loosened right now. Try again once it is back to normal."
+    if item["rec"] == "knob" and league_brake:
+        return False, "Smart sell's own brake is on for a league, so nothing is loosened right now. Try again once it has ended."
     if item["rec"] in FAL_RISKY and not quiet:
         return False, "The brake has not been quiet for two weeks yet, so this stays as it is. Try again when it has."
     return True, ""
@@ -26506,13 +26518,14 @@ def ap_drift_view(st, now=None):
         if items is None or raw is None:
             return {"items": [], "err": "Drift since start couldn't be worked out just now, so nothing can be reset from here.",
                     "cautious": True, "can_reset": False, "all_n": 0}
-        cautious = bool(ap_brake_cautious(st, now))
+        cautious = bool(ap_brake_cautious(st, now)) or bool(ap_brake_cautious(raw, now))   # #665: the saved file as it is, not the repaired copy
         quiet = bool(_ap_quiet(st, now)[0])
+        kbr = _ap_knob_braked(None, now)
         fz = (st.get("lessons") or {}).get("frozen") if isinstance(st.get("lessons"), dict) else None
         fz = fz if isinstance(fz, dict) else {}
         n = 0
         for it in items:
-            ok, why = _ap_reset_why(it, cautious, quiet)
+            ok, why = _ap_reset_why(it, cautious, quiet, kbr)
             it["reset_ok"], it["why_not"] = ok, why
             it["frozen"] = bool(it["rec"] != "knob" and _ap_frozen(st.get("lessons") or {}, it["key"])) or \
                 bool(it["rec"] == "knob" and (fz.get("knobs") or fz.get(f"knob:{it['knob']}")))
@@ -26582,7 +26595,8 @@ def ap_reset(key, now=None):
         mine = [x for x in items if whole or x["key"] == key]
         if not mine:
             raise _ApRefuse("Nothing to reset: " + ("everything is already at its start." if whole else "that setting is already at its start."))
-        cautious, quiet = bool(ap_brake_cautious(s, now)), bool(_ap_quiet(s, now)[0])
+        cautious, quiet = bool(ap_brake_cautious(s, now)) or bool(ap_brake_cautious(raw, now)), bool(_ap_quiet(s, now)[0])
+        kbr = _ap_knob_braked(None, now)
         L = s.get("lessons")
         if L is None:
             L = s["lessons"] = {}
@@ -26594,7 +26608,7 @@ def ap_reset(key, now=None):
         if not isinstance(L.get("log"), list):
             L["log"] = []
         for it in mine:
-            ok, why = _ap_reset_why(it, cautious, quiet)
+            ok, why = _ap_reset_why(it, cautious, quiet, kbr)
             if not ok:
                 out["wait"].append((it, why))
                 continue
@@ -26667,6 +26681,9 @@ def _ap_reset_knobs(out, now):
             lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else None
             if lv is None or name not in lv or _knob_ap_inforce(name, it["g"], d, smart, lv.get(name)) != it["cur"]:
                 continue                                     # moved since the look: left alone
+            if it["loosens"] and _knob_braked_any(d, now):   # #665: smart sell's own brake began since the look: no loosening
+                out["wait"].append((it, _ap_reset_why(it, False, True, True)[1]))
+                continue
             lat = e["lat"] if isinstance(e.get("lat"), dict) else {}
             v = e["v"] if isinstance(e.get("v"), dict) else {}
             lv[name] = it["start"]                           # pinned to start (like the brake), not removed: removing would let
@@ -26683,6 +26700,9 @@ def _ap_reset_knobs(out, now):
     out["knobs"] = applied
     if applied:
         def note(s):
+            raw, why = _ap_raw_fa()                          # #665: the file may have changed since go() read it; unreadable = write nothing
+            if raw is None:
+                raise _ApRefuse("Autopilot's saved settings couldn't be read, so the hold wasn't saved.")
             L = s.get("lessons")
             if not isinstance(L, dict):
                 L = s["lessons"] = {}
@@ -26693,7 +26713,11 @@ def _ap_reset_knobs(out, now):
                 L["holds"][it["key"]] = round(now + AP_HOLD)
             L["log"].append({"at": round(now), "kind": "reset", "key": "knobs", "text": _ap_reset_text(applied)})
             del L["log"][:-FAL["log"]]
-        _fa_update(note)
+        try:
+            _fa_update(note)
+        except _ApRefuse as r:
+            out["nohold"] = str(r)                           # the numbers are pinned; say that the hold and log line weren't saved
+            console_note("autopilot reset (hold): " + str(r))
 
 
 def _ap_reset_say(out, whole):
@@ -26706,6 +26730,8 @@ def _ap_reset_say(out, whole):
         parts.append(f"{it['name']} stays at {it['cur_text']}. {why}")
     if frozen:
         parts.append("Left alone because you froze them: " + ", ".join(x["name"] for x in frozen) + ".")
+    if out.get("nohold"):
+        parts.append("The 2-week hold and log line for the exit numbers couldn't be saved just now.")
     return bool(done), " ".join(parts) or "Nothing was changed."
 
 

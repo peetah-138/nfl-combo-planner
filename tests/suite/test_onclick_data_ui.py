@@ -91,7 +91,7 @@ with sync_playwright() as pw:
     S_ = "S.build=S.build||{};"
     probe("sell a single (game page + live card)", f"return ssActs({{t:{json.dumps(H)},res:null,state:'live'}});",
           [("ssPrice", H), ("ssOpen", H)])
-    probe("live self-sell chip", f"S.live=S.live||{{}};return ssChip({{t:{json.dumps(H)},self:false,sell_at:null}});",
+    probe("live self-sell chip", f"S.live=S.live||{{}};S.live.auto_sell=true;return ssChip({{t:{json.dumps(H)},self:false,sell_at:null}});",
           [("selfSell", H)])
     pg.evaluate("S.live=S.live||{};S.live.auto_sell=false")
     probe("cash-out bar", "return momentBar([{t:%s,group:'pending',moment:1,nudge:1,offer:9,cost:5,label:'L',legs:[],sports:[]}]);" % json.dumps(H),

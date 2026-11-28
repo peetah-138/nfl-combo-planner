@@ -4,6 +4,7 @@
   "css": [
     "app.css",
     "game.css",
+    "field.css",
     "settings.css",
     "responsive.css",
     "motion.css",
@@ -20,10 +21,15 @@
     "overlap.css",
     "betlabel.css",
     "smallwins.css",
-    "update.css"
+    "update.css",
+    "live.css",
+    "motion4.css",
+    "press.css",
+    "motion3.css"
   ],
   "js": [
     "common.js",
+    "press.js",
     "betlabel.js",
     "stake.js",
     "live.js",
@@ -44,6 +50,9 @@
     "games.js",
     "game.js",
     "game_tabs.js",
+    "field.js",
+    "motion4.js",
+    "motion3.js",
     "moments.js",
     "logaccess.js",
     "overlap.js",
