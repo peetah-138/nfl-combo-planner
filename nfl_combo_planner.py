@@ -24737,7 +24737,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     taken = 0.0
     for c in items:
         normal = float(c.get("stake") or 0)
-        s = _fa_sized(normal, _fa_knob(caut["level"], "size"), mult, room, free, loss_room, budget - riding - taken)   # cautious: smaller bets
+        s = _fa_sized(normal, _fa_knob(caut["level"], "size"), mult, room, free, max(0.0, loss_room - taken), budget - riding - taken)   # cautious: smaller bets
         if guard and not guard.allows(c, s):
             continue                                      # (#145 step 6) over its league's / bet type's share of the day's cap: left out, not an open-slot skip
         if s >= PANEL_OWN_MIN and s <= room + 0.01 and s <= free + 0.01 and len(ids) >= slots:
@@ -24785,7 +24785,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
 # ---------------------------------------------------------------- full auto learns from the paper books (#144)
 # "Lessons ready" (Pete): a paper or shadow record that has enough data AND passes its bar may move ONE small step of a
 # number that ONLY full auto reads, at most once a week per record, tighter or looser. The numbers are skip-only filters
-# on what full auto would approve or add (never a new bet, never a bigger stake): at their start value each is the
+# on what full auto would approve or add (never a new bet, never a stake past what the daily limits allow): at their start value each is the
 # identity (today's behaviour), and the start value is also the loose end of the range, so "looser" can only undo an
 # earlier tightening. The manual panel, the live cut-offs, Smart Buy and smart sell never see them.
 #   bar:<league>  League shadow (league_shadow_q): extra points added to the league's live combo cut-off (combos only).
@@ -25707,7 +25707,7 @@ def _fal_apply(s, plan, now):
                 if ev.get("why") == "brake":
                     why = "the soft brake stepped in within the last week, so it eases off right away."
                 else:
-                    why = f"full auto's last 30 days were ${ev['gain']:.2f} after fees ({ev['band']} bets) and the bets since this setting last moved are also down."
+                    why = f"full auto's last 30 days were {money(ev['gain'])} after fees ({ev['band']} bets) and the bets since this setting last moved are also down."
             elif rec in FAL_RISKY:
                 why = (f"the last 30 days were up after fees, the brake has been quiet for two weeks, and on {ev['band']} past bets "
                        f"this would have made ${ev['gain']:.2f} more after fees.")

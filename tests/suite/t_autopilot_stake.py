@@ -334,6 +334,29 @@ def run_pass(vals_, cap=30.0, bank=300.0, nn=6):
     return res, [c for c in E.panel_get("real")["items"] if c.get("state") == "scheduled"]
 
 
+# several small bets at 150%: together they never pass the $20 loss room (it shrinks bet by bet, like the cap and the bankroll)
+def small_pass(vals_, n=3, stake=5.0):
+    reset()
+    E.store_x("delete from panel", ())
+    E.PANEL_POOL = {"nba": (time.time(), [mk(f"KXNBAGAME-26NOV27G{i}-A", f"KXNBAGAME-G{i}", .60 + i / 100, .50, NOW + 9000) for i in range(n)])}
+    E.panel_pass()
+    real = E.panel_get("real")
+    def put(old, st):
+        old["items"] = old["items"][:n]
+        for c in old["items"]:
+            c["stake"] = stake                            # equal $5 bets: $15 together, inside the $20 loss room
+        return old, "draft"
+    E.panel_tx(E._panel_day(real["at"]), "real", put)
+    E.fa_set(True, limits={"cap": 100.0, "bank": 300.0, "max_open": 30})
+    if vals_:
+        E._fa_update(lambda s: s["lessons"].update(vals=vals_))
+    E.full_auto_pass(now=time.time())
+    return [c["stake"] for c in E.panel_get("real")["items"] if c.get("state") == "scheduled"]
+sm0 = small_pass(None)
+sm1 = small_pass({"stake_mult": 1.5})
+ok(f"three $5 bets are bought at $5 each at today's size {sm0}", sm0 == [5.0] * 3)
+ok(f"at 150% three small bets together never pass the $20 loss room {sm1}", len(sm1) >= 1 and sum(sm1) <= 20.01)
+ok(f"at 150% the first two grow to $7.50 and the third gets only the $5 left of the loss room {sm1}", sm1 == [7.5, 7.5, 5.0])
 res, base = run_pass(None)
 spend0 = sum(c["stake"] for c in base)
 ok("baseline: the pass approves a draft within the $30 cap", res and 0 < spend0 <= 30.01)
