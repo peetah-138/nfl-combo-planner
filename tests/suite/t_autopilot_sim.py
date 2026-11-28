@@ -290,7 +290,6 @@ class Watch:
             if key in self.seen:
                 continue
             self.seen.add(key)
-            ev = e.get("ev") or {}
             if e.get("kind") == "step":
                 self.steps += 1
         return st, L
@@ -340,9 +339,7 @@ class Run:
         wall = SIM["wall"]
         st0 = E.fa_state()
         day = pday(SIM["t"])
-        before_total = self.book.day_total(day)
-        free0, risk0 = self.book.free(wall), self.book.risk(wall)
-        open0 = len(self.book.open_bets(wall))
+        free0 = self.book.free(wall)
         real_today = self.book.realized(wall, day)
         try:
             chk = E.fa_check(st0, paused=paused, may_trade=True, now=now)
@@ -353,7 +350,7 @@ class Run:
         vals0 = (st0.get("lessons") or {}).get("vals") or {}
         cu = vals0.get("cap_use", 1.0) if fin(vals0.get("cap_use", 1.0)) and E.fal_on(st0) else 1.0
         try:
-            res = E.full_auto_pass(paused=paused, may_trade=True, now=now, log=lambda *a: None)
+            E.full_auto_pass(paused=paused, may_trade=True, now=now, log=lambda *a: None)
         except Exception as err:
             self.v(f"full_auto_pass raised {type(err).__name__}: {err}")
             return
@@ -439,8 +436,6 @@ class Run:
                 self.v(f"fal_tick raised {type(err).__name__}: {err}")
             self.w.day = d
             self.w.look("tick")
-            if scen == "empty":
-                continue_draft = True
             put_panel("real", make_items(rng, scen, d, "a", 14 if small else 8, .6, 9, small=small, late=small), "draft")
             self.do_pass("p1", paused=paused)
             SIM["t"] = SIM["wall"] = clock_of(d, 2)
@@ -486,7 +481,6 @@ class Run:
 
     def daily_checks(self, d):
         self.w.day = d
-        wall = SIM["wall"]
         st = E.fa_state()
         b = st.get("brake")
         if isinstance(b, dict) and b.get("kind") == "day":
@@ -575,7 +569,7 @@ def undo_check(r):
     res, ch, before = r.undone
     if not res[0] or not ch:
         return
-    key, t0 = ch.get("key"), r.w.events and None
+    key = ch.get("key")
     later = [e for e in r.w.events if e["key"] == key and e["day"] > r.opt["undo_day"] and e["day"] < r.opt["undo_day"] + 14]
     if later:
         VIOL.append(f"[undo] {key} moved again {later[0]['day'] - r.opt['undo_day']} days after Undo (hold is 14 days)")
