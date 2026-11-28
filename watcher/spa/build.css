@@ -81,3 +81,24 @@
 .pitem .pdet:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}
 
 .pitem .pn.stl{opacity:.75}
+/* Phone polish (display only): one quiet card per game with the
+   teams stacked and a thin bar sized by each team's fair chance, and a calm dark tray for the combo. */
+@media (max-width:900px){
+ .board{background:none;border:0;border-radius:0;overflow:visible;display:grid;gap:12px}
+ .mrow{grid-template-columns:minmax(0,1fr);grid-template-areas:none;gap:8px;padding:14px 16px;background:var(--panel);border:1px solid var(--line);border-radius:20px}
+ .mrow:last-child{border-bottom:1px solid var(--line)}.mrow .when{grid-area:auto;font-weight:600;color:var(--mute);margin-bottom:2px}
+ .mrow .pickbtn{position:relative;min-height:56px;padding:10px 14px 16px;border-radius:14px}
+ .mrow .pickbtn .full{display:inline}.mrow .pickbtn .short{display:none}
+ .mrow .pickbtn .nm{font-size:15.5px}.mrow .pickbtn .pr b{font-size:16px}
+ .mrow .pickbtn::after{content:"";position:absolute;left:14px;bottom:8px;height:3px;border-radius:2px;width:calc((100% - 28px)*var(--w,0));background:color-mix(in srgb,var(--yes) 75%,transparent);transition:width .5s var(--ease)}
+ .mrow .pickbtn.on::after{background:var(--acc)}
+ .slipbar{background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:22px;padding:12px 12px 12px 16px;column-gap:10px;box-shadow:0 14px 36px rgba(0,0,0,.42)}
+ .slipbar .sbey{flex:1;font-size:11px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+ .slipbar .sbtog{margin-right:0;background:var(--panel2)}
+ .slipbar .sbtog button{min-height:40px;padding:0 12px;color:var(--sub)}.slipbar .sbtog button.on{background:var(--acc);color:#fff}
+ .slipbar span{white-space:normal;line-height:1.25;font-size:15px;font-weight:800;letter-spacing:-.01em;color:var(--ink)}
+ .slipbar .sbrow button{min-height:44px;padding:0 16px;border-radius:12px;background:var(--acc);color:#fff}
+ .slipbar .sbrow .x{min-width:44px;padding:0;background:transparent;color:var(--mute)}
+ .slipgap{height:140px!important}
+}
+@media (max-width:900px) and (prefers-color-scheme:light){.slipbar{box-shadow:0 14px 36px rgba(16,24,40,.18)}}
