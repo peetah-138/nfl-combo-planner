@@ -576,7 +576,8 @@ def _pause_fail_note(err):
 
 
 def money(x):
-    return f"${x:,.0f}" if abs(x) >= 10 else f"${x:,.2f}".replace(".00", "")
+    sign = "-" if x < 0 and round(abs(x), 2) > 0 else ""    # -$3.50, never $-3.50
+    return sign + (f"${abs(x):,.0f}" if abs(x) >= 10 else f"${abs(x):,.2f}".replace(".00", ""))
 
 
 # ================================================================ Kalshi
@@ -24733,11 +24734,20 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     mult = ap_stake_mult(st, caut["level"])               # (#145 step 7) autopilot's bet-size multiple (1 = today's size)
     budget = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
     riding = sum(float(c.get("stake") or 0) for c in real.get("items", []) if c.get("state") in PANEL_LIVE)
-    loss_room = max(0.0, float(v.get("day_loss", st.get("day_loss", 20.0))) + float(v.get("loss_today", 0)) - float(v.get("spent", 0)))   # stakes stay inside what is left before the loss limit
+    try:                                              # what is left before Pete's daily loss limit; unreadable or odd data buys nothing (fail closed)
+        loss_room = float(v["day_loss"]) + float(v["loss_today"]) - float(v["spent"])
+        if not math.isfinite(loss_room):
+            raise ValueError("loss room is not a number")
+        loss_room = max(0.0, loss_room)
+    except (KeyError, TypeError, ValueError) as err:
+        log("full auto loss room unreadable: nothing approved:", type(err).__name__, err)
+        return None
     taken = 0.0
     for c in items:
         normal = float(c.get("stake") or 0)
-        s = _fa_sized(normal, _fa_knob(caut["level"], "size"), mult, room, free, max(0.0, loss_room - taken), budget - riding - taken)   # cautious: smaller bets
+        left = max(0.0, loss_room - taken)               # (#632) what this pass has not yet taken of the loss room
+        s = _fa_sized(normal, _fa_knob(caut["level"], "size"), mult, room, free, left, budget - riding - taken)   # cautious: smaller bets
+        s = _fa_loss_fit(s, left)                        # (#632) at ANY size (normal or grown) a bet never passes the loss room: trimmed to it, or left out
         if guard and not guard.allows(c, s):
             continue                                      # (#145 step 6) over its league's / bet type's share of the day's cap: left out, not an open-slot skip
         if s >= PANEL_OWN_MIN and s <= room + 0.01 and s <= free + 0.01 and len(ids) >= slots:
@@ -25354,6 +25364,14 @@ def ap_cap_use(st):
         return FAL["capuse"]["lo"]
 
 
+def _fa_loss_fit(stake, loss_room):
+    """(#632) A stake held inside what is left of the day's loss room: unchanged when it fits, trimmed down to the room (to the
+    cent) when it does not, and 0 (the caller leaves the bet out) when the room is under the panel's $2 minimum, empty, or not a number."""
+    if not (math.isfinite(stake) and math.isfinite(loss_room)) or loss_room < PANEL_OWN_MIN:
+        return 0.0
+    return stake if stake <= loss_room + 1e-9 else math.floor(loss_room * 100 + 1e-9) / 100
+
+
 def _fa_sized(normal, factor, mult, room=None, free=None, loss_room=None, panel_room=None):
     """One bet's stake: the soft brake's cut (_fa_scaled, as before) with the autopilot multiple on top. Below 1 it only shrinks
     (never under $2, never above normal). Above 1 (only with the brake at level 0) it grows to normal * mult but never past the 1.5
@@ -25705,7 +25723,7 @@ def _fal_apply(s, plan, now):
             src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
             if rec in FAL_RISKY and a["dir"] == "tighter":
                 if ev.get("why") == "brake":
-                    why = "the soft brake stepped in within the last week, so it eases off right away."
+                    why = "the soft brake stepped in within the last week, so it tightens this setting one step right away."
                 else:
                     why = f"full auto's last 30 days were {money(ev['gain'])} after fees ({ev['band']} bets) and the bets since this setting last moved are also down."
             elif rec in FAL_RISKY:
