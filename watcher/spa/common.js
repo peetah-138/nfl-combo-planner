@@ -68,6 +68,13 @@ function kbSet(px){px=Math.max(0,Math.round(px||0));document.documentElement.sty
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const money=x=>x==null?'—':(Math.abs(x)>=1000?'$'+Math.round(x).toLocaleString():Math.abs(x)>=10?'$'+Math.round(x):'$'+(+x).toFixed(2).replace(/\.00$/,''));
 const smoney=x=>x==null?'—':(x>=0?'+':'−')+money(Math.abs(x));
+/* FMT-BEGIN one money rule for every row (display only; money() above stays for old callers):
+   under $100 always show cents ($9.40, $12.00, $0.50); $100 and over whole dollars with commas ($154, $1,250).
+   fmtMoney(-9.4) = −$9.40; fmtSigned(9.4) = +$9.40, fmtSigned(-9.4) = −$9.40, zero = +$0.00; null/NaN/non-numbers = —.
+   Rounds to the cent first, so 99.996 reads $100 and -0.004 reads $0.00 (never −$0.00). */
+const fmtMoney=x=>{if(x==null||x===''||!isFinite(+x))return'\u2014';const c=Math.round(Math.abs(+x)*100),t=c<10000?(c/100).toFixed(2):Math.round(c/100).toLocaleString('en-US');return(+x<0&&c>0?'\u2212':'')+'$'+t;};
+const fmtSigned=x=>x==null||x===''||!isFinite(+x)?'\u2014':(+x<0&&Math.round(Math.abs(+x)*100)>0?'\u2212':'+')+fmtMoney(Math.abs(+x));
+/* FMT-END */
 const pct=x=>x==null?'—':x>=.995&&x<1?'>99%':x>=.1?Math.round(x*100)+'%':x>=.001?(x*100).toFixed(1)+'%':'<0.1%';
 const SPN={mix:'Mix',nfl:'NFL',nba:'NBA',nhl:'NHL',ahl:'AHL',ncaaf:'CFB',ncaamb:'CBB',ncaawb:'WCBB',soccer:'Soccer',ufc:'UFC',tennis:'Tennis',euroleague:'Euro'};
 const ICON={nfl:'🏈',nba:'🏀',nhl:'🏒',ahl:'🏒',ncaaf:'🎓',ncaamb:'🏀',ncaawb:'🏀',soccer:'⚽',ufc:'🥊',tennis:'🎾',euroleague:'🏀',other:'🎯'};
@@ -283,4 +290,6 @@ function paintErr(){document.querySelectorAll('.berr').forEach(e=>e.remove());co
 function btnBusy(b,label){if(!b)return;if(b._old==null)b._old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spin" aria-hidden="true"></span> '+esc(label||b.textContent.trim());}
 function head(d){if(!d)return;if(d.balance!=null)$('#bal').textContent=money(d.balance);
  if(d.week_pl!=null){const w=$('#wk');w.textContent=smoney(d.week_pl);w.className=d.week_pl>=0?'up':'down';}}
-function skel(n){return Array.from({length:n},()=>'<div class="skel" style="height:66px;margin-bottom:10px"></div>').join('');}
+/* card-shaped loading placeholders (css .skel-card); skel(n) kept for old callers */
+function skelCards(n){return Array.from({length:n||3},()=>'<div class="skel-card" aria-hidden="true"><i class="skel-line big w60"></i><i class="skel-line w80"></i><i class="skel-line w40"></i></div>').join('');}
+function skel(n){return skelCards(n);}

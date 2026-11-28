@@ -104,7 +104,9 @@ function hswOn(){return HAPDEF==='N'&&(APPLE||!!window.__hswForce)&&!S.inapp&&!h
    rechecked for 30 frames after each change, reveal (class/hidden) or scroll. A row or card that grows big later loses
    its switch (its own content changed, or the screen turned). Sizes are all read before any switch goes in or out. */
 const HSWC='button,.chip,[role=tab],[role=button]';
-function hswBig(el){if(el.matches('[data-hsw="1"]'))return false;const w=el.offsetWidth,h=el.offsetHeight;if(!w&&!h)return null;return h>64||!el.matches(HSWC)&&w>innerWidth*.7;}   // data-hsw=1: the Test haptics card's N button always keeps its switch
+/* the 64px "too big a surface" limit is the --hit touch token (44px) x 16/11, read once from the page's css */
+const HSWTALL=(()=>{try{const v=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--hit'));return Math.round((v>0?v:44)*16/11);}catch(e){return 64;}})();
+function hswBig(el){if(el.matches('[data-hsw="1"]'))return false;const w=el.offsetWidth,h=el.offsetHeight;if(!w&&!h)return null;return h>HSWTALL||!el.matches(HSWC)&&w>innerWidth*.7;}   // data-hsw=1: the Test haptics card's N button always keeps its switch
 function hswOk(el){return !(el.classList.contains('hsw')||el.querySelector(':scope>.hsw')||el.closest(HSWNO)||el.querySelector(HSWIN));}
 function hswPut(el){const i=document.createElement('input');i.type='checkbox';i.setAttribute('switch','');i.className='hsw';i.tabIndex=-1;i.setAttribute('aria-hidden','true');
  el.insertBefore(i,el.firstChild);}
