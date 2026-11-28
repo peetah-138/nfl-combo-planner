@@ -26469,7 +26469,7 @@ def _ap_knob_braked(kst, now):
         return True
 
 
-def _ap_reset_why(item, cautious, quiet, knob_braked=False):
+def _ap_reset_why(item, cautious, quiet, league_brake=False):
     """(allowed, plain reason when not): may a reset move this setting to its start right now? A reset that loosens waits for a calm brake
     (the full-auto brake, and for an exit number also smart sell's own league brake)."""
     if not item["resettable"]:
@@ -26478,7 +26478,7 @@ def _ap_reset_why(item, cautious, quiet, knob_braked=False):
         return True, ""
     if cautious:
         return False, "The brake is being careful, so nothing is loosened right now. Try again once it is back to normal."
-    if item["rec"] == "knob" and knob_braked:
+    if item["rec"] == "knob" and league_brake:
         return False, "Smart sell's own brake is on for a league, so nothing is loosened right now. Try again once it has ended."
     if item["rec"] in FAL_RISKY and not quiet:
         return False, "The brake has not been quiet for two weeks yet, so this stays as it is. Try again when it has."
