@@ -12,7 +12,8 @@ ok("freeze button: no esc(x.rec) inside a JS string", "faFreeze(this,'${esc(x.re
 ok("freeze button: key read from data-rec", 'data-rec="${esc(x.rec)}"' in fa and "faFreeze(this,this.dataset.rec,this.dataset.on==='true')" in fa)
 ok("games card: role=button and tabindex=0", 'role="button" tabindex="0"' in gj)
 ok("games card: Enter and Space open the game", "event.key==='Enter'||event.key===' '" in gj)
-ok("games card: empty chance row keeps its height", ".gc .gl.none{visibility:hidden}" in gc and ".gl.none{display:none}" not in gc)
+ok("games card: empty chance row keeps its height, except on a finished game", ".gc .gl.none{visibility:hidden}" in gc and ".gc .gl.none{display:none}" not in gc
+   and ".gc.done .gl.none{display:none}" in gc)    # (#664) only a finished card drops the empty row
 ok("games card: focus ring", ".gc:focus-visible{outline:2px solid var(--acc)" in gc)
 ok("_cut_guard_ts: bet with no legs gives the empty set", E._cut_guard_ts({"id": "x"}, [], 0.2, 0.5, 0.2) == set())
 ok("_cut_guard_ts: legs None gives the empty set", E._cut_guard_ts({"id": "x", "legs": None}, [], 0.2, 0.5, 0.2) == set())
