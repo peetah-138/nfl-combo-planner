@@ -5320,23 +5320,15 @@ def sl_mode():
     return "allow" if CFG.get("stop_loss") is True else "tune"
 
 
-def sl_sync(cfg, incoming, loosen=True):
+def sl_sync(cfg, incoming):
     """Applies a settings message's 'Selling at a loss' to `cfg` (the watcher's copy of the phone's or web app's
     settings, the web app's own save). A valid stop_loss_mode wins and the old switch is kept in step (on only for
     Allow); a retired 'never' from an older phone or saved file becomes 'tune'. A message without one (an older phone or
     page that only knows the on/off switch, or a phone with no control for it, which sends None) may only make it
     STRICTER: 'off' turns Allow into Let it tune itself; 'on' is ignored, so a stale old switch can never undo Let it
-    tune itself. loosen=False (the watcher applying a phone's relayed settings, #316): a valid 'allow' never replaces a
-    stored 'tune' either; only the web app's own save (loosen=True) can turn Allow on."""
+    tune itself."""
     m = sl_norm(incoming.get("stop_loss_mode"))
     if m:
-        if m == "allow" and not loosen:
-            # #316: a relayed phone message carries the phone's WHOLE settings, so a stale device re-sends an old mode with
-            # a newer `at`: it may only keep or tighten. A stored Allow stays; anything else is never turned into Allow.
-            cur = sl_norm(cfg.get("stop_loss_mode"))
-            cur = cur if cur else ("allow" if cfg.get("stop_loss") is True else "tune")
-            if cur != "allow":
-                return
         cfg["stop_loss_mode"] = m
         cfg["stop_loss"] = m == "allow"
         return
