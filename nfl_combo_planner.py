@@ -24625,6 +24625,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     recent = _panel_day(now - 10 * 86400)
     live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE and d >= recent]   # spent/open stay a recent view
     spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
+    open_stake = round(sum(float(c.get("stake") or 0) for d, c in live if d == day and not c.get("result")), 2)   # (#646) only what is still at risk; a settled bet's loss is already in loss_today
     open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
     mine = {}
     grew = True                                           # a bet swapped in for one of ours (new id) is ours too: follow the whole chain
@@ -24659,7 +24660,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     stake_mult = ap_stake_mult(st, caut["level"])
     cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap") * cap_use, 2)
     mo = ap_open_limit(st)                                # (#145) Pete's open-bet number, or what autopilot moved it to (8 to 20)
-    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "cap_use": cap_use, "stake_mult": stake_mult, "caution": caut, "open": open_n,
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "open_stake": open_stake, "cap": cap_eff, "cap_normal": st["cap"], "cap_use": cap_use, "stake_mult": stake_mult, "caution": caut, "open": open_n,
            "max_open": mo, "max_open_set": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
            "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, mo - open_n)}
@@ -24945,7 +24946,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
                 if not items0:
                     return None
                 mult0 = ap_stake_mult(st, caut["level"])
-                loss0 = max(0.0, float(v["day_loss"]) + float(v["loss_today"]) - float(v["spent"]))   # (#633) as the live pass reads it; unreadable: no evidence
+                loss0 = _fa_loss_room(v)                      # (#633) as the live pass reads it; unreadable: no evidence
                 budget0 = float(real0.get("budget") or CFG.get("panel_budget", PANEL["budget"])) \
                     - sum(float(c.get("stake") or 0) for c in real0.get("items", []) if c.get("state") in PANEL_LIVE)
                 if not (math.isfinite(mult0) and math.isfinite(loss0) and math.isfinite(budget0)):
@@ -24984,10 +24985,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     budget = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
     riding = sum(float(c.get("stake") or 0) for c in real.get("items", []) if c.get("state") in PANEL_LIVE)
     try:                                              # what is left before Pete's daily loss limit; unreadable or odd data buys nothing (fail closed)
-        loss_room = float(v["day_loss"]) + float(v["loss_today"]) - float(v["spent"])
-        if not math.isfinite(loss_room):
-            raise ValueError("loss room is not a number")
-        loss_room = max(0.0, loss_room)
+        loss_room = _fa_loss_room(v)
     except (KeyError, TypeError, ValueError) as err:
         log("full auto loss room unreadable: nothing approved:", type(err).__name__, err)
         return None
@@ -25622,6 +25620,21 @@ def ap_cap_use(st):
         return FAL["capuse"]["lo"] if got is None else min(got, 1.0)
     except Exception:
         return FAL["capuse"]["lo"]
+
+
+FA_LOSS_MARGIN = 0.10   # (#646) safety cushion on Pete's daily loss limit: full auto plans against 90% of it ($18 of a $20 limit). Never moves the limit itself.
+
+
+def _fa_loss_room(v):
+    """(#646) What is left of the day's loss room, in dollars (never negative, never more than the exact-limit value).
+    room = (limit less the FA_LOSS_MARGIN cushion) + today's profit/loss - stakes still at risk. A settled bet counts ONCE (its loss is
+    already in loss_today), so its stake is not taken off again. RAISES on a missing, None, text or non-finite number (the caller buys nothing)."""
+    limit, today, at_risk = float(v["day_loss"]), float(v["loss_today"]), float(v["open_stake"])
+    if not all(math.isfinite(x) for x in (limit, today, at_risk)) or at_risk < 0:
+        raise ValueError("loss room is not readable")
+    exact = limit + today - at_risk
+    cushioned = limit * (1.0 - min(max(FA_LOSS_MARGIN, 0.0), 1.0)) + today - at_risk
+    return round(max(0.0, min(exact, cushioned)), 2)
 
 
 def _fa_loss_fit(stake, loss_room):
