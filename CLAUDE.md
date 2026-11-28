@@ -3833,7 +3833,7 @@ Changed (markup, CSS and one client-side filter; no pricing, buying, selling, si
 
 - **Bet-type chips on Games** (`All`, `Moneyline`, `Total`, `Spread`, each with a count). A sideways row that scrolls inside itself, the selected chip outlined, 44px tall.
   It only hides cards you already have, by the kind of bet on them. A chip shows only when a card of that kind exists, and the whole row only when there is a choice.
-  The row is added to `HSWX` (sideways strips get no see-through haptic switches, scrolling first, as the game page's tabs do), so `test_hsw` and `test_gtabscroll` keep their meaning; the chips still press and tick through the normal tap feedback. No test needed changing.
+  The row is added to `HSWX` (sideways strips get no see-through haptic switches, scrolling first, as the game page's tabs do), so `test_hsw` and `test_gtabscroll` keep their meaning; the chips therefore get no see-through haptic switch, so on iOS a chip tap gives no tick (corrected in nomoney-batch-5). No test needed changing.
 - Games loading state: a heading placeholder and shimmering card placeholders. One 12px gap between cards (was 14px, the Build board used 12px).
 - Build board: each game card's league and start time share one line (was two).
 
