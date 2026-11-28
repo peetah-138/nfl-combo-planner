@@ -71,7 +71,7 @@ function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.
  const allG=(d.games||[]).slice().sort(gameOrder);const tr=gTypeRow(allG,S.gtype||'all');S.gtype=tr.cur;
  const keepX=(document.querySelector('.btchips')||{}).scrollLeft||0;
  const gs=tr.cur==='all'?allG:allG.filter(g=>gKinds(g).has(tr.cur));if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
- scoreWatch(gs);setTimeout(warmShown,400);
+ scoreWatch(allG);setTimeout(warmShown,400);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
  m.innerHTML=tr.row+(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
   +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
