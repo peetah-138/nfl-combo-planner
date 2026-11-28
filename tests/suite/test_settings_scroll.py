@@ -118,7 +118,7 @@ with sync_playwright() as pw:
         pg.touchscreen.tap(bb["x"] + 40, bb["y"] + bb["height"] / 2)
         try: pg.wait_for_function("__mj.includes('mac')&&scrollY>100&&!document.getElementById('s-mac').classList.contains('shut')", timeout=5000)
         except Exception: bad(f"{tag}: a tap on the Mac line didn't jump to The Mac: " + str(pg.evaluate("[__mj,scrollY]")))
-        sm = pg.evaluate("(()=>{const c=[...document.querySelectorAll('main .seg button,main .stp button,main .sact .btn,main #sleagues .chip')].filter(e=>e.offsetWidth);return {n:c.length,sw:c.filter(e=>e.querySelector(':scope>.hsw')).length};})()")
+        sm = pg.evaluate("(()=>{const c=[...document.querySelectorAll('main .seg button,main .stp button,main .sact .btn')].filter(e=>e.offsetWidth);return {n:c.length,sw:c.filter(e=>e.querySelector(':scope>.hsw')).length};})()")
         print(tag, "small controls with a switch:", sm)
         if sm["n"] < 5 or sm["sw"] != sm["n"]: bad(f"{tag}: small Settings controls lost their switches: {sm}")
         print(tag, "JS errors:", errs[:3])

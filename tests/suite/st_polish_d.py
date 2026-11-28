@@ -24,6 +24,8 @@ check("Build lines filter row uses it", '<div class="chips chrow" style="margin-
 check("Settings sport row uses it", '<div class="chips chrow" style="margin-bottom:16px" id="sleagues">' in sj)
 check("no sport-row chip is left in a wrapping row", bj.count("chips chrow") == 2 and sj.count("chips chrow") == 1)
 check("the chosen chip is scrolled into view, row only", "function chrowFit()" in bj and "r.scrollLeft=" in bj and "scrollIntoView" not in bj.split("function chrowFit()")[1].split("\n")[0])
+check("sideways chips carry no haptic switch (a drag that starts on one must scroll)", bj.count('data-hsw="0" onclick="setPview')==2 and 'data-hsw="0" onclick="setBfType' in bj and 'data-hsw="0" onclick="sport(' in sj)
+check("a visible chosen chip never moves the row", "c.offsetLeft+c.offsetWidth>r.scrollLeft+r.clientWidth-28" in bj)
 check("Build keeps the row's scroll across redraws", "const rl=(document.querySelector('#main .chrow')||{}).scrollLeft||0;" in bj)
 check("Settings fits the row after drawing", "function sAfter(m,hadF,a,b){sBadges();chrowFit();" in sj)
 check("the jump chips are 44px tall", ".sidx .sj{min-height:44px;" in sc)

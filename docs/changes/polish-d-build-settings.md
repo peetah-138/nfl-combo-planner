@@ -13,5 +13,6 @@ Changed (looks only; no setting, value, switch, save or Mac action changes, ever
 - The Mac line, when its status can't be read, is grey (not the red alarm dot) and says "status can't be read right now".
 - Not changed here: `app.css` tokens, `common.js`, `motion.css`, `chrome.css`, `haptics.js` (package E). The Settings search, jump chips, folds and
   the Build and Settings skeletons already existed (#212), so nothing was added there. The Knobs card already used 44px chips.
+- The chips carry `data-hsw="0"` (no iOS tick switch), like the game tabs and Settings jump chips, so a sideways drag that starts on a chip still scrolls the row.
 
-Tests: `tests/suite/st_polish_d.py` pins the exact CSS and markup values above.
+Tests: `tests/suite/st_polish_d.py` pins the exact CSS and markup values above; `test_settings_scroll` no longer expects switches on the sport chips.
