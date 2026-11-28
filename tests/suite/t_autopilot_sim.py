@@ -757,6 +757,13 @@ if __name__ == "__main__":
                         k_ = (x["mode"], bool(c.get("result")), E.panel_pl(c) is not None, float(c.get("stake") or 0))
                         pm[str(k_)] = pm.get(str(k_), 0) + 1
                 DIAG.append({k_: v_ for k_, v_ in pm.items() if k_.startswith("('paper'")})
+                cap_ = float(E.fa_state()["cap"])
+                first_ = E._panel_day(SIM["t"] - E.FAL["days"] * 86400)
+                dd = {}
+                for x in E.store_rows_strict("select day, ts, body from panel where day>=? and (mode='paper' or mode like 'paper#%')", (first_,)):
+                    its = [c for c in json.loads(x["body"]).get("items", []) if c.get("result")]
+                    dd.setdefault(x["day"], []).append((len(its), sorted({float(c.get("stake") or 0) for c in its}), sorted({c.get("bought_at") is None for c in its})))
+                DIAG.append({"cap_": cap_, "first_": first_, "ndays": len(dd), "sample": list(dd.items())[:2] + list(dd.items())[-2:]})
                 DIAG.append({"panel_rows": len(pr), "modes": sorted({x["mode"] for x in pr})[:5],
                              "items": sum(len(json.loads(x["body"]).get("items", [])) for x in pr),
                              "settled": sum(1 for x in pr for c in json.loads(x["body"]).get("items", []) if c.get("result")),
