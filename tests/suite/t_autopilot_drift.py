@@ -181,9 +181,25 @@ ok("a smart sell step shows up in its own group", len(kit) == 1 and kit[0]["key"
    and kit[0]["line"].startswith("NBA ") and E.knob_say(k["unit"], k["start"]) in kit[0]["line"] and kit[0]["dir"] == ("tighter" if tighter else "looser"))
 okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)
 kst = E.knob_state()["groups"]["nba"]
-ok("knob reset: its own value is gone, the start is in force, held two weeks, logged",
-   okc is True and "smart_floor" not in kst["lv"] and kst["v"]["smart_floor"] == k["start"] and kst["hist"][-1].get("reset") is True
+ok("knob reset: its own value is pinned to the start, held two weeks, logged",
+   okc is True and kst["lv"]["smart_floor"] == k["start"] and kst["v"]["smart_floor"] == k["start"] and kst["hist"][-1].get("reset") is True
    and L()["holds"]["knob:nba:smart_floor"] >= round(NOW + 13 * DAY) and L()["log"][-1]["key"] == "knobs")
+# a FILLED smart.json: smart_tune's own number must not show through after a reset (it may be looser than the start)
+fld = E.KNOB_SMART_FIELD["smart_floor"]
+E.SMART_FILE = os.path.join(E.HERE, "combo_smart.json")
+E.save_json(E.SMART_FILE, {"nba": {"n": E.SMART_MIN_N + 5, "at": NOW - 3600, fld: k["start"] - 0.3}})
+fresh(ALL)
+knobfile()
+okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)
+has, val = E._knob_own_live("smart_floor", "nba", E.knob_state(), E.load_json(E.SMART_FILE, {}))
+ok("knob reset with a filled smart.json: the effective floor is exactly the start, not smart_tune's",
+   okc is True and has and val == k["start"] and E.knob_state()["groups"]["nba"]["lv"]["smart_floor"] == k["start"])
+os.remove(E.SMART_FILE)
+# a damaged frozen list is not silently cleared
+fresh(ALL)
+E._fa_update(lambda s: s["lessons"].__setitem__("frozen", ["bar:nba"]))
+okc, msg = E.ap_reset("all", NOW)
+ok("damaged frozen list: nothing changed", okc is False and L()["vals"] == ALL and L()["frozen"] == ["bar:nba"])
 fresh(ALL, caution={"level": 1})
 knobfile()
 okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)

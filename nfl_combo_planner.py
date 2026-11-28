@@ -26255,6 +26255,8 @@ def ap_reset(key, now=None):
         L = s.get("lessons")
         if L is None:
             L = s["lessons"] = {}
+        if L.get("frozen") is not None and not isinstance(L.get("frozen"), dict):
+            raise _ApRefuse("Autopilot's frozen list couldn't be read, so nothing was changed.")   # never guess what Pete froze
         for k in ("vals", "since", "last", "holds", "src", "frozen"):
             if not isinstance(L.get(k), dict):
                 L[k] = {}
@@ -26297,7 +26299,12 @@ def ap_reset(key, now=None):
             if str(r) or not (out["wait"] or out["frozen"]):
                 return False, str(r) or "Nothing to reset."
         if out["knobs"]:
-            _ap_reset_knobs(out, now)
+            try:
+                _ap_reset_knobs(out, now)
+            except Exception as err:
+                console_note("autopilot reset (exit numbers): " + repr(err))
+                said = _ap_reset_say(dict(out, knobs=[]), whole)[1] if out["done"] else ""
+                return bool(out["done"]), (said + " " if said else "") + "The exit numbers couldn't be put back just now, so they stay as they are. Please try again."
     except Exception as err:
         console_note("autopilot reset: " + repr(err))
         return False, "Couldn't reset that just now. Please try again."
@@ -26313,7 +26320,7 @@ def _ap_reset_text(done):
 
 
 def _ap_reset_knobs(out, now):
-    """Take the group's own exit-knob values away (smart sell goes back to its start), then hold them in the Autopilot log.
+    """Pin the group's own exit-knob values to their start (newer than smart_tune's), then hold them in the Autopilot log.
     Written to the knob file first, like Undo of a knob; a value that moved since the look is left alone."""
     applied = []
     if not _ap_raw_knobs():
@@ -26328,8 +26335,8 @@ def _ap_reset_knobs(out, now):
                 continue
             lat = e["lat"] if isinstance(e.get("lat"), dict) else {}
             v = e["v"] if isinstance(e.get("v"), dict) else {}
-            lv.pop(name, None)
-            lat.pop(name, None)
+            lv[name] = it["start"]                           # pinned to start (like the brake), not removed: removing would let
+            lat[name] = now                                  # smart_tune's own, possibly looser, number show through
             v[name] = it["start"]
             if isinstance(e.get("why"), dict):
                 e["why"].pop(name, None)
