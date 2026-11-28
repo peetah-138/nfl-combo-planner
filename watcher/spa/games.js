@@ -33,7 +33,7 @@ function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chanc
  const shown=sc&&(live||fin),myPts=shown&&sc.me!=null?sc.me:null,oppPts=shown&&sc.opp!=null?sc.opp:null,oppNm=g.opp||(sc&&sc.opp_abbr)||'';
  const bets=[g.combos?`<span class="bt">🎯 ${g.combos} combo${g.combos>1?'s':''}</span>`:'',...(g.singles||[]).map(x=>`<span class="bt s">${x.kind==='spread'?'📏':x.kind==='total'?'Σ':'✓'} ${esc(x.plain||x.label||'')}</span>`)].join('');
  const head=live?`<span class="lv"><i></i>${esc((sc&&sc.detail)||'Live')}</span>`:fin?`<span>Final${sc&&sc.detail?' · '+esc(sc.detail):''}</span>`:g.state==='over'||g.phase==='probably_over'?'<span>Probably finished</span>':g.phase==='waiting'?'<span>Not started yet</span>':`<span>${esc(g.short||g.starts||'Upcoming')}</span>`;
- return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" data-t="${esc(g.ticker||'')}" onclick="openGame(this.dataset.t)">
+ return `<div class="gc ${live?'live l'+lc:''} ${sg?'scored '+sg:''}" data-gk="${esc(g.ticker||g.name)}" data-t="${esc(g.ticker||'')}" role="button" tabindex="0" onclick="openGame(this.dataset.t)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openGame(this.dataset.t);}">
   <div class="gh"><span>${ICON[g.sport]||''} ${esc(SPN[g.sport]||g.sport||'')}</span>${head}</div>
   <div class="tms"><div class="gtr me"><span class="nm">${esc(g.kind==='total'&&g.matchup?g.matchup:g.name)}</span><span class="mine">YOURS</span>${myPts!=null?`<b class="pts ${sg?'bump':''}">${esc(String(myPts))}</b>`:''}</div>
    ${oppNm||oppPts!=null?`<div class="gtr them"><span class="nm">${esc(oppNm||'Opponent')}</span>${oppPts!=null?`<b class="pts">${esc(String(oppPts))}</b>`:''}</div>`:''}</div>
