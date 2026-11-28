@@ -1,4 +1,5 @@
 # CHECK: group=engine
+import re
 # Full auto (issue #7), the real master switch. OFF by default and fail closed: off (or an unreadable file) sends nothing;
 # it won't turn on without the paper gate or an explicit override (and records which); it respects the daily cap, the
 # open-bet limit, Pause and can_trade; a losing streak makes it cautious (smaller, pickier, never off) and the daily-loss pause trips and ends with the day;
@@ -113,6 +114,8 @@ v = E.fa_check(E.fa_state(), now=time.time())
 E.full_auto_pass(now=time.time()); E.panel_exec()
 ok("at the cap: no extras are added, nothing more is bought", len(BOUGHT) == n0 and E.fa_check(E.fa_state())["spent"] <= max(2, cap) + 0.01)
 ok("the card says the cap is used up", v["room"] < 2.0 and any("spending cap is used up" in b for b in v["blockers"]))
+ok("633: the cap-used-up sentence reads 'Today's spending cap is used up: $X of $Y spent.' plus Autopilot's cut",
+   any(re.fullmatch(r"Today's spending cap is used up: \$[\d.,]+ of \$[\d.,]+ spent\.( Autopilot (has cut it to \d+%|only lets it use \d+%) of your usual \$[\d.,]+\.)?", b) for b in v["blockers"]))
 
 # ---- room under the cap: extras are added through panel_add
 reset_state()
@@ -498,3 +501,9 @@ k1, h1 = E._fa_caution_bar([_c], 1, {_lg: 1.0})
 k2, h2 = E._fa_caution_bar([_combo(_cut + 0.0155)], 1, {_lg: 1.0})
 ok("without a learned bar the cautious notch is unchanged", len(k0) == 1 and not h0)
 ok("cautious level 1 adds 0.5 on top of a learned +1.0", not k1 and len(h1) == 1 and len(k2) == 1)
+
+# ---- (#633) wording nits, exact text
+ok("633: 5%-compounded stake steps show whole percents (0.9025 -> 90%)", E._fal_val_text("stake", 0.9025) == "90% of today's bet size")
+ok("633: cap use shows whole percents", E._fal_val_text("capuse", 0.8) == "80% of your daily cap")
+ok("633: the Mix league's budget share reads 'mixed-sports budget share'", E._fal_name("share:mix") == "mixed-sports budget share")
+ok("633: money() puts the minus before the dollar sign", E.money(-3.5) == "-$3.50" and E.money(-12) == "-$12")

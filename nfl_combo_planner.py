@@ -24582,9 +24582,9 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if brake:
         b.append("Paused itself: " + brake["why"])
     if out["room"] < PANEL_OWN_MIN:
-        b.append(f"Today's {money(cap_eff)} spending cap is used up ({money(spent)} spent)"
-                 + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else
-                    f", the share of your {money(st['cap'])} cap autopilot lets it use ({round(cap_use * 100):g}%)." if cap_use < 1 - 1e-9 else "."))
+        _cut = (f" Autopilot has cut it to {caut['pct']}% of your usual {money(st['cap'])}." if caut["level"] else
+                f" Autopilot only lets it use {round(cap_use * 100):g}% of your usual {money(st['cap'])}." if cap_use < 1 - 1e-9 else "")
+        b.append(f"Today's spending cap is used up: {money(spent)} of {money(cap_eff)} spent." + _cut)
     slot_msg = f"{open_n} bets are open, the most it allows is {mo}."
     if out["slots"] <= 0:
         b.append(slot_msg)
@@ -25613,9 +25613,9 @@ def _fal_val_text(rec, v):
     if rec == "share":
         return f"{v * 100:g}% of the day's cap"
     if rec == "stake":
-        return f"{round(v * 100, 1):g}% of today's bet size"
+        return f"{round(v * 100):g}% of today's bet size"   # steps compound (5% of the CURRENT size): show 90%, not 90.3%
     if rec == "capuse":
-        return f"{round(v * 100, 1):g}% of your daily cap"
+        return f"{round(v * 100):g}% of your daily cap"
     if rec == "bar":
         return f"+{v:g} points"
     if rec == "sbev":
@@ -25642,7 +25642,8 @@ def _fal_name(key):
     if rec == "capuse":
         return "share of the daily cap it uses"
     if rec == "share":
-        return "combo budget share" if lg == "@combo" else "single-bet budget share" if lg == "@single" else f"{league_label(lg)} budget share"
+        return ("combo budget share" if lg == "@combo" else "single-bet budget share" if lg == "@single"
+                else "mixed-sports budget share" if lg == "mix" else f"{league_label(lg)} budget share")
     return f"{league_label(lg)} combo bar" if rec == "bar" else f"{league_label(lg)} Smart Buy bar"
 
 
@@ -25865,7 +25866,7 @@ def _fal_apply(s, plan, now):
             src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
             if rec in FAL_RISKY and a["dir"] == "tighter":
                 if ev.get("why") == "brake":
-                    why = "the soft brake stepped in within the last week, so it tightens this setting one step right away."
+                    why = "the soft brake stepped in within the last week, so this setting tightens one step now instead of waiting for its weekly turn."
                 else:
                     why = f"full auto's last 30 days were {money(ev['gain'])} after fees ({ev['band']} bets) and the bets since this setting last moved are also down."
             elif rec in FAL_RISKY:
