@@ -1919,6 +1919,17 @@ Display and wording only; no buying, selling, sizing, limit, gate or data change
 - Unchanged: the brake itself (`loss_today <= -day_loss`), $300 bankroll, $30 cap, $20 loss limit, Pause; the Pi never trades.
 - Tests: `t_autopilot_stake.py` section 13 (settled loss once, cushion, old-blocked/new-allows, right at the limit blocks, fail closed).
 
+**Release 149: Loss room also counts Pete's settled manual losses (#646 follow-up, tighten-only).**
+
+- Found in the release 149 review: `loss_today` carries only full auto's own bets, and #646 stopped subtracting settled stakes, so a settled
+  MANUAL loss (or a settled bet with no P/L recorded) no longer reduced full auto's room. New `_fa_extra_loss(rows)`, read by `fa_check` as
+  `extra_loss`: today's settled real bets that `loss_today` does not carry. A manual loss counts as the dollars lost (`panel_pl`); a manual win
+  adds nothing; a settled bet with no readable P/L (either kind) counts as its whole stake. `_fa_loss_room` subtracts it from both the cushioned
+  and the exact value, so the room only shrinks: never above the #646 value or exact-$20, never below 0. A present `extra_loss` that is NaN,
+  infinite, text, None or negative raises (the pass buys nothing). The brake (`loss_today <= -day_loss`) is untouched. Manual Kalshi bets placed
+  outside the panel are still not counted.
+- Tests: `t_autopilot_stake.py` (extra loss lines).
+
 **Release 147: Autopilot follow-ups (#633 money half, #592).**
 
 Fixed (all fail-closed; nothing here adds spending or loosens anything):
