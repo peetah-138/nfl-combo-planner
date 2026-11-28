@@ -3,7 +3,7 @@
    the clock, the chance line over the game with a glowing end dot, and the bets riding on it. When someone scores the
    card pulses (green when it's your side, red when it's theirs), the number bumps and the phone ticks. Tap to push
    into the game page. */
-function gamesSkel(){return `<div class="games">${Array.from({length:4},()=>`<div class="gsk"><i style="height:11px;width:38%"></i><i style="height:20px;width:70%"></i><i style="height:20px;width:55%"></i><i style="height:46px"></i><i style="height:22px;width:60%"></i></div>`).join('')}</div>`;}
+function gamesSkel(){return `<div class="gsk-h"><i></i></div><div class="games">${Array.from({length:4},()=>`<div class="gsk"><i style="height:11px;width:38%"></i><i style="height:20px;width:70%"></i><i style="height:20px;width:55%"></i><i style="height:46px"></i><i style="height:22px;width:60%"></i></div>`).join('')}</div>`;}
 function miniLine(pts,col){if(!pts||pts.length<2)return `<div class="mline"><svg viewBox="0 0 300 46" preserveAspectRatio="none"><line x1="0" x2="300" y1="23" y2="23" stroke="var(--line)" stroke-width="2" stroke-dasharray="3 5" vector-effect="non-scaling-stroke"/></svg></div>`;
  const t0=pts[0][0],t1=pts[pts.length-1][0],X=t=>(t-t0)/Math.max(1,t1-t0)*300,Y=v=>42-Math.max(0,Math.min(1,v))*38;
  const d=pts.map((p,i)=>`${i?'L':'M'}${X(p[0]).toFixed(1)} ${Y(p[1]).toFixed(1)}`).join('');const ly=Y(pts[pts.length-1][1]);const id='mg'+Math.random().toString(36).slice(2,7);
@@ -56,11 +56,25 @@ const gBucket=g=>GLIVE(g)?0:gDone(g)?2:1;
 function gameOrder(a,b){const ba=gBucket(a),bb=gBucket(b);if(ba!==bb)return ba-bb;
  const sa=gStart(a),sb=gStart(b);if(sa!==sb){if(sa==null)return 1;if(sb==null)return -1;return ba===2?sb-sa:sa-sb;}
  const ka=String(a.ticker||a.name||''),kb=String(b.ticker||b.name||'');return ka<kb?-1:ka>kb?1:0;}
+/* Bet-type chips (display only): a sideways row over the cards you already have, by the kind of bet on them (Moneyline, Total,
+   Spread). It only hides cards on this page; nothing here prices, buys, sells or sizes. A chip shows only when a card of that kind
+   exists, and the row only when there is a choice. The row scrolls inside itself and is in HSWX (no haptic switches, scrolling first). */
+const GKIND=k=>k==='spread'?'spread':k==='total'?'total':'ml';
+const GTYPES=[['ml','Moneyline'],['total','Total'],['spread','Spread']];
+function gKinds(g){const s=new Set([GKIND(g.kind)]);(g.singles||[]).forEach(x=>s.add(GKIND(x.kind)));if(g.combos)s.add('ml');return s;}
+function setGtype(k){hap();S.gtype=k;renderGames();}
+function gTypeRow(all,cur){const n={};all.forEach(g=>gKinds(g).forEach(k=>{n[k]=(n[k]||0)+1;}));const have=GTYPES.filter(([k])=>n[k]);
+ if(have.length<2)return {row:'',cur:'all'};if(cur!=='all'&&!n[cur])cur='all';
+ const chip=(k,t,c)=>`<button class="chip ${cur===k?'on':''}" aria-pressed="${cur===k}" onclick="setGtype('${k}')">${t} <span class="n">${c}</span></button>`;
+ return {row:`<div class="chips btchips" role="group" aria-label="Bet type">${chip('all','All',all.length)}${have.map(([k,t])=>chip(k,t,n[k])).join('')}</div>`,cur};}
 function renderGames(){const d=S.games;const m=$('#main');if(!d){m.innerHTML=(S.lerr||{}).games?errCard('games'):gamesSkel();return;}
- const gs=(d.games||[]).slice().sort(gameOrder);if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
+ const allG=(d.games||[]).slice().sort(gameOrder);const tr=gTypeRow(allG,S.gtype||'all');S.gtype=tr.cur;
+ const keepX=(document.querySelector('.btchips')||{}).scrollLeft||0;
+ const gs=tr.cur==='all'?allG:allG.filter(g=>gKinds(g).has(tr.cur));if(!gs.length){m.innerHTML='<div class="card empty" data-ic="🏟️"><b>No games to watch</b>Games you have money on, in combos or as single bets and spreads, show up here with live scores and chance lines.<br><button class="btn acc" onclick="go(\'build\')">See today\'s bets</button></div>';return;}
  scoreWatch(gs);setTimeout(warmShown,400);
  const on=GLIVE,live=gs.filter(on),fin=gs.filter(g=>g.phase==='over'),idle=gs.filter(g=>!on(g)&&!fin.includes(g)&&(g.phase==='probably_over'||g.state==='over')),rest=gs.filter(g=>!on(g)&&!fin.includes(g)&&!idle.includes(g));
- m.innerHTML=(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
+ m.innerHTML=tr.row+(d.fresh?`<div class="fresh" data-fr="N" style="text-align:right;margin:-6px 2px 4px">${frTxt('N')}</div>`:'')+(live.length?`<h2><span class="live-dot"></span>Playing now <span class="n">${live.length}</span></h2><div class="games">${live.map(gameCard).join('')}</div>`:'')
   +(rest.length?`<h2>Coming up <span class="n">${rest.length}</span></h2><div class="games">${rest.map(gameCard).join('')}</div>`:'')
   +(fin.length?`<h2>Finished <span class="n">${fin.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">Over. Kalshi settles them when the result is in.</div><div class="games">${fin.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'')
-  +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');}
+  +(idle.length?`<h2>Probably finished <span class="n">${idle.length}</span></h2><div class="m" style="font-size:12.5px;margin:-6px 2px 10px">No live score for these. Kalshi settles them when the result is in.</div><div class="games">${idle.map(g=>gameCard(g).replace('class="gc ','class="gc done ')).join('')}</div>`:'');
+ const br=document.querySelector('.btchips');if(br&&keepX)br.scrollLeft=keepX;}
