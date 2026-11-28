@@ -215,7 +215,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.26.144`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.27.146`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -1702,6 +1702,83 @@ Tests: `tests/suite/t_autopilot_borrow.py`.
   saved caution and reset time are still what it read.
 - The cautious bar now ADDS to the league's learned bar instead of replacing it, so a learned +1.0 plus cautious level 1 needs
   +1.5. It can only tighten.
+
+##### Autopilot: league and bet-type budget shares (issue #145, step 6)
+
+Full auto now learns, league by league (NBA, NHL, ...) and for combo vs single bets, the MAX share of the day's spending cap
+each may use. New record `share` in the autopilot registry (`AP_REG`, `FAL["share"]` = 5%..100%, 5-pt step, start 100%, key
+`share:<league>` / `share:@combo` / `share:@single`). It only ever SPLITS the existing daily cap: it skips bets, never adds
+spending, and Pete's limits ($300 bankroll, $30 daily cap, $20 loss limit, Pause) never move.
+
+- **Evidence** (`_share_load`): the paper practice panel (never filtered by shares, so no feedback loop), replayed per day
+  under the old and the new share (`_share_passes`: a day's first bet always passes, the running stake total stays within the
+  share of the LIVE daily cap; each practice day is first fitted into that same cap, so the replay judges the rule the buy pass enforces, not the panel's bigger day). Net dollars after fees plus closing-line value per league. The shared gate (`ap_gate`: 70/30
+  out-of-sample, bootstrap low end above zero, `FAL_SHARE["min_n"]` = 40 practice bets for the key; the gate's own minimum of changed bets in each split comes on top) decides. Step sizes (`_share_step`): loosening is exactly one 5-pt step; tightening is the first 5-pt value (at most 3 steps, 15 pts, in a week) that changes which bets pass; never below the 5% floor.
+- **Tighten fast, loosen slow:** loosening needs twice the sample (`loose_mult` 2), 14 days since the last move
+  (`loose_wait`), and non-negative readable closing-line value on the blocked bets (`_share_clv_ok`; unreadable = no loosen).
+  No loosening or shift-up while `caution.level` > 0 (fail closed, also on an unreadable level). One step per setting per
+  week; a `share` step and a `bar` step never happen in the same week (`AP_EXCL`, plain note on the card).
+- **Floor:** every league keeps 5%, and its first bet of the day always passes, so it keeps producing evidence. Evidence comes
+  from the paper panel, not the held real bets, so a league at the floor can still step back up.
+- **Buy pass** (`FaShareGuard`, wired into `_full_auto_pass` before the open-slot skip logic): skip-only, reads today's
+  full-auto spend; unreadable shares or bets approve nothing. Today's spend counts every bet bought today, open or already settled, including bets swapped in for ours (followed through `swap_of`, like `fa_check`), and is read strictly (unreadable = approve nothing). A share-held bet is filtered out before the open-slot skip logging so the #614 `fa_slots` evidence stays clean (tested with a no-share control).
+- **Card:** logged on the Autopilot card in plain words with the dollars, with Undo, freeze (whole record or one league) and
+  the master switch (`fa_lessons`), like every other autopilot setting. Data starts empty: nothing moves until there is sample.
+- **Tests:** `tests/suite/t_autopilot_share.py` (gate, thin data, loosen/CLV/cautious rules, floor and feedback loop, cap-basis replay, step sizes, a real revert, #614 evidence, swap counting, cap never
+  exceeded or added to, bar/share exclusion, fail-closed on unreadable data, freeze/undo, the buy pass).
+
+##### Autopilot: bet size and share of cap used (issue #145, step 7)
+
+Full auto now self-adjusts two more settings in small steps: how big each bet is, and how much of Pete's daily cap it uses.
+Two new records in the autopilot registry (`AP_REG`, `FAL_RISKY` = `stake`, `capuse`):
+
+- `stake` (key `stake_mult`): a multiple of today's bet size. 50% to 150%, start 100%, step 5% of the current size, weekly.
+- `capuse` (key `cap_use`): the share of Pete's daily cap full auto may use. 50% to 100%, start 100%, step 5 points, weekly.
+
+Pete's limits never move: the $300 bankroll, the $30 daily cap, the $20 daily loss limit and Pause stay his. The Pi never trades.
+The cap-use dial can only go down from Pete's cap (never above 100%); a bigger bet is still clamped by what is left of the day's
+cap, the free bankroll, what is left before the daily loss limit, the panel budget and the per-bet ceiling (`OWN_MAX`).
+
+- **Tighten fast, loosen slow.** Loosening needs all of: the last 30 days net positive after fees, the soft brake quiet now
+  (`caution.level == 0`) with no brake or cautious episode in the last 14 days (`_ap_quiet`, tracked in `lessons["cq"]`; unreadable
+  data = not quiet, and no step of either kind is taken, with no made-up log line), and the shared gate (70/30 out of sample, bootstrap low end above zero, minimum sample). Tightening is one
+  step after any brake week or net-negative evidence, and needs no bootstrap. A tighten step is never auto-reverted.
+- **Scheduling.** Stake and cap use never move in the same week; neither moves in the same week as a league-share or bar step
+  (`AP_EXCL`). At most 2 autopilot settings LOOSEN or change a week (`AP_WEEK_MAX`), but a tightening of any setting is never held
+  back by that cap (tighten fast), and it comes first in the plan. When loosenings compete for the free slot, the setting stepped
+  longest ago wins (fair rotation, ties in registry order), so bet size and cap use cannot starve the bar or the shares.
+- **Soft brake stays on top.** The live readers (`ap_stake_mult`, `ap_cap_use`) never go above 1 while the brake is cautious, and
+  `_fa_sized` never lets a multiple undo the brake's own 50%/25% cut. Unreadable values fail toward 50%.
+- **Evidence.** `_stake_load` / `_capuse_load` replay full-auto real settled bets (stake multiple recorded in `sizes`) and the paper
+  panel; stake evidence is a linear approximation (profit scales with the multiple), divided by each bet's ACTUAL size ratio (what it really
+  cost over its normal size, brake cut taken out; a clamp that shrank a bet is counted), not the multiple in force.
+- **Per-game limit.** `fal_filter` checks the learned per-game limit on the stake that would really be bought (always the full
+  multiple, never capped by the saved brake level, since the buy pass recomputes the level and may buy at the full size on the pass the brake recovers), and its running total adds the same figure.
+- **Controls.** Undo, per-setting freeze, the master Autopilot switch and the 2-week hold work as for the other settings; changes
+  appear on the Autopilot card in plain words with the dollars behind them. Data starts empty, so nothing loosens until there is evidence.
+- **Loss room shrinks bet by bet (#628).** In the buy pass the room left before the daily loss limit is reduced by what this same pass has already bought (`max(0, loss_room - taken)`), so at a 150% stake a pass cannot buy several bets that together go past the loss limit. The Autopilot card copy and the loss-in-dollars wording (`money()`) were tidied in the same change; no other behaviour moved.
+- **Tests:** `tests/suite/t_autopilot_stake.py` (bounds, step sizes, loosen gates, brake gating, tighten fast, same-week exclusion,
+  a revert after a losing week, unreadable data = no change, switch/freeze/undo/hold, exact stakes in `_fa_sized`, cap/bankroll/loss
+  limit never exceeded in the buy pass, the card). The older autopilot tests take the two new records out of their way.
+
+##### Autopilot card polish (#618-#621; wording and display only)
+
+- Freeze/Unfreeze buttons name their setting for screen readers (aria-label), say "Freeze this", and are at least 44pt tall.
+- Card intro shortened and put in plain words; "exit knobs" and "weekly stepper's own evidence" replaced; the "Not wired yet" list is no longer shown (data still sent).
+- Log lines use one arrow (the arrow character) for undo lines.
+- Autopilot save/undo/read errors show a plain message; the exception name goes to the server log only.
+- No buying, selling or limit logic touched.
+
+##### Wording only: cash-out help text and Smart Buy evidence bar (#431, #283)
+
+- #431: the Settings cash-out help text (`HELP` sentence about automatic sales) and the `below_cost` knob line no longer say
+  every below-cost sale "loses less than waiting". That is true for the learned loss cut only; the guarded stop-loss
+  override is allowed by its game guards (`auto_sell_now`), so both sentences now say which is which. Code unchanged
+  (the behaviour question stays in #383).
+- #283: the Smart Buy evidence-bar knob (`sb_dial_t`) reads "how clearly more than luck" instead of "standard errors
+  from zero". Display text only.
+- Audit of the old no-money backlog: #246, #112 (cap message), #453, #353 (client half), #304, #283 (tint, fold, quiet test
+  push) were already shipped in #535 #552 #560 #593 #598, so they were not touched again.
 
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
