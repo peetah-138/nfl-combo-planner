@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.27.146"
+VERSION = "2026.11.27.147"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -24015,7 +24015,149 @@ def panel_settle():
                     changes[c["id"]] = ch
             if changes:
                 _set_items(r["day"], r["mode"], changes)
+    timing_log_pass()                                      # (#8) record-only buy-timing rows; never raises, never buys
     return []
+
+
+# ---- (#8) buy-timing evidence. RECORD ONLY: one flat row per bought panel bet (real, paper and lab), written from
+# panel_settle (every 5 minutes, never on the buy path and never before an order), so a later look can ask "how early before
+# the start, at what price, against what close, for how many net dollars" by hours-before-start bucket and league.
+# Nothing here reads a price from Kalshi or the network (the close comes from the closes table already on disk), nothing
+# decides a buy, a size or a sale, and every failure is swallowed (logged to the console only). Storage is bounded:
+# at most TIMING["batch"] rows written a pass, rows older than TIMING["keep"] or beyond TIMING["max_rows"] trimmed hourly.
+TIMING = {"keep": 120 * 86400, "max_rows": 20000, "batch": 200, "days": 10, "trim_every": 3600}
+TIMING_RUN = {"trim": 0.0}
+TIMING_BUCKETS = (("live", "During the game"), ("lt1h", "Under 1 hour before"), ("1-6h", "1-6 hours before"),
+                  ("6-24h", "6-24 hours before"), ("24h+", "A day or more before"))
+
+
+def timing_bucket(kick, bought_at, live=False):
+    """(bucket id, hours before the start) for a buy. Same cut-offs as the scoreboard: a buy after the start (or one
+    marked live) is "live"; then under 1 hour, 1 up to 6, 6 up to 24, 24 and more (a boundary belongs to the later bucket).
+    (None, None) when either time is missing or not a finite positive number."""
+    try:
+        k, b = float(kick), float(bought_at)
+    except (TypeError, ValueError):
+        return None, None
+    if not (math.isfinite(k) and math.isfinite(b)) or k <= 0 or b <= 0:
+        return None, None
+    h = (k - b) / 3600
+    if live or h < 0:
+        return "live", round(h, 3)
+    for cut, name in ((1, "lt1h"), (6, "1-6h"), (24, "6-24h")):
+        if h < cut:
+            return name, round(h, 3)
+    return "24h+", round(h, 3)
+
+
+def _timing_table():
+    store_x("create table if not exists timing_log(key text primary key, ts real, upd real, mode text, day text, auto int, "
+            "league text, kind text, live int, kick real, bought_at real, hours real, bucket text, p_build real, p_buy real, "
+            "close real, clv real, clv_buy real, stake real, fees real, result text, pl real, pl_real real)")
+    store_x("create index if not exists timing_log_ts on timing_log(ts)")
+
+
+def _timing_close_for(c, closes):
+    """The legs' game-time value multiplied together (None unless every leg has one), from the closes already read."""
+    legs = c.get("legs") or []
+    vals = [closes.get(l.get("ticker")) for l in legs]
+    return math.prod(vals) if legs and all(v for v in vals) else None
+
+
+def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
+    """The flat timing row for one panel item (pure: no I/O). None for an item that was not bought."""
+    if not isinstance(c, dict) or c.get("state") not in ("bought", "paper") or not c.get("id"):
+        return None
+    now = time.time() if now is None else now
+    at = c.get("bought_at") or c.get("at")
+    live = bool(c.get("live"))
+    bucket, hours = timing_bucket(c.get("kick"), at, live)
+    legs = c.get("legs") or []
+    ps = [l.get("p") for l in legs]
+    p_build = math.prod(ps) if legs and all(isinstance(v, (int, float)) and v for v in ps) else None
+    if c.get("kind") == "combo":
+        pays, stake = c.get("pays"), c.get("stake")
+        p_buy = stake / pays if pays and stake else None          # dollars paid per dollar the combo pays
+    else:
+        p_buy = c.get("paid") or c.get("price")
+    p_buy = float(p_buy) if isinstance(p_buy, (int, float)) and p_buy else None
+    close = None if live else _timing_close_for(c, closes or {})
+    clv_buy = round(close / p_buy - 1, 4) if close and p_buy else None
+    k = f"{day}|{c['id']}"
+    auto = 1 if (k in auto_keys or (c.get("swap_of") and f"{day}|{c['swap_of']}" in auto_keys)) else 0
+    return {"key": f"{mode}|{k}", "mode": mode.split("#")[0], "day": day, "auto": auto if mode.startswith("real") else 0,
+            "league": c.get("league") or (league_key(legs[0].get("ticker")) if legs else None), "kind": c.get("kind"),
+            "live": int(live), "kick": c.get("kick"), "bought_at": at, "hours": hours, "bucket": bucket, "p_build": p_build,
+            "p_buy": p_buy, "close": round(close, 4) if close else None, "clv": c.get("clv"), "clv_buy": clv_buy,
+            "stake": c.get("stake"), "fees": fees, "result": c.get("result"), "pl": c.get("pl"), "pl_real": c.get("pl_real")}
+
+
+_TIMING_COLS = ("key", "ts", "upd", "mode", "day", "auto", "league", "kind", "live", "kick", "bought_at", "hours", "bucket",
+                "p_build", "p_buy", "close", "clv", "clv_buy", "stake", "fees", "result", "pl", "pl_real")
+
+
+def _timing_trim(now):
+    """At most hourly: drop rows past TIMING["keep"], then anything beyond the newest TIMING["max_rows"]."""
+    if now - TIMING_RUN["trim"] < TIMING["trim_every"]:
+        return
+    TIMING_RUN["trim"] = now
+    store_x("delete from timing_log where ts < ?", (now - TIMING["keep"],))
+    store_x("delete from timing_log where key in (select key from timing_log order by ts desc limit -1 offset ?)",
+            (TIMING["max_rows"],))
+
+
+def timing_log_pass(now=None, log=console_note):
+    """Write or refresh the timing rows for the last TIMING["days"] days of panel bets. Returns rows written. Never raises."""
+    try:
+        if not STORE["db"]:
+            return 0
+        now = time.time() if now is None else now
+        _panel_table()
+        _timing_table()
+        since = (dt.datetime.now(PACIFIC).date() - dt.timedelta(days=TIMING["days"])).isoformat()
+        auto = set()
+        try:
+            auto = set(fa_state().get("bets") or {})
+        except Exception:
+            pass
+        items = []
+        for r in store_rows("select day, mode, body from panel where (mode in ('real','paper','lab') or mode like 'real#%') "
+                            "and day >= ?", (since,)):
+            try:
+                items += [(r["mode"], r["day"], c) for c in json.loads(r["body"]).get("items", [])]
+            except (ValueError, AttributeError, TypeError):
+                continue
+        items = [x for x in items if isinstance(x[2], dict) and x[2].get("state") in ("bought", "paper")]
+        if not items:
+            _timing_trim(now)
+            return 0
+        tks = {l.get("ticker") for _, _, c in items for l in (c.get("legs") or []) if l.get("ticker")}
+        closes = close_prices(sorted(tks), mid=True) if tks else {}
+        led = {r["ticker"]: (r["fees"] or 0) + (r["sell_fees"] or 0) for r in store_rows("select ticker, fees, sell_fees from ledger")} \
+            if STORE.get("ledger_ok") else {}
+        have = {r["key"]: (r["result"], r["close"], r["pl_real"], r["clv"]) for r in
+                store_rows("select key, result, close, pl_real, clv from timing_log where ts >= ?", (now - TIMING["keep"],))}
+        wrote = 0
+        for mode, day, c in items:
+            if wrote >= TIMING["batch"]:
+                break
+            fee = led.get(_panel_ticker(c)) if mode.startswith("real") else None
+            row = timing_row(mode, day, c, auto, closes, round(fee, 4) if fee is not None else None, now)
+            if not row or have.get(row["key"]) == (row["result"], row["close"], row["pl_real"], row["clv"]):
+                continue
+            row.update(ts=now, upd=now)
+            store_x("insert into timing_log(" + ",".join(_TIMING_COLS) + ") values(" + ",".join("?" * len(_TIMING_COLS)) + ") "
+                    "on conflict(key) do update set " + ",".join(f"{k}=excluded.{k}" for k in _TIMING_COLS if k not in ("key", "ts")),
+                    tuple(row[k] for k in _TIMING_COLS))
+            wrote += 1
+        _timing_trim(now)
+        return wrote
+    except Exception as err:
+        try:
+            log(f"timing log: {type(err).__name__}: {err}")
+        except Exception:
+            pass
+        return 0
 
 
 PANEL_FILL_TOL = (0.10, 0.03)   # a ledger row is this panel bet's own when its cost is within max($0.10, 3%) of it
@@ -24440,9 +24582,9 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     if brake:
         b.append("Paused itself: " + brake["why"])
     if out["room"] < PANEL_OWN_MIN:
-        b.append(f"Today's {money(cap_eff)} spending cap is used up ({money(spent)} spent)"
-                 + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else
-                    f", the share of your {money(st['cap'])} cap autopilot lets it use ({round(cap_use * 100):g}%)." if cap_use < 1 - 1e-9 else "."))
+        _cut = (f" Autopilot has cut it to {caut['pct']}% of your usual {money(st['cap'])}." if caut["level"] else
+                f" Autopilot only lets it use {round(cap_use * 100):g}% of your usual {money(st['cap'])}." if cap_use < 1 - 1e-9 else "")
+        b.append(f"Today's spending cap is used up: {money(spent)} of {money(cap_eff)} spent." + _cut)
     slot_msg = f"{open_n} bets are open, the most it allows is {mo}."
     if out["slots"] <= 0:
         b.append(slot_msg)
@@ -24565,7 +24707,7 @@ def fa_slot_taken(items, ids, book, open_n, day, now, log=print):
         log("full auto open-bet evidence:", type(err).__name__, err)
 
 
-def fa_slot_skips(items, level, v, open_at, real, now, log=print):
+def fa_slot_skips(items, level, v, open_at, real, now, log=print, mult=1.0, loss_room=None, panel_room=None):
     """Record bets turned away only for want of a free slot (they must fit the room and the free bankroll as they stood).
     One row per bet, never overwritten (a bet bought later replaces it with its 'taken' row). Never raises."""
     try:
@@ -24574,7 +24716,10 @@ def fa_slot_skips(items, level, v, open_at, real, now, log=print):
         room, free, n = float(v["room"]), float(v["free"]), 0       # as if each turned-away bet had been bought, in order
         for c in items:
             normal = float(c.get("stake") or 0)
-            s = _fa_scaled(normal, _fa_knob(level, "size"))
+            # sized exactly as the live buy pass sizes it (#633: the autopilot multiple, the loss room and the panel budget too)
+            s = _fa_sized(normal, _fa_knob(level, "size"), mult, room, free, loss_room, panel_room)
+            if loss_room is not None:
+                s = _fa_loss_fit(s, loss_room)
             if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01:
                 continue
             pays = _fa_slot_pays(c, s)
@@ -24585,6 +24730,10 @@ def fa_slot_skips(items, level, v, open_at, real, now, log=print):
                     (f"{day}|{c['id']}", now, day, "skip", int(open_at) + n, round(s, 2), round(pays, 4),
                      json.dumps([c.get("kind")] + tks), None, None))
             room, free, n = room - s, free - s, n + 1
+            if loss_room is not None:
+                loss_room -= s
+            if panel_room is not None:
+                panel_room -= s
     except Exception as err:
         log("full auto open-bet evidence:", type(err).__name__, err)
 
@@ -24704,16 +24853,27 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
             try:
                 real0 = panel_get("real")
                 items0 = _fa_candidates(st, real0, now, caut, log, quiet=True) if real0 else None
+                if not items0:
+                    return None
+                mult0 = ap_stake_mult(st, caut["level"])
+                loss0 = max(0.0, float(v["day_loss"]) + float(v["loss_today"]) - float(v["spent"]))   # (#633) as the live pass reads it; unreadable: no evidence
+                budget0 = float(real0.get("budget") or CFG.get("panel_budget", PANEL["budget"])) \
+                    - sum(float(c.get("stake") or 0) for c in real0.get("items", []) if c.get("state") in PANEL_LIVE)
+                if not (math.isfinite(mult0) and math.isfinite(loss0) and math.isfinite(budget0)):
+                    raise ValueError("sizing numbers are not readable")
                 if items0 and fal_on(st):                    # a bet a budget share would stop is not an open-slot skip
                     g0, kept0 = FaShareGuard(st, v["cap"], _panel_day(real0.get("at")), now), []
-                    for c in items0:
-                        s0 = _fa_scaled(float(c.get("stake") or 0), _fa_knob(caut["level"], "size"))
-                        if g0.allows(c, s0):
+                    room0, free0, left0, bud0 = float(v["room"]), float(v["free"]), loss0, budget0
+                    for c in items0:                         # sized as the live pass sizes them (_fa_sized), each as if the ones before were bought
+                        s0 = _fa_sized(float(c.get("stake") or 0), _fa_knob(caut["level"], "size"), mult0, room0, free0, left0, bud0)
+                        s0 = _fa_loss_fit(s0, left0)
+                        if s0 >= PANEL_OWN_MIN and g0.allows(c, s0):
                             g0.take(c, s0)
                             kept0.append(c)
+                            room0, free0, left0, bud0 = room0 - s0, free0 - s0, left0 - s0, bud0 - s0
                     items0 = kept0
                 if items0:
-                    fa_slot_skips(items0, caut["level"], v, v["open"], real0, now)
+                    fa_slot_skips(items0, caut["level"], v, v["open"], real0, now, mult=mult0, loss_room=loss0, panel_room=budget0)
             except Exception as err:
                 log("full auto open-bet evidence:", type(err).__name__, err)
         return None
@@ -25099,6 +25259,16 @@ def _share_passes(rs, v):
     return out
 
 
+def _fa_level_saved(st):
+    """The soft brake's saved level for evidence code that has no live brake read. Anything unreadable reads as the most cautious
+    row (the smallest cap), so evidence is never judged against a bigger cap than live could use. Never raises."""
+    try:
+        lv = int(st["caution"]["level"])
+        return lv if 0 <= lv < len(FA_LADDER) else len(FA_LADDER) - 1
+    except Exception:
+        return len(FA_LADDER) - 1
+
+
 def _share_load(now):
     """({key: [row]}, passes) from the practice (paper) panel's settled bets, which the shares never filter: so a league held to a
     small share keeps producing its own evidence. A row is {k: when, d: dollars after fees, s: stake, day, base: the live daily
@@ -25106,7 +25276,8 @@ def _share_load(now):
     cap in the order they were bought (a bet that would not fit is dropped, as fa_check's room would have), and a share is judged
     against that same cap: the replay measures the rule the live guard enforces. RAISES when the data can't be read (the caller
     then takes no step)."""
-    cap = float(fa_state()["cap"])
+    st0 = fa_state()
+    cap = round(float(st0["cap"]) * _fa_knob(_fa_level_saved(st0), "cap") * ap_cap_use(st0), 2)   # (#633) the cap the live share check uses, not Pete's plain one
     if not math.isfinite(cap) or cap <= 0:
         raise ValueError("no readable daily cap")
     _panel_table()
@@ -25471,9 +25642,9 @@ def _fal_val_text(rec, v):
     if rec == "share":
         return f"{v * 100:g}% of the day's cap"
     if rec == "stake":
-        return f"{round(v * 100, 1):g}% of today's bet size"
+        return f"{round(v * 100):g}% of today's bet size"   # steps compound (5% of the CURRENT size): show 90%, not 90.3%
     if rec == "capuse":
-        return f"{round(v * 100, 1):g}% of your daily cap"
+        return f"{round(v * 100):g}% of your daily cap"
     if rec == "bar":
         return f"+{v:g} points"
     if rec == "sbev":
@@ -25500,7 +25671,8 @@ def _fal_name(key):
     if rec == "capuse":
         return "share of the daily cap it uses"
     if rec == "share":
-        return "combo budget share" if lg == "@combo" else "single-bet budget share" if lg == "@single" else f"{league_label(lg)} budget share"
+        return ("combo budget share" if lg == "@combo" else "single-bet budget share" if lg == "@single"
+                else "mixed-sports budget share" if lg == "mix" else f"{league_label(lg)} budget share")
     return f"{league_label(lg)} combo bar" if rec == "bar" else f"{league_label(lg)} Smart Buy bar"
 
 
@@ -25652,8 +25824,8 @@ def _fal_plan(st, now):
     # to whichever setting has waited longest since it last stepped (a fair rotation, so no setting always wins the slot).
     for rec, a in sorted(pending, key=lambda p: (p[1]["dir"] != "tighter", float(steps.get(p[0]) or 0), list(AP_REG).index(p[0]))):
         s = status[rec]
-        if any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
-               for o in AP_EXCL.get(rec, ())):
+        if not _ap_brake_tighten(a) and any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
+                                            for o in AP_EXCL.get(rec, ())):      # (#633) the soft brake's tightening never waits a week behind a partner's step
             s["note"] = "waits: " + ", ".join(FAL_NAMES[o].lower() for o in AP_EXCL.get(rec, ())
                                                 if now - float(steps.get(o) or 0) < FAL["week"]
                                                 or any(x["rec"] == o and x["do"] == "step" for x in actions)) + " moved this week; these never move in the same week"
@@ -25662,6 +25834,12 @@ def _fal_plan(st, now):
         else:
             actions.append(a)
     return {"actions": actions, "status": status, "nochange": nochange}
+
+
+def _ap_brake_tighten(a):
+    """(#633) True only for a step that TIGHTENS because the soft brake stepped in this week: it is never held back by the
+    same-week partner rule (tighten fast). Every other step, tightening or not, still waits for its partners."""
+    return a.get("dir") == "tighter" and isinstance(a.get("ev"), dict) and a["ev"].get("why") == "brake"
 
 
 def _fal_apply(s, plan, now):
@@ -25702,7 +25880,7 @@ def _fal_apply(s, plan, now):
                         and now - float(L["since"].get(key) or 0) < FAL_SLOW[rec]["loose_wait"])\
                     or (rec in FAL_RISKY and _ap_looser(rec, a["from"], to) and not _ap_quiet(s, now)[0]):
                 continue
-            if any(now - float(L["steps"].get(o) or 0) < FAL["week"] for o in AP_EXCL.get(rec, ())):
+            if not _ap_brake_tighten(a) and any(now - float(L["steps"].get(o) or 0) < FAL["week"] for o in AP_EXCL.get(rec, ())):
                 continue                                     # section 3: never the same week as its partner record
             if a["dir"] != "tighter" and _ap_week_n(L["steps"], rec, now) >= AP_WEEK_MAX:
                 continue                                     # section 3: at most two settings LOOSEN or move in a week; a tightening is never held back by it
@@ -25723,7 +25901,7 @@ def _fal_apply(s, plan, now):
             src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
             if rec in FAL_RISKY and a["dir"] == "tighter":
                 if ev.get("why") == "brake":
-                    why = "the soft brake stepped in within the last week, so it tightens this setting one step right away."
+                    why = "the soft brake stepped in within the last week, so this setting tightens one step now instead of waiting for its weekly turn."
                 else:
                     why = f"full auto's last 30 days were {money(ev['gain'])} after fees ({ev['band']} bets) and the bets since this setting last moved are also down."
             elif rec in FAL_RISKY:
@@ -27477,10 +27655,13 @@ def _sl_replay(c, path, prog, drop, cf=None, hair=False, when=None):
 def _cut_guard_ts(c, slp, loss, prog=None, drop=None, cf=None):
     """The times at which the learned loss cut's guards held for this bet (the same as live: under the cut-off and
     every stop-loss guard, confirmed), so the replay that learns the cut only cuts where live would have. With no
-    prog/drop given, the league's current stop-loss settings."""
-    if not loss or not slp or len(slp) < SL_CHECKS:
-        return set()
+    prog/drop given, the league's current stop-loss settings; with no cf (checks, span, gap) given, the confirmation counts
+    live uses for this bet's league (sl_confirm_params, #316), so the replay never cuts where live would still be waiting."""
     tks = [l["ticker"] for l in c["legs"]]
+    if cf is None:
+        cf = sl_confirm_params(tks)
+    if not loss or not slp or len(slp) < cf[0]:
+        return set()
     if prog is None or drop is None:
         pr = stoploss_params(tks)
         prog, drop = pr["prog"], pr["drop"]
@@ -27490,7 +27671,8 @@ def _cut_guard_ts(c, slp, loss, prog=None, drop=None, cf=None):
 
 def _sl_tune(e, rows, move=True):
     """One league's stop-loss settings: replay its combos with nearby settings and move one small step toward what
-    clearly did better (only with SL_MIN_N combos; on a tie the smallest change wins). Updates `e`, returns why or ''."""
+    clearly did better (only with SL_MIN_N combos; on a tie the smallest change wins). Tighten-only (#592, as #590 made the
+    stepper): a setting never moves down, so this legacy mover can never loosen what the live loss cut serves. Updates `e`, returns why or ''."""
     cur = {"prog": float(e.get("sl_prog", SL_DEFAULT["prog"])), "drop": float(e.get("sl_drop", SL_DEFAULT["drop"]))}
     n = len(rows)
     e["sl_n"] = n
@@ -27512,8 +27694,9 @@ def _sl_tune(e, rows, move=True):
 
     def clamp(v, k):
         return round(min(max(v, SL_BOUNDS[k][0]), SL_BOUNDS[k][1]), 2)
-    for a in sorted({clamp(cur["prog"] + d, "prog") for d in (-SL_STEP, 0, SL_STEP)}):
-        for b in sorted({clamp(cur["drop"] + d, "drop") for d in (-SL_STEP, 0, SL_STEP)}):
+    # (#592) tighten-only, as the stepper is (#590): a higher "not before" and a bigger fall are the stricter guards; never lower
+    for a in sorted({v for v in (clamp(cur["prog"] + d, "prog") for d in (0, SL_STEP)) if v >= cur["prog"] - 1e-9}):
+        for b in sorted({v for v in (clamp(cur["drop"] + d, "drop") for d in (0, SL_STEP)) if v >= cur["drop"] - 1e-9}):
             v = score(a, b)
             moves = sum(1 for x, y in zip((a, b), here) if x != y)
             if v > best_v + 1e-9 or (abs(v - best_v) <= 1e-9 and moves < sum(1 for x, y in zip(best, here) if x != y)):

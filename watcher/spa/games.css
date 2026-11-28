@@ -57,3 +57,14 @@
 .gc .bets{border-top:0;padding-top:0}.gc .bets:empty{display:none}
 .gc .gft{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;border-top:1px solid var(--line);margin:0 -2px;font-size:13px;color:var(--mute)}
 .gc .gft .rd{font-weight:700;color:var(--ink);font-size:13.5px}.gc .gft .go{font-weight:600;color:var(--mute)}
+/* Round two (display only): bet-type chips that scroll inside their own row, calmer loading state, one gap between cards. */
+.games{gap:12px}
+.chips.btchips{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;scrollbar-width:none;margin:0 -14px 6px;padding:2px 14px 4px;scroll-padding:0 14px;gap:8px}
+.chips.btchips::-webkit-scrollbar{display:none}
+.btchips .chip{flex:none;min-height:44px;padding:0 18px;font-size:14.5px;display:inline-flex;align-items:center;gap:6px;background:transparent;color:var(--sub);border:1px solid var(--line)}
+.btchips .chip .n{font-size:12px;font-weight:600;color:var(--mute)}
+.btchips .chip.on{background:var(--panel2);color:var(--ink);border:2px solid var(--ink);padding:0 17px}
+.btchips .chip.on .n{color:var(--sub)}
+.gsk-h{margin:24px 0 10px}.gsk-h i{display:block;height:14px;width:34%;border-radius:7px;background:var(--panel2)}
+.gsk i,.gsk-h i{background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite}
+@media (prefers-reduced-motion:reduce){.gsk i,.gsk-h i{animation:none}}

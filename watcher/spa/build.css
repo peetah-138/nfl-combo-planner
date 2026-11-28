@@ -102,3 +102,5 @@
  .slipgap{height:140px!important}
 }
 @media (max-width:900px) and (prefers-color-scheme:light){.slipbar{box-shadow:0 14px 36px rgba(16,24,40,.18)}}
+/* Round two (display only): a board card's league and start time share one line. */
+.mrow .when{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px}.mrow .when .wlg{display:inline-flex;align-items:center;gap:4px}

@@ -27,6 +27,7 @@ ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 NOW = time.time()
 for _r in ("stake", "capuse"):   # step 7 has its own test (t_autopilot_stake): out of this older test's way
     E.AP_REG.pop(_r, None)
+E.ap_cap_use = lambda st: 1.0     # (#633) share evidence now uses the live cap: this older test keeps cap use out of the way
 DAY = 86400
 NBA, NHL = "KXNBAGAME-26NOV20LALBOS-LAL", "KXNHLGAME-26NOV20TORBOS-TOR"
 
@@ -122,7 +123,7 @@ ok("loosen refused when closing-line value is unreadable", not stepped() and val
 # 6. soft brake cautious: no loosening, tightening still fine
 reset(); seed(nba_pls=(4, 4, 4, 4)); learned(0.65); cautious()
 ok("cautious: no loosening", not stepped() and vals() == {"share:nba": 0.65})
-reset(); seed(); cautious()
+reset(); seed(stake=6.5); cautious()      # (#633) evidence is fitted into the live (halved) $15 cap: $2 + two $6.5 bets fit exactly
 ok("cautious: tightening still allowed", stepped() and vals().get("share:nba", 1.0) < 1.0)
 reset(); seed(nba_pls=(4, 4, 4, 4)); learned(0.65); E._fa_update(lambda s: s.update(caution={"level": "x"}))
 ok("an unreadable caution level fails closed (no loosening)", not stepped())
@@ -311,7 +312,7 @@ def slots_run(share):
     cs = [{"id": f"s{i}", "kind": "combo", "stake": 5.0, "pays": 9.0, "legs": [{"ticker": NBA.replace("LALBOS", f"LAL{i}BOS")}]} for i in range(3)]
     saved = (E.fa_check, E.panel_get, E._fa_candidates)
     E.fa_check = lambda *a, **k: {"brake": None, "caution": {"changed": False, "level": 0, "events": []}, "blockers": ["x"], "slots_only": True,
-                                  "room": 30.0, "slots": 0, "free": 100.0, "open": 15, "cap": 30.0}
+                                  "room": 30.0, "slots": 0, "free": 100.0, "open": 15, "cap": 30.0, "day_loss": 20.0, "loss_today": 0.0, "spent": 0.0}
     E.panel_get = lambda *a, **k: {"at": NOW, "status": "draft"}
     E._fa_candidates = lambda *a, **k: list(cs)
     try:
