@@ -24649,6 +24649,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
             break
         run += 1
     loss_today = round(sum(panel_pl(c) or 0 for d, c in settled if d == day), 2)
+    extra_loss = _fa_extra_loss([(d, c, f"{d}|{c.get('id')}" in mine) for d, c in live if d == day and c.get("result")])
     brake = st.get("brake") if isinstance(st.get("brake"), dict) else None
     legacy = bool(brake and brake.get("kind") == "streak")   # an older version's streak pause: now it is caution, never a stop
     if brake and (brake.get("kind") != "day" or brake.get("day") != day):
@@ -24660,7 +24661,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     stake_mult = ap_stake_mult(st, caut["level"])
     cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap") * cap_use, 2)
     mo = ap_open_limit(st)                                # (#145) Pete's open-bet number, or what autopilot moved it to (8 to 20)
-    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "open_stake": open_stake, "cap": cap_eff, "cap_normal": st["cap"], "cap_use": cap_use, "stake_mult": stake_mult, "caution": caut, "open": open_n,
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "open_stake": open_stake, "extra_loss": extra_loss, "cap": cap_eff, "cap_normal": st["cap"], "cap_use": cap_use, "stake_mult": stake_mult, "caution": caut, "open": open_n,
            "max_open": mo, "max_open_set": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
            "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, mo - open_n)}
@@ -25625,15 +25626,38 @@ def ap_cap_use(st):
 FA_LOSS_MARGIN = 0.10   # (#646) safety cushion on Pete's daily loss limit: full auto plans against 90% of it ($18 of a $20 limit). Never moves the limit itself.
 
 
+def _fa_extra_loss(todays_settled):
+    """(#646 follow-up, tighten-only) Dollars lost today on settled real bets that loss_today does not carry: Pete's own manual bets
+    (losses only; a manual win adds nothing) and any settled bet with no readable profit/loss (counted as the whole stake lost).
+    Takes (day, bet, is_full_auto's) rows. Only ever returns 0 or more, so it can only shrink the loss room."""
+    tot = 0.0
+    for _d, c, mine in todays_settled:
+        try:
+            stake = max(0.0, float(c.get("stake") or 0))
+        except (TypeError, ValueError):
+            stake = 0.0
+        try:
+            pl = panel_pl(c)
+            pl = None if pl is None else float(pl)
+        except (TypeError, ValueError):
+            pl = None                                     # unreadable P/L: counted as the whole stake below
+        if pl is None or not math.isfinite(pl):
+            tot += stake                                  # unreadable result: assume the stake is gone
+        elif not mine and pl < 0:
+            tot += -pl
+    return round(tot, 2)
+
+
 def _fa_loss_room(v):
     """(#646) What is left of the day's loss room, in dollars (never negative, never more than the exact-limit value).
     room = (limit less the FA_LOSS_MARGIN cushion) + today's profit/loss - stakes still at risk. A settled bet counts ONCE (its loss is
     already in loss_today), so its stake is not taken off again. RAISES on a missing, None, text or non-finite number (the caller buys nothing)."""
     limit, today, at_risk = float(v["day_loss"]), float(v["loss_today"]), float(v["open_stake"])
-    if not all(math.isfinite(x) for x in (limit, today, at_risk)) or at_risk < 0:
+    extra = float(v.get("extra_loss", 0.0))               # settled manual / unreadable losses today (only ever shrinks the room)
+    if not all(math.isfinite(x) for x in (limit, today, at_risk, extra)) or at_risk < 0 or extra < 0:
         raise ValueError("loss room is not readable")
-    exact = limit + today - at_risk
-    cushioned = limit * (1.0 - min(max(FA_LOSS_MARGIN, 0.0), 1.0)) + today - at_risk
+    exact = limit + today - at_risk - extra
+    cushioned = limit * (1.0 - min(max(FA_LOSS_MARGIN, 0.0), 1.0)) + today - at_risk - extra
     return round(max(0.0, min(exact, cushioned)), 2)
 
 

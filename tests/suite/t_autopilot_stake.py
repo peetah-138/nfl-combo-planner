@@ -508,5 +508,29 @@ for nm, bad in (("missing open_stake", None), ("None", {"open_stake": None}), ("
     except (KeyError, TypeError, ValueError):
         bad6 = True
     ok(f"#646 loss room fails closed on {nm}", bad6)
+# (#646 follow-up) Pete's settled manual losses (and a settled bet with no readable P/L) shrink the room, never grow it
+xl = E._fa_extra_loss
+base = {"day_loss": 20.0, "loss_today": -5.0, "open_stake": 0.0}
+ok("extra loss: no manual loss = identical to the #646 value ($13.00)", lr(base) == 13.0 and lr(dict(base, extra_loss=0.0)) == 13.0)
+ok("extra loss: a $4 manual loss takes the room from $13.00 to $9.00", lr(dict(base, extra_loss=4.0)) == 9.0)
+ok("extra loss: never below 0", lr(dict(base, extra_loss=99.0)) == 0.0)
+ok("extra loss: never more than the #646 value", all(lr(dict(base, extra_loss=x)) <= lr(base) for x in (0.0, 0.01, 3.0, 50.0)))
+ok("extra loss: a manual loss that leaves under $2 buys nothing", loss_pass(dict(base, extra_loss=11.5), [5.0]) == [])
+for nm, bad in (("NaN", float("nan")), ("None", None), ("negative", -1.0), ("text", "x"), ("infinite", float("inf"))):
+    try:
+        lr(dict(base, extra_loss=bad)); b7 = False
+    except (KeyError, TypeError, ValueError):
+        b7 = True
+    ok(f"extra loss: fails closed on {nm}", b7)
+ok("extra loss helper: manual loss counts, manual win and full auto's own loss do not",
+   xl([("d", {"stake": 5, "pl": -3.0, "result": "lost"}, False), ("d", {"stake": 5, "pl": 4.0, "result": "won"}, False),
+       ("d", {"stake": 5, "pl": -2.0, "result": "lost"}, True)]) == 3.0)
+ok("extra loss helper: a settled bet with no P/L counts as its whole stake (manual or full auto)",
+   xl([("d", {"stake": 6, "result": "lost"}, False), ("d", {"stake": 2.5, "result": "lost", "pl": None}, True)]) == 8.5)
+ok("extra loss helper: pl_real wins over pl; garbage numbers are safe; nothing = 0",
+   xl([("d", {"stake": 5, "pl": 1.0, "pl_real": -2.0, "result": "lost"}, False)]) == 2.0 and xl([]) == 0.0
+   and xl([("d", {"stake": "x", "pl": "y", "result": "lost"}, False)]) == 0.0
+   and xl([("d", {"stake": 5, "pl": "y", "result": "lost"}, False)]) == 5.0
+   and xl([("d", {"stake": 5, "pl": float("nan"), "result": "lost"}, True)]) == 5.0)
 ok("_fa_loss_fit: fits unchanged, trims to the cent, 0 under $2 / empty / NaN", (fit(5.0, 8.0), fit(10.0, 3.456), fit(10.0, 1.99), fit(10.0, 0.0), fit(10.0, float("nan"))) == (5.0, 3.45, 0.0, 0.0, 0.0))
 ok("money(): a loss reads -$3.50, a gain $3.50, big and zero unchanged", (E.money(-3.5), E.money(3.5), E.money(-12.4), E.money(12.4), E.money(0), E.money(-0.001)) == ("-$3.50", "$3.50", "-$12", "$12", "$0", "$0"))
