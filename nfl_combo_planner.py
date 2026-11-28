@@ -24617,8 +24617,19 @@ class FaShareGuard:
         self.sh = {k: x for k, x in vals["share"].items() if x < FAL_START["share"] - 1e-9}
         self.cap, self.spent = float(cap), defaultdict(float)
         if self.sh:
-            for d, c in _fa_rows(now, 3):
-                if d == day and f"{d}|{c.get('id')}" in st["bets"] and c.get("state") in PANEL_LIVE:
+            if not STORE["db"]:
+                raise ValueError("today's bets can't be read")      # fail closed: never treat unreadable as "nothing spent"
+            _panel_table()
+            first = _panel_day(now - 3 * 86400)
+            rows = store_rows_strict("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
+            for r in rows:
+                d = r["day"]
+                for c in json.loads(r["body"]).get("items", []):
+                    # every bet bought today counts, open or already settled (a settled bet still used its share of the day)
+                    if d != day or f"{d}|{c.get('id')}" not in st["bets"]:
+                        continue
+                    if not (c.get("state") in PANEL_LIVE or c.get("bought_at") or c.get("result")):
+                        continue
                     for k in share_keys(c):
                         self.spent[k] += float(c.get("stake") or 0)
 
@@ -24967,6 +24978,11 @@ def _fal_moves(rec, cur, rs=None, passes=None):
     next 5-pt value that changes which of those bets it lets through: a step no bet ever reached could not be shown to help
     or hurt, so a share at 100% or at the floor would never move at all."""
     b, s0 = FAL[rec], FAL_START[rec]
+    if rec == "open":                                        # (#145) fewer open bets = tighter; the only setting that may loosen PAST its start
+        if not b["lo"] <= cur <= b["hi"]:
+            return []                                        # Pete's own number is outside autopilot's range: it leaves it alone
+        return [d for d in (("tighter", cur - b["step"]) if cur - b["step"] >= b["lo"] else None,
+                            ("looser", cur + b["step"]) if cur + b["step"] <= b["hi"] else None) if d]
     if rec == "share":
         out = []
         for d in ("tighter", "looser"):

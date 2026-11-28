@@ -241,14 +241,40 @@ E._fa_update(lambda s: s.update(lessons={"vals": {"share:nba": 5}}))
 ok("a malformed share approves nothing", E.full_auto_pass(now=time.time()) is None)
 reset(); fresh(4); E.fa_set(True, limits={"cap": 100, "max_open": 30})
 E._fa_update(lambda s: s.update(lessons={"vals": {"share:nba": 0.5}}))
-orig = E._fa_rows
-E._fa_rows = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+orig = E.store_rows_strict
+E.store_rows_strict = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+r13 = E.full_auto_pass(now=time.time())
+E.store_rows_strict = orig
+ok("unreadable bets with a share set: approves nothing, does not raise (fail closed)", r13 is None and not [c for c in E.panel_get("real")["items"] if c.get("state") == "scheduled"])
+
+# 13b. the guard itself: unreadable today's bets raise (the pass catches it and approves nothing); settled-today bets count
+reset(); E._fa_update(lambda s: s.update(lessons={"vals": {"share:nba": 0.2}}))
+E.store_rows_strict = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
 try:
-    r13 = E.full_auto_pass(now=time.time())
+    E.FaShareGuard(E.fa_state(), 30.0, E._panel_day(NOW), NOW); raised = False
 except RuntimeError:
-    r13 = None
-E._fa_rows = orig
-ok("unreadable bets with a share set: approves nothing (fail closed)", r13 is None and not [c for c in E.panel_get("real")["items"] if c.get("state") == "scheduled"])
+    raised = True
+E.store_rows_strict = orig
+ok("FaShareGuard raises when today's bets can't be read", raised)
+day0 = E._panel_day(NOW)
+nba_c = {"id": "x1", "kind": "single", "state": "won", "result": "won", "bought_at": NOW - 3600, "legs": [{"ticker": NBA}], "stake": 10.0}
+E.store_x("insert into panel values(?,?,?,?,?)", (day0, "real", NOW, "done", json.dumps({"at": NOW, "items": [nba_c]})))
+E._fa_update(lambda s: s.update(bets={f"{day0}|x1": {"at": NOW}}))
+g = E.FaShareGuard(E.fa_state(), 30.0, day0, NOW)
+cand = {"id": "x2", "kind": "single", "legs": [{"ticker": NBA}], "stake": 3.0}
+ok("a bet already SETTLED today still counts toward the league's share", g.spent["share:nba"] == 10.0 and not g.allows(cand, 3.0))
+ok("another league is untouched by it", g.allows({"id": "x3", "kind": "single", "legs": [{"ticker": NHL}], "stake": 3.0}, 3.0))
+nba_c.pop("bought_at")
+E.store_x("update panel set body=? where mode='real'", (json.dumps({"at": NOW, "items": [dict(nba_c, state="cancelled", result=None)]}),))
+ok("a cancelled never-bought bet does not count", E.FaShareGuard(E.fa_state(), 30.0, day0, NOW).spent["share:nba"] == 0)
+
+# 13c. the #614 open-bet limit still moves (the share branch must not replace it)
+ob = E.FAL["open"]
+mid = (ob["lo"] + ob["hi"]) // 2
+mv = dict(E._fal_moves("open", mid))
+ok("open limit: tighter is one step down, looser one step up", mv.get("tighter") == mid - ob["step"] and mv.get("looser") == mid + ob["step"])
+ok("open limit: no step past either end", "tighter" not in dict(E._fal_moves("open", ob["lo"])) and "looser" not in dict(E._fal_moves("open", ob["hi"])))
+ok("open limit: Pete's number outside the range is left alone", E._fal_moves("open", ob["hi"] + 100) == [])
 
 # 14. the card
 reset(); seed(); tick()
