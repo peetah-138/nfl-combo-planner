@@ -441,3 +441,50 @@ ok("loosening 0.9 -> 0.945 on a $4 win bought at 1.25x: 4 * 0.045 / 1.25 = 0.144
 reset(); learned("stake_mult", 1.1); learned("cap_use", 0.8)
 v = E.fal_view(E.fa_state())
 ok("the card lists both learned numbers in plain words", any("bet size" in x["name"].lower() for x in v["learned"]) and any("cap" in x["name"].lower() for x in v["learned"]))
+
+# 13. (#632) Pete's $20 loss room stops buying at ANY size, and shrinks bet by bet inside one pass
+def loss_pass(over, stakes, mult=None):
+    """One pass with fa_check's loss numbers overridden (over = dict of fields, or a callable that breaks them); returns the bought stakes."""
+    reset()
+    E.store_x("delete from panel", ())
+    n = len(stakes)
+    E.PANEL_POOL = {"nba": (time.time(), [mk(f"KXNBAGAME-26NOV27H{i}-A", f"KXNBAGAME-H{i}", .60 + i / 100, .50, NOW + 9000) for i in range(n)])}
+    E.panel_pass()
+    real = E.panel_get("real")
+    def put(old, st):
+        old["items"] = old["items"][:n]
+        for c, s in zip(old["items"], stakes):
+            c["stake"] = s
+        return old, "draft"
+    E.panel_tx(E._panel_day(real["at"]), "real", put)
+    E.fa_set(True, limits={"cap": 100.0, "bank": 300.0, "max_open": 30})
+    if mult:
+        E._fa_update(lambda s: s["lessons"].update(vals={"stake_mult": mult}))
+    real_check = E.fa_check
+    def fake(*a, **k):
+        v = real_check(*a, **k)
+        v.update(over)
+        return v
+    E.fa_check = fake
+    try:
+        E.full_auto_pass(now=time.time())
+    finally:
+        E.fa_check = real_check
+    return sorted(c["stake"] for c in E.panel_get("real")["items"] if c.get("state") == "scheduled")
+r3 = {"day_loss": 20.0, "loss_today": 0.0, "spent": 17.0}           # room = $3
+r0 = {"day_loss": 20.0, "loss_today": 0.0, "spent": 20.0}           # room = $0
+ok("loss room $3: a normal-size $10 bet is trimmed to exactly $3", loss_pass(r3, [10.0]) == [3.0])
+ok("loss room $3 at 150%: a $10 bet is still trimmed to exactly $3, never $15", loss_pass(r3, [10.0], mult=1.5) == [3.0])
+ok("loss room $0: a normal-size $10 bet is not bought", loss_pass(r0, [10.0]) == [])
+ok("loss room $0 at 150%: nothing is bought", loss_pass(r0, [10.0, 5.0], mult=1.5) == [])
+ok("loss room $1.99 (under the $2 minimum): nothing is bought", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 18.01}, [10.0]) == [])
+ok("room $20, three normal $10 bets: $10, $10 then nothing ($20 total, not $30)", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 0.0}, [10.0, 10.0, 10.0]) == [10.0, 10.0])
+ok("room $15, normal $10 bets: $10 then the last $5 (the room shrinks bet by bet)", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 5.0}, [10.0, 10.0]) == [5.0, 10.0])
+ok("room $14, normal $10 bets: $10 then $4", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 6.0}, [10.0, 10.0]) == [4.0, 10.0])
+ok("room $11, normal $10 bets: $10 then $1 is under the minimum, so only one bet", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 9.0}, [10.0, 10.0]) == [10.0])
+for nm, bad in (("a missing number", {"loss_today": None}), ("not a number", {"loss_today": float("nan")}), ("text", {"spent": "x"}),
+                ("infinite", {"day_loss": float("inf")})):
+    ok(f"unreadable loss data ({nm}): nothing is bought", loss_pass(dict(r3, **bad), [10.0]) == [])
+fit = E._fa_loss_fit
+ok("_fa_loss_fit: fits unchanged, trims to the cent, 0 under $2 / empty / NaN", (fit(5.0, 8.0), fit(10.0, 3.456), fit(10.0, 1.99), fit(10.0, 0.0), fit(10.0, float("nan"))) == (5.0, 3.45, 0.0, 0.0, 0.0))
+ok("money(): a loss reads -$3.50, a gain $3.50, big and zero unchanged", (E.money(-3.5), E.money(3.5), E.money(-12.4), E.money(12.4), E.money(0), E.money(-0.001)) == ("-$3.50", "$3.50", "-$12", "$12", "$0", "$0"))
