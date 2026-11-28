@@ -29,32 +29,39 @@ function fbIdle(b){if(!b||!b.isConnected)return;b.classList.remove('fb-pend','fb
    "The hedge wasn't placed" and "may or may not have gone through", so the words decide: only a message that starts with
    the green check is a success; a warning or a lost reply is "unknown"; anything else is a refusal. */
 function fbKind(r){if(!r)return 'chk';const m=String(r.msg||'');
- if(r.lost||r.check||/^⚠️|may or may not|no clear answer/i.test(m))return 'chk';
+ if(r.lost||r.check||/^⚠️|may or may not|no clear answer|^That didn't work/i.test(m))return 'chk';   // "That didn't work: <error>" can mean the outcome is unknown
  if(r.ok&&/^✅/.test(m))return 'ok';
- if(!r.ok||/offer expired|isn't live any more|wasn't placed|nothing was (bought|sold)|isn't allowing|no one was selling|didn't take/i.test(m))return 'bad';   // the Mac's own plain refusals
+ if(/offer expired|isn't live any more|wasn't placed|nothing was (bought|sold)|isn't allowing|no one was selling|didn't take/i.test(m))return 'bad';   // only the Mac's own plain refusals are red; any other ok:false falls through to Check Kalshi
  return 'chk';}   // ok without the check mark and not a known refusal: not confirmed, so never green
 /* a plain-words line under a button (red for a refusal, amber for unknown); role=status so it is read out once */
 function fbNote(b,msg,tone){document.querySelectorAll('.fbnote').forEach(e=>e.remove());if(!b||!b.isConnected)return;const d=document.createElement('div');d.className='fbnote'+(tone==='chk'?' chk':'');
  d.setAttribute('role','status');d.innerHTML='<i aria-hidden="true">'+(tone==='chk'?'…':'✕')+'</i><span>'+esc(msg)+'</span>';(b.parentNode||b).insertAdjacentElement('afterend',d);}
+/* one money request per ticker at a time, even if the sheet is closed and reopened from the Live card while it is pending */
+function fbFlying(t){return !!(S.fbFly&&S.fbFly[t]);}
+function fbFly(t,on){S.fbFly=S.fbFly||{};if(on)S.fbFly[t]=1;else delete S.fbFly[t];}
+function fbBusyToast(){toast('That one is still going through. Check Live in a moment.',4000);}
+/* the button was on a sheet that has since closed: say a refusal in a toast instead of painting a dead button */
+function fbRefused(b,msg){if(b&&b.isConnected&&!(b.closest('#modal')&&!b.closest('#modal.on')))return false;   // gone: removed, or its sheet was closed
+ toast(msg,7000,'bad');return true;}
 const FB_LOST='Couldn\'t reach your Mac, so this may or may not have gone through. Check Live before trying again.';
 /* Cash out (the sheet from sell()): same request as before, {a:'go',t}; one tap at a time */
-async function fbSell(t){const b=$('#sellgo');if(!b||!fbPend(b,'Selling… confirming with Kalshi'))return;hap();
+async function fbSell(t){if(fbFlying(t)){fbBusyToast();return;}const b=$('#sellgo');if(!b||!fbPend(b,'Selling… confirming with Kalshi'))return;hap();fbFly(t,1);
  const c=((S.live&&S.live.combos)||[]).find(x=>x.t===t)||{};let r;
- try{r=await api('/app/api/act',{a:'go',t});}catch(e){r={ok:false,lost:true,msg:FB_LOST.replace('gone through','sold')};}
+ try{r=await api('/app/api/act',{a:'go',t});}catch(e){r={ok:false,lost:true,msg:FB_LOST.replace('gone through','sold')};}finally{fbFly(t,0);}
  const k=fbKind(r),msg=r&&r.msg||'';
  if(k==='ok'){fbEnd(b,'ok','Sold'+(r.offer!=null?' · '+money(r.offer):c.offer!=null?' · '+money(c.offer):''));closeModal();S.momSeen=S.momSeen||{};S.momSeen['s:'+t]=1;
   setTimeout(()=>soldSheet({label:momName(c),back:r.offer!=null?r.offer:c.offer,cost:c.cost}),360);}
  else if(k==='chk'){okSheet('Check Kalshi',null,(msg||FB_LOST).replace(/^⚠️\s*/,'')+(r.lost||r.check?'':' Check Live to see whether it sold.'),true);}
- else{fbEnd(b,'bad','Didn\'t go through · tap for a new offer',20000);fbNote(b,msg||'Kalshi didn\'t take it, so nothing was sold.');
+ else if(!fbRefused(b,msg||'Kalshi didn\'t take it, so nothing was sold.')){fbEnd(b,'bad','Didn\'t go through · tap for a new offer',20000);fbNote(b,msg||'Kalshi didn\'t take it, so nothing was sold.');
   /* the retry re-enters the normal flow: a fresh offer, never the old request */
   b.onclick=()=>{closeModal();ask(t);};b.dataset.t=t;b._fbOld='Get a new offer';}
  load('live',true);}
 /* Place hedge: same request as before, {a:'hedgego',t}; the sheet stays up until the answer is in */
-async function fbHedge(b){const t=b&&b.dataset.t;if(!t||!fbPend(b,'Placing hedge… confirming with Kalshi'))return;hap();let r;
- try{r=await api('/app/api/act',{a:'hedgego',t});}catch(e){r={ok:false,lost:true,msg:FB_LOST.replace('gone through','been placed')};}
+async function fbHedge(b){const t=b&&b.dataset.t;if(!t)return;if(fbFlying(t)){fbBusyToast();return;}if(!fbPend(b,'Placing hedge… confirming with Kalshi'))return;hap();fbFly(t,1);let r;
+ try{r=await api('/app/api/act',{a:'hedgego',t});}catch(e){r={ok:false,lost:true,msg:FB_LOST.replace('gone through','been placed')};}finally{fbFly(t,0);}
  const k=fbKind(r),msg=r&&r.msg||'';
  if(k==='ok'){fbEnd(b,'ok','Hedged');okSheet('Hedged',null,msg.replace(/^✅\s*/,''));}
  else if(k==='chk'){okSheet('Check Kalshi',null,(msg||FB_LOST).replace(/^⚠️\s*/,'')+(r.lost||r.check?'':' Check Live to see whether it went through.'),true);}
- else{fbEnd(b,'bad','Didn\'t go through · tap to look again',20000);fbNote(b,msg||'The hedge wasn\'t placed. Nothing was bought.');
+ else if(!fbRefused(b,msg||'The hedge wasn\'t placed. Nothing was bought.')){fbEnd(b,'bad','Didn\'t go through · tap to look again',20000);fbNote(b,msg||'The hedge wasn\'t placed. Nothing was bought.');
   b.onclick=()=>{closeModal();hedge(t);};b._fbOld='Look at the hedge again';}
  load('live',true);}

@@ -182,6 +182,44 @@ with sync_playwright() as pw:
         if len(SENT) != 1: bad(f"{tag}: nothing may be re-sent after a refusal: {SENT}")
         reset(pg)
 
+        # ---- follow-ups: one request per ticker even across a closed/reopened sheet; refusal after the sheet closed; "That didn't work"
+        TOAST = "(document.getElementById('toast')||{}).textContent||''"
+        for kind, js_open, wait_sel, call in (("Cash out", "sell('T1')", "#sellgo", "doSell('T1')"), ("Place hedge", "hedge('T1')", HB, f"fbHedge(document.querySelector({json.dumps(HB)}))")):
+            reset(pg); ev(pg, LIVE + "S.fbFly={};1"); ev(pg, js_open + ";1"); wait(pg, f"!!document.querySelector({json.dumps(wait_sel)})")
+            ev(pg, call + ";1"); wait_held(1)
+            if not ev(pg, "!!S.fbFly&&!!S.fbFly.T1"): bad(f"{tag}: {kind}: the in-flight flag should be set while pending")
+            ev(pg, "closeModal();1"); nap(300); ev(pg, js_open + ";1"); nap(300)     # reopened from the Live card while pending
+            if ev(pg, "!!document.querySelector('#modal.on')") or "still going through" not in ev(pg, TOAST): bad(f"{tag}: {kind}: reopening while pending must not open a second sheet: {ev(pg, TOAST)!r}")
+            ev(pg, "fbSell('T1');1")
+            hold_still(pg, 1)
+            answer({"ok": True, "msg": "Test combo: that offer expired. Tap Get cash-out offer for a fresh one."}); nap(500)
+            if ev(pg, "!!(S.fbFly&&S.fbFly.T1)"): bad(f"{tag}: {kind}: the flag must clear when the answer arrives")
+            if "expired" not in ev(pg, TOAST) or "bad" not in ev(pg, "document.getElementById('toast').className"): bad(f"{tag}: {kind}: a refusal after the sheet closed should be a red toast: {ev(pg, TOAST)!r}")
+            if len(SENT) != 1: bad(f"{tag}: {kind}: only one request: {SENT}")
+            # a lost reply clears the flag too, and the sheet can be opened again
+            reset(pg); ev(pg, "S.fbFly={};1"); ev(pg, js_open + ";1"); wait(pg, f"!!document.querySelector({json.dumps(wait_sel)})"); ev(pg, call + ";1"); wait_held(1); answer(None, abort=True)
+            wait(pg, "/Check Kalshi/.test(document.querySelector('#sheet').innerText)", 6)
+            if ev(pg, "!!(S.fbFly&&S.fbFly.T1)"): bad(f"{tag}: {kind}: the flag must clear on a failed request")
+            reset(pg)
+            # the sheet replaced by another one (button removed) while pending: still a toast, and unknown stays Check Kalshi
+            ev(pg, js_open + ";1"); wait(pg, f"!!document.querySelector({json.dumps(wait_sel)})"); ev(pg, call + ";1"); wait_held(1)
+            ev(pg, "modal('<h3>Other</h3>');1"); answer({"ok": True, "msg": "The hedge wasn't placed. Kalshi isn't allowing orders for your account right now."}); nap(500)
+            if "isn't allowing orders" not in ev(pg, TOAST): bad(f"{tag}: {kind}: refusal with the button gone should toast: {ev(pg, TOAST)!r}")
+            reset(pg); ev(pg, js_open + ";1"); wait(pg, f"!!document.querySelector({json.dumps(wait_sel)})"); ev(pg, call + ";1"); wait_held(1)
+            ev(pg, "modal('<h3>Other</h3>');1"); answer({"ok": True, "msg": "⚠️ may or may not have gone through."}); nap(500)
+            if not re.search("Check Kalshi", modal_txt(pg)): bad(f"{tag}: {kind}: an unclear answer with the button gone must still show Check Kalshi: {modal_txt(pg)!r}")
+            reset(pg)
+        # what counts as a plain refusal: only the Mac's known refusal words. "That didn't work: <error>" and any other ok:false are unknown.
+        for r, want in (({"ok": False, "msg": "That didn't work: TimeoutError: slow"}, "chk"), ({"ok": False, "msg": "Something odd."}, "chk"),
+                        ({"ok": False, "msg": "Test combo: that offer expired."}, "bad"), ({"ok": True, "msg": "The hedge wasn't placed."}, "bad"),
+                        ({"ok": False, "msg": "Kalshi didn't take it. Nothing was sold."}, "bad"), ({"ok": True, "msg": "✅ Cashed out."}, "ok")):
+            got = ev(pg, f"fbKind({json.dumps(r)})")
+            if got != want: bad(f"{tag}: fbKind({r}) = {got}, want {want}")
+        ev(pg, LIVE + "sell('T1');1"); wait(pg, "!!document.querySelector('#sellgo')"); ev(pg, "doSell('T1');1"); wait_held(1)
+        answer({"ok": False, "msg": "That didn't work: ValueError: boom"})
+        if not wait(pg, "/Check Kalshi/.test(document.querySelector('#sheet').innerText)", 6) or ev(pg, "!!document.querySelector('.fb-bad')"): bad(f"{tag}: \"That didn't work\" must be Check Kalshi, not a red refusal: {modal_txt(pg)!r}")
+        reset(pg)
+
         # ---- Buy straight: the sheet's own guard (s.sending) and the two-tap confirm
         QS = "{t:'KXT',q:'abc',pick:'Test',ask:.5,cost:5,pays:10,arm:25,clears:true,blocked:null,secs:20,at:Date.now()/1000,stake:5}"
         fixture(pg, "sbbuy", "Buy")
