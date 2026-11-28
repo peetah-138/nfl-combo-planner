@@ -23,7 +23,8 @@
     "smallwins.css",
     "update.css",
     "live.css",
-    "motion4.css"
+    "motion4.css",
+    "motion3.css"
   ],
   "js": [
     "common.js",
@@ -49,6 +50,7 @@
     "game_tabs.js",
     "field.js",
     "motion4.js",
+    "motion3.js",
     "moments.js",
     "logaccess.js",
     "overlap.js",

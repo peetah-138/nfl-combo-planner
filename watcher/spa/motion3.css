@@ -1,0 +1,38 @@
+/* Motion M3: Games tab, game sheet, Results. Only transform and opacity; --dur-* tokens (calc for longer). Wins celebrate, losses are sober. */
+.m3g{position:absolute;inset:0;display:flex;align-items:center;justify-content:inherit;font:inherit;color:inherit;pointer-events:none;font-style:normal}
+.m3d{position:absolute;right:0;top:-2px;font:700 11px/1 var(--f,inherit);font-style:normal;pointer-events:none;white-space:nowrap;padding:2px 6px;border-radius:8px;z-index:2}
+.m3d.good{color:var(--yes);background:var(--yesbg)}.m3d.calm{color:var(--sub);background:var(--panel2)}
+.gc .gtr,.gc .gl .ch,.board2 .tm2,.dkpis>div{position:relative}
+/* list entrance: first six, 30 ms apart (set by --m3i); replaces M4's block stagger for these lists */
+main.enter.m3st>.games{animation:none}
+.m3in{animation:m3in var(--dur-3) var(--out) both;animation-delay:var(--m3i,0ms)}
+@keyframes m3in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+/* skeleton to content crossfade: the old skeleton rides on top and fades out */
+.m3x{position:relative}.m3ghost{position:absolute;pointer-events:none;z-index:3;background:var(--bg)}
+/* win-chance bar: a big move sweeps a highlight across; up is green-ish bright, down a calm dim */
+.gc .gl .gbar i{position:relative}
+.gc .gl .gbar i.m3up::after,.gc .gl .gbar i.m3dn::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);transform:translateX(-100%);animation:m3sw var(--dur-3) var(--ease) 1 both}
+.gc .gl .gbar i.m3dn::after{background:linear-gradient(90deg,transparent,rgba(0,0,0,.3),transparent)}
+@keyframes m3sw{to{transform:translateX(100%)}}
+.m3big,.m3bigd{display:inline-block;animation:m3pop var(--dur-3) var(--spring) 1}.m3bigd{animation-name:m3dip}
+@keyframes m3pop{50%{transform:scale(1.14)}}@keyframes m3dip{50%{transform:scale(.94);opacity:.7}}
+/* finished cards: a win keeps a calm tint ring, a loss a soft dim */
+.gc.m3won::before{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:inset 0 0 0 1px var(--yes);opacity:.5;pointer-events:none}
+.gc.m3lost{opacity:.82}
+.gc.m3win{animation:m3pop var(--dur-3) var(--spring) 1}.gc.m3loss{animation:m3dim calc(var(--dur-3)*2) var(--ease) 1}
+@keyframes m3dim{50%{opacity:.6}}
+.gc{position:relative}
+.m3chart{animation:m3in calc(var(--dur-3)*2) var(--out) both}
+/* results: profit bars grow from their baseline, the P/L tile pops on a real win, a win row gets an underline sweep */
+rect.brc.m3bar{transform-box:fill-box;animation:m3bar calc(var(--dur-3)*1.6) var(--out) both;animation-delay:var(--m3i,0ms)}
+@keyframes m3bar{from{transform:scaleY(0)}to{transform:none}}
+.m3pl{display:inline-block;animation:m3pop calc(var(--dur-3)*1.6) var(--spring) 1}
+.hn.rs.m3w .res{position:relative}
+.hn.rs.m3w .res::after{content:"";position:absolute;left:0;right:0;bottom:-2px;height:2px;border-radius:1px;background:var(--yes);transform-origin:0 50%;transform:scaleX(0);opacity:0;animation:m3ul calc(var(--dur-3)*3) var(--out) calc(var(--m3i,0ms) + 200ms) 1}
+@keyframes m3ul{0%{transform:scaleX(0);opacity:1}40%{transform:scaleX(1);opacity:1}100%{transform:scaleX(1);opacity:0}}
+.hn.rs.m3l .res b{opacity:.9}
+.bars2 .tr2 i{transform-origin:0 50%}
+/* honest motion: a stale feed or a hidden tab holds every running animation */
+main.m3stale .m3d,main.m3hid .m3d{display:none}
+main.m3stale .gc .gl .gbar i::after,main.m3hid *{animation-play-state:paused}
+@media (prefers-reduced-motion:reduce){.m3in,.m3chart,.m3pl,.m3big,.m3bigd,.gc.m3win,.gc.m3loss,rect.brc.m3bar{animation:none}.m3g,.m3d,.m3ghost,.hn.rs.m3w .res::after,.gc .gl .gbar i::after{display:none}.gc .gl .gbar i{transition:none}}

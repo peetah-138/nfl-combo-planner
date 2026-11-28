@@ -46,7 +46,7 @@ function gameCard(g){const live=GLIVE(g),fin=g.phase==='over',sc=g.sc,ch=g.chanc
    ${oppNm||oppPts!=null?`<div class="gtr them"><span class="nm" title="${esc(oppNm||'Opponent')}">${esc(oppNm||'Opponent')}</span>${oppPts!=null?`<b class="pts">${esc(String(oppPts))}</b>`:''}</div>`:''}</div>
   ${g.matchup&&g.kind&&g.kind!=='total'&&!oppNm&&oppPts==null?`<div class="gmu">${esc(g.matchup)}${g.found===false?' <i class="nf" title="Kalshi has no matching game on our schedule feed yet; this does not mean the bet is wrong">game not found</i>':''}</div>`:''}${g.kind==='total'&&g.found===false?'<div class="gmu"><i class="nf" title="Kalshi has no matching game on our schedule feed yet; this does not mean the bet is wrong">game not found</i></div>':''}
   <div class="gl${ch==null?' none':''}"><div class="ch"><b class="${ch==null?'':ch>=.5?'up':'down'}" ${ch!=null?`data-num="gch:${esc(g.ticker||g.name)}" data-v="${ch}" data-f="pct"`:''}>${ch==null?'—':pct(ch)}</b><small>${what}</small>
-   <div class="gbar"><i data-bar="gb:${esc(g.ticker||g.name)}" style="width:${ch==null?0:Math.max(2,Math.min(100,ch*100))}%;background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
+   <div class="gbar"><i data-m3b="${esc(g.ticker||g.name)}" data-v="${ch==null?0:Math.max(2,Math.min(100,ch*100))/100}" style="transform:scaleX(${ch==null?0:Math.max(2,Math.min(100,ch*100))/100});background:${col}"></i></div></div>${miniLine(gameLine(g),col)}</div>
   <div class="bets">${bets}</div><div class="gft"><span class="rd">${money(g.pays)} riding</span><span class="go">Open game ›</span></div></div>`;}
 function scoreWatch(gs){/* who scored since the last paint: your side, or theirs */
  S.gsc=S.gsc||{};S.gscore={};let any=null;

@@ -9,7 +9,7 @@
 .gc .gtr.them .pts{color:var(--sub)}.gc .gtr .mine{font-size:10.5px;font-weight:800;letter-spacing:.06em;color:var(--acc);background:var(--accbg);padding:2px 6px;border-radius:6px}
 .gc .gl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:14px;align-items:center}
 .gc .gl .ch b{display:block;font-size:24px;font-weight:800;letter-spacing:-.03em;line-height:1}.gc .gl .ch small{color:var(--mute);font-size:11.5px}
-.gc .gl .gbar{height:3px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}.gc .gl .gbar i{display:block;height:100%;border-radius:2px;transition:width .6s var(--ease)}
+.gc .gl .gbar{height:3px;border-radius:2px;background:var(--line);margin-top:6px;overflow:hidden}.gc .gl .gbar i{display:block;height:100%;width:100%;border-radius:2px;transform-origin:0 50%;transition:transform .6s var(--ease)}
 .mline{position:relative;height:46px}.mline svg{width:100%;height:46px;display:block;overflow:visible}
 .mline .sdot{width:8px;height:8px;margin:-4px 0 0 -4px}
 .gc .bets{display:flex;flex-wrap:wrap;gap:6px;border-top:1px solid var(--line);padding-top:10px;align-items:center}
