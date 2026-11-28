@@ -26086,6 +26086,27 @@ def _ap_raw_knobs():
         return False
 
 
+def _ap_smart():
+    """smart_tune's own numbers, read fresh; None when the file is there but unreadable (the in-force value can't be known)."""
+    try:
+        if not os.path.exists(SMART_FILE):
+            return {}
+        with open(SMART_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _ap_knob_inforce(name, g, kst, smart, lvval):
+    """The value of a group's exit knob that live smart sell really uses (what the brake judges by), not the stored `lv`:
+    smart_tune's newer number can win over an older one the group stepped to."""
+    if name in knob_live_names():
+        has, x = _knob_own_live(name, g, kst, smart)
+        return x if has else lvval
+    return lvval
+
+
 def ap_drift_items(st, now=None, kst=None):
     """([item, ...], None) or (None, why): every autopilot-managed setting that is away from its start, in the order the card
     shows them. Each item: key, rec, group, name, start / cur (numbers), start_text / cur_text, dir ('tighter' or 'looser'),
@@ -26128,12 +26149,18 @@ def ap_drift_items(st, now=None, kst=None):
     try:                                                     # the exit knobs: a group's own value that differs from the start
         if not _ap_raw_knobs():
             return None, "Smart sell's numbers couldn't be read"
+        smart = _ap_smart()
+        if smart is None:
+            return None, "Smart sell's numbers couldn't be read"
         kst = knob_state() if kst is None else kst
         for g, e in sorted((kst.get("groups") or {}).items()):
             lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else {}
             for name, cur in sorted(lv.items()):
                 k = KNOB_BY.get(name)
                 if not k or isinstance(k["start"], dict) or isinstance(cur, (dict, list)) or not _knob_valid(name, cur):
+                    continue
+                cur = _ap_knob_inforce(name, g, kst, smart, cur)      # what is really in force, not the stored number
+                if isinstance(cur, bool) or not (cur is None or isinstance(cur, (int, float))) or not _knob_valid(name, cur):
                     continue
                 start = k["start"]
                 if cur == start:
@@ -26325,14 +26352,17 @@ def _ap_reset_knobs(out, now):
     applied = []
     if not _ap_raw_knobs():
         raise OSError("knob file unreadable")
+    smart = _ap_smart()
+    if smart is None:
+        raise OSError("smart file unreadable")
 
     def go(d):
         for it in out["knobs"]:
             e = d["groups"].get(it["g"])
             name = it["knob"]
             lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else None
-            if lv is None or lv.get(name) != it["cur"]:
-                continue
+            if lv is None or name not in lv or _ap_knob_inforce(name, it["g"], d, smart, lv.get(name)) != it["cur"]:
+                continue                                     # moved since the look: left alone
             lat = e["lat"] if isinstance(e.get("lat"), dict) else {}
             v = e["v"] if isinstance(e.get("v"), dict) else {}
             lv[name] = it["start"]                           # pinned to start (like the brake), not removed: removing would let

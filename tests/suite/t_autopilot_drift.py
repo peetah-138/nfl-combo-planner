@@ -195,6 +195,44 @@ has, val = E._knob_own_live("smart_floor", "nba", E.knob_state(), E.load_json(E.
 ok("knob reset with a filled smart.json: the effective floor is exactly the start, not smart_tune's",
    okc is True and has and val == k["start"] and E.knob_state()["groups"]["nba"]["lv"]["smart_floor"] == k["start"])
 os.remove(E.SMART_FILE)
+# the value IN FORCE (smart_tune's newer number can win over a stale `lv`) is what the card shows and what the gate judges
+SMARTF = {"smart_floor": ("floor", "n", "at"), "smart_lam": ("lam", "n", "at"), "sl_prog": ("prog", "sl_n", "sl_at"), "sl_drop": ("drop", "sl_n", "sl_at")}
+def smart_row(name, val):
+    f, nk, ak = SMARTF[name]
+    row = {nk: 500, ak: int(NOW - 3600), f: val}
+    if name in ("sl_prog", "sl_drop"):
+        row.update(sl_prog=E.SL_DEFAULT["prog"], sl_drop=E.SL_DEFAULT["drop"]); row["sl_" + f] = val
+    return {"nba": row}
+def pick(name):
+    kk = E.KNOB_BY[name]; st0 = kk["start"]
+    cs = [round(st0 * f, 4) for f in (0.5, 0.7, 0.9, 1.1, 1.3, 1.6) if E._knob_valid(name, round(st0 * f, 4)) and round(st0 * f, 4) != st0]
+    tight = [c for c in cs if not E.knob_loosens(name, st0, c)]; loose = [c for c in cs if E.knob_loosens(name, st0, c)]
+    return tight[0], loose[0]
+for name in SMARTF:
+    kk = E.KNOB_BY[name]; tight, loose = pick(name)
+    for stale, inforce in ((tight, loose), (loose, tight)):
+        E.save_json(E.SMART_FILE, smart_row(name, inforce))
+        fresh(ALL, caution={"level": 1})
+        E.save_json(E.KNOBS_FILE, {"groups": {"nba": {"v": {name: stale}, "lv": {name: stale}, "lat": {name: NOW - DAY}}}}); E.KNOB_STATE_CACHE["d"] = None
+        it = [x for x in E.ap_drift_view(E.fa_state(), NOW)["items"] if x["key"] == f"knob:nba:{name}"]
+        okc, msg = E.ap_reset(f"knob:nba:{name}", NOW)
+        tag = f"{name}, stale {'tighter' if stale == tight else 'looser'} number, smart_tune's newer one {'looser' if inforce == loose else 'tighter'}"
+        ok(tag + ": the card shows the in-force number",
+           len(it) == 1 and it[0]["cur"] == inforce and E.knob_say(kk["unit"], inforce) in it[0]["line"] and it[0]["dir"] == ("looser" if inforce == loose else "tighter"))
+        would_loosen = E.knob_loosens(name, inforce, kk["start"])
+        ok(tag + ": at caution 1 a loosening reset is refused, a tightening one goes through", okc is (not would_loosen))
+        if would_loosen:
+            ok(tag + ": ...and nothing was written", E.knob_state()["groups"]["nba"]["lv"][name] == stale)
+        else:
+            ok(tag + ": ...the floor in force is exactly the start",
+               E._knob_own_live(name, "nba", E.knob_state(), E.load_json(E.SMART_FILE, {})) == (True, kk["start"]))
+os.remove(E.SMART_FILE)
+# an unreadable smart.json: refused, nothing changed
+fresh(ALL, caution={"level": 1}); knobfile()
+open(E.SMART_FILE, "w").write("{broken")
+okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)
+ok("unreadable smart.json: refused", okc is False and E.knob_state()["groups"]["nba"]["lv"]["smart_floor"] == cur)
+os.remove(E.SMART_FILE)
 # a damaged frozen list is not silently cleared
 fresh(ALL)
 E._fa_update(lambda s: s["lessons"].__setitem__("frozen", ["bar:nba"]))
