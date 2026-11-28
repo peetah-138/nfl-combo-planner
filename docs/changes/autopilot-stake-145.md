@@ -25,8 +25,8 @@ cap, the free bankroll, what is left before the daily loss limit, the panel budg
 - **Evidence.** `_stake_load` / `_capuse_load` replay full-auto real settled bets (stake multiple recorded in `sizes`) and the paper
   panel; stake evidence is a linear approximation (profit scales with the multiple), divided by each bet's ACTUAL size ratio (what it really
   cost over its normal size, brake cut taken out; a clamp that shrank a bet is counted), not the multiple in force.
-- **Per-game limit.** `fal_filter` checks the learned per-game limit on the stake that would really be bought (multiplied, capped
-  at 1.0 while cautious), and its running total adds the same figure.
+- **Per-game limit.** `fal_filter` checks the learned per-game limit on the stake that would really be bought (always the full
+  multiple, never capped by the saved brake level, since the buy pass recomputes the level and may buy at the full size on the pass the brake recovers), and its running total adds the same figure.
 - **Controls.** Undo, per-setting freeze, the master Autopilot switch and the 2-week hold work as for the other settings; changes
   appear on the Autopilot card in plain words with the dollars behind them. Data starts empty, so nothing loosens until there is evidence.
 - **Tests:** `tests/suite/t_autopilot_stake.py` (bounds, step sizes, loosen gates, brake gating, tighten fast, same-week exclusion,

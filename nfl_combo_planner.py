@@ -25804,7 +25804,7 @@ def fal_filter(items, st, now):
         except Exception:
             return [], list(items)
     kept, held = [], []
-    mult = ap_stake_mult(st, 1 if ap_brake_cautious(st, now) else 0)   # (#145 step 7) 1 while cautious: the brake's cut is never undone
+    mult = ap_stake_mult(st, 0)                              # (#145 step 7) always the full multiple, never capped by the SAVED brake level: the buy pass uses a freshly computed level, so this is the safe upper bound
     for c in items:
         try:
             tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]

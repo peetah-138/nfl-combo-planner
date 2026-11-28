@@ -204,7 +204,13 @@ reset(); seed(pls=(2, -4, -4, 1))
 plan = E._fal_plan(E.fa_state(), NOW)
 acts = [a["rec"] for a in plan["actions"] if a["do"] == "step"]
 ok("never stake and cap use together in one plan, and at most two settings", not ({"stake", "capuse"} <= set(acts)) and len(acts) <= E.AP_WEEK_MAX)
-ok("the weekly limit is two settings", E.AP_WEEK_MAX == 2)
+# the weekly limit, behaviourally: a third loosening in one week is refused, a tightening still goes ahead
+reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}))
+tick()
+ok("third loosening in a week refused: two other settings moved, a profitable quiet month does not raise bet size", vals().get("stake_mult") == 0.9)
+reset(); seed(pls=(2, -4, -4, 1)); learned("stake_mult", 1.0); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}))
+tick()
+ok("with the same two moves this week, a tightening is still allowed (1.0 -> 0.95)", vals().get("stake_mult") == 0.95)
 # tightening is never held by the two-a-week limit; a loosening is
 reset(); seed(pls=(2, -4, -4, 1)); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}))
 tick()
@@ -368,7 +374,15 @@ ok("at 100% the learned multiple changes nothing", gl_pass({"stake_mult": 1.0}) 
 ok("at 90% (smaller bets) the check never uses a smaller stake than the panel's own", gl_pass({"stake_mult": 0.9}) == (["g1"], []))
 reset(); E._fa_update(lambda s: s["lessons"].update(vals={"game_share": 0.10, "stake_mult": 1.5})); cautious(1)
 k, h = E.fal_filter([dict(GL)], E.fa_state(), NOW)
-ok("while cautious the multiple is capped at 1.0, so the same bet is kept", [c["id"] for c in k] == ["g1"] and not h)
+ok("recovery pass: SAVED brake level up, fresh level normal, multiple 1.5: judged at the full $15 ($20 + $15 = $35 > $30), held back, never kept at 1x",
+   [c["id"] for c in k] == [] and [c["id"] for c in h] == ["g1"])
+E.killer_exposure = lambda now=None: {GK: {"n": 1, "risk": 15.0}}
+reset(); E._fa_update(lambda s: s["lessons"].update(vals={"game_share": 0.10, "stake_mult": 1.5})); cautious(1)
+k, h = E.fal_filter([dict(GL)], E.fa_state(), NOW)
+ok("recovery pass at exactly the limit: $15 open + $15 full-size = $30 is kept with the brake saved up", [c["id"] for c in k] == ["g1"] and not h)
+E.killer_exposure = lambda now=None: {GK: {"n": 1, "risk": 15.01}}
+k, h = E.fal_filter([dict(GL)], E.fa_state(), NOW)
+ok("recovery pass one cent over: $15.01 + $15 = $30.01 is held back", not k and [c["id"] for c in h] == ["g1"])
 E.killer_exposure = lambda now=None: {GK: {"n": 1, "risk": 14.0}}
 reset(); E._fa_update(lambda s: s["lessons"].update(vals={"game_share": 0.10, "stake_mult": 1.5}))
 two = [dict(GL, id="a"), dict(GL, id="b")]
