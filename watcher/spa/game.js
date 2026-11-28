@@ -123,3 +123,6 @@ function possTeam(d){const sit=(d||{}).situation||{},dr=(d||{}).drive||{};
  for(const c of [dr.teamAbbr,sit.possAbbr]){const a=String(c||'').toUpperCase();if(a&&_teamSide(d,a))return a;}return '';}
 function scbPoss(d,abbr){if(!abbr||!_teamSide(d,abbr))return '';
  return possTeam(d)===abbr.toUpperCase()?'<span class="poss" title="has the ball">🏈</span>':'';}
+
+// Back to the tab with a game open: show current numbers at once if the last draw is over FG_RELOAD_MIN_MS old (same gate as Live/Games).
+document.addEventListener('visibilitychange',()=>{if(document.hidden||!S.gameOpen||!$('#modal').classList.contains('on'))return;if(Date.now()-(S.gameAt||0)>FG_RELOAD_MIN_MS)drawGame();});
