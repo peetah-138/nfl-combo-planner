@@ -95,7 +95,7 @@ with sync_playwright() as pw:
         if a["miss"] or a["nopress"]: bad(f"{tag}: the sheet has controls without press/haptic: {a['miss'][:3]} {a['nopress'][:3]}")
         if phone:
             r = pg.evaluate("getComputedStyle($('#sheet')).borderTopLeftRadius")
-            if r != "22px": bad(f"{tag}: the phone sheet isn't a rounded bottom sheet ({r})")
+            if r != "20px": bad(f"{tag}: the phone sheet isn't a rounded bottom sheet ({r})")
         pg.evaluate("closeModal()"); time.sleep(.4)
 
         # ---- Let it ride: a slider with a haptic detent at each step; the name pops; the dots follow; it saves

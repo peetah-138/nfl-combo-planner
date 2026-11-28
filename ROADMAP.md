@@ -263,6 +263,7 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 - **Release 2026.11.27.146:** Autopilot learns league and bet-type budget shares (#145, step 6) and bet size and cap use (#145, step 7); Autopilot card wording and accessibility polish (#618-#621); cash-out help and Smart Buy bar wording (#431, #283).
 - **Release 2026.11.27.147:** Autopilot follow-ups: loss room at any stake size (#632), tighten-only `_sl_tune` and live-cap share evidence (#633, #592), buy-timing data record (#8); sell guard replay uses live confirm counts (#316); wording nits (#633a); Games and Build phone polish (two rounds).
 - **Release 2026.11.28.148:** Autopilot "Drift since start" and "Back to start" with fail-closed resets (#145); Buy path follow-ups (date on the ESPN match, pace for full-game totals only, alert path runs the Build page's checks) (#482); autopilot invariant simulator (tests only); no-money batch 5 (#650-#652); Games score memory covers every game (#654 follow-up).
+- **Release 2026.11.28.149:** Full-auto loss room counts a settled loss once, with a named 10% cushion (#646, Pete's choice); buy-timing log correctness fixes, record only (#640, #649).
 
 ---
 
