@@ -1,5 +1,5 @@
 /* ---- makeover phase 3: every remaining screen in the same motion system ---- */
-:root{color-scheme:dark;--fs-xs:11px;--fs-s:12.5px;--fs-m:14px;--fs-l:17px;--sp:16px}
+:root{color-scheme:dark;--fs-xs:var(--t-xs);--fs-s:var(--t-sm);--fs-m:var(--t-base);--fs-l:var(--t-lg);--sp:var(--s4)}
 @media (prefers-color-scheme:light){:root{color-scheme:light}
  .own{background:rgba(217,119,6,.13);color:#a85a06}.ss.me{background:rgba(217,119,6,.11);border-color:rgba(217,119,6,.38);color:#a85a06}
  .sheet{box-shadow:0 24px 60px rgba(16,24,40,.18)}.modal:not(.push){background:rgba(15,20,32,.32)}
@@ -9,7 +9,7 @@
 /* safe areas for the Home Screen app (notch, rounded corners, home indicator) */
 @media (max-width:900px){main{padding-left:max(14px,env(safe-area-inset-left));padding-right:max(14px,env(safe-area-inset-right))}
  .top{padding-left:max(16px,env(safe-area-inset-left));padding-right:max(16px,env(safe-area-inset-right))}
- .modal:not(.push) .sheet{border-radius:22px 22px 0 0;max-width:none;padding-bottom:calc(22px + env(safe-area-inset-bottom));max-height:calc(100dvh - env(safe-area-inset-top) - 18px);overflow:auto;overscroll-behavior:contain}}
+ .modal:not(.push) .sheet{border-radius:var(--r-lg) var(--r-lg) 0 0;max-width:none;padding-bottom:calc(22px + env(safe-area-inset-bottom));max-height:calc(100dvh - env(safe-area-inset-top) - 18px);overflow:auto;overscroll-behavior:contain}}
 /* keyboard-aware sheets: the sheet rides up above the on-screen keyboard */
 .modal:not(.push){padding-bottom:var(--kb,0px);transition:opacity .22s var(--ease),padding-bottom .25s var(--out)}
 @media (max-width:900px){.modal:not(.push){padding-bottom:var(--kb,0px)}}
@@ -22,10 +22,10 @@ body.hc .top{box-shadow:0 8px 24px rgba(0,0,0,.16)}
 @media (max-width:900px){body.hc .top{padding-top:calc(5px + env(safe-area-inset-top));padding-bottom:5px}body.hc .brand{transform:scale(.84)}body.hc .ts span{opacity:0;max-height:0}}
 /* the calm reconnecting banner */
 .netbar{position:fixed;left:50%;top:calc(env(safe-area-inset-top) + 68px);z-index:26;transform:translate(-50%,-16px);opacity:0;pointer-events:none;display:flex;align-items:center;gap:8px;
- padding:8px 14px;border-radius:999px;background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:12.5px;font-weight:650;color:var(--ink);
+ padding:8px 14px;border-radius:var(--r-pill);background:color-mix(in srgb,var(--panel) 92%,transparent);border:1px solid var(--line);box-shadow:0 8px 24px rgba(0,0,0,.28);font-size:var(--t-sm);font-weight:650;color:var(--ink);
  -webkit-backdrop-filter:blur(14px);backdrop-filter:blur(14px);transition:transform .4s var(--spring),opacity .25s;white-space:nowrap;max-width:calc(100vw - 32px)}
 .netbar.on{opacity:1;transform:translate(-50%,0)}.netbar i{width:8px;height:8px;border-radius:50%;background:var(--live);animation:pulse2 1.4s infinite;flex:none}
-.netbar small{color:var(--mute);font-weight:500;font-size:12px;overflow:hidden;text-overflow:ellipsis}.netbar.ok{color:var(--yes)}.netbar.ok i{background:var(--yes);animation:none}
+.netbar small{color:var(--mute);font-weight:500;font-size:var(--t-sm);overflow:hidden;text-overflow:ellipsis}.netbar.ok{color:var(--yes)}.netbar.ok i{background:var(--yes);animation:none}
 /* pull to refresh, on every tab: rubber band, a ring that fills, a spin, a check */
 #ptr svg{width:20px;height:20px;overflow:visible}#ptr circle{fill:none;stroke:var(--acc);stroke-width:2.4;stroke-linecap:round;transform:rotate(-90deg);transform-origin:10px 10px;transition:stroke-dashoffset .05s}
 #ptr path{fill:none;stroke:var(--yes);stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:20;stroke-dashoffset:20;opacity:0}
