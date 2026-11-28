@@ -74,6 +74,30 @@ ok("a new result is written onto the same row", E.timing_log_pass(now + 120) == 
    and E.store_rows("select result, pl from timing_log")[0] == {"result": "won", "pl": 4.2})
 ok("first-seen time kept on refresh", E.store_rows("select ts, upd from timing_log")[0] == {"ts": now, "upd": now + 120})
 
+# 3b. (#640 #649) later fees / pl / stake refresh a row; one ticker bought twice splits its fees; a buy after the start is live
+E.store_x("delete from timing_log"); E.store_x("delete from panel")
+E._ledger_table()
+E.store_x("insert into ledger(ticker, fees, sell_fees) values('KXNBAGAME-A', 0.30, 0.10)")
+a1 = dict(single, id="a1", kick=past, bought_at=past - 2 * H, stake=6.0, result=None, pl=None, pl_real=None, clv=None)
+a2 = dict(a1, id="a2", stake=2.0)
+E.store_x("insert into panel values(?,?,?,?,?)", (day, "real", now, "approved", json.dumps({"at": now, "items": [a1, a2]})))
+E.timing_log_pass(now)
+fe = {r["key"]: r["fees"] for r in E.store_rows("select key, fees from timing_log")}
+ok("same ticker bought twice: fees split by stake, summing to the ledger once (0.30 + 0.10)",
+   len(fe) == 2 and abs(fe[f"real|{day}|a1"] - 0.30) < 1e-9 and abs(fe[f"real|{day}|a2"] - 0.10) < 1e-9, fe)
+E.store_x("update panel set body=? where day=? and mode='real'", (json.dumps({"at": now, "items": [a1]}), day))
+E.store_x("update ledger set fees=0.50 where ticker='KXNBAGAME-A'")
+ok("a fee that arrives later refreshes the row", E.timing_log_pass(now + 60) == 1
+   and E.store_rows("select fees from timing_log where key=?", (f"real|{day}|a1",))[0]["fees"] == 0.6)
+a1b = dict(a1, pl=1.5, stake=7.0)
+E.store_x("update panel set body=? where day=? and mode='real'", (json.dumps({"at": now, "items": [a1b]}), day))
+ok("a changed pl or stake alone refreshes the row", E.timing_log_pass(now + 120) == 1
+   and E.store_rows("select pl, stake from timing_log where key=?", (f"real|{day}|a1",))[0] == {"pl": 1.5, "stake": 7.0}
+   and E.timing_log_pass(now + 180) == 0)
+r = E.timing_row("real", "d", dict(single, kick=K, bought_at=K + 600), set(), {"KXNBAGAME-A": 0.6}, None, K)
+ok("bought after the start without the live flag: live, no close or CLV", r["live"] == 1 and r["bucket"] == "live"
+   and r["close"] is None and r["clv_buy"] is None, r)
+
 # 4. bounded storage
 E.store_x("delete from timing_log"); E.store_x("delete from panel")   # (no bought bets left to write)
 for i in range(5):

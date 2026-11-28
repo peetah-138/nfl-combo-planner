@@ -24113,6 +24113,10 @@ def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
     now = time.time() if now is None else now
     at = c.get("bought_at") or c.get("at")
     live = bool(c.get("live"))
+    try:                                                      # (#640) a buy after the start is live even without the flag
+        live = live or (float(at) > float(c.get("kick")) > 0)
+    except (TypeError, ValueError):
+        pass
     bucket, hours = timing_bucket(c.get("kick"), at, live)
     legs = c.get("legs") or []
     ps = [l.get("p") for l in legs]
@@ -24134,6 +24138,7 @@ def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
             "stake": c.get("stake"), "fees": fees, "result": c.get("result"), "pl": c.get("pl"), "pl_real": c.get("pl_real")}
 
 
+_TIMING_WATCH = ("result", "close", "pl_real", "clv", "pl", "fees", "stake")   # (#640 #649) a change in any of these refreshes the row
 _TIMING_COLS = ("key", "ts", "upd", "mode", "day", "auto", "league", "kind", "live", "kick", "bought_at", "hours", "bucket",
                 "p_build", "p_buy", "close", "clv", "clv_buy", "stake", "fees", "result", "pl", "pl_real")
 
@@ -24177,15 +24182,22 @@ def timing_log_pass(now=None, log=console_note):
         closes = close_prices(sorted(tks), mid=True) if tks else {}
         led = {r["ticker"]: (r["fees"] or 0) + (r["sell_fees"] or 0) for r in store_rows("select ticker, fees, sell_fees from ledger")} \
             if STORE.get("ledger_ok") else {}
-        have = {r["key"]: (r["result"], r["close"], r["pl_real"], r["clv"]) for r in
-                store_rows("select key, result, close, pl_real, clv from timing_log where ts >= ?", (now - TIMING["keep"],))}
+        shares = {}                                       # (#640) one ticker bought twice: its fees are split by stake, not counted twice
+        for m_, _, c in items:
+            if m_.startswith("real"):
+                shares[_panel_ticker(c)] = shares.get(_panel_ticker(c), 0.0) + float(c.get("stake") or 0)
+        have = {r["key"]: tuple(r[k] for k in _TIMING_WATCH) for r in
+                store_rows("select key, " + ",".join(_TIMING_WATCH) + " from timing_log where ts >= ?", (now - TIMING["keep"],))}
         wrote = 0
         for mode, day, c in items:
             if wrote >= TIMING["batch"]:
                 break
             fee = led.get(_panel_ticker(c)) if mode.startswith("real") else None
+            tot = shares.get(_panel_ticker(c)) or 0.0
+            if fee is not None and tot > 0 and float(c.get("stake") or 0) < tot:
+                fee = fee * float(c.get("stake") or 0) / tot
             row = timing_row(mode, day, c, auto, closes, round(fee, 4) if fee is not None else None, now)
-            if not row or have.get(row["key"]) == (row["result"], row["close"], row["pl_real"], row["clv"]):
+            if not row or have.get(row["key"]) == tuple(row[k] for k in _TIMING_WATCH):
                 continue
             row.update(ts=now, upd=now)
             store_x("insert into timing_log(" + ",".join(_TIMING_COLS) + ") values(" + ",".join("?" * len(_TIMING_COLS)) + ") "
