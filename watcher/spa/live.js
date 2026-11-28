@@ -250,11 +250,11 @@ async function hedgeDismiss(t){hap();const c=((S.live&&S.live.combos)||[]).find(
  toast(r.msg,3500);}
 async function ask(t){S.busy[t]=true;S.open[t]=true;renderLive();const r=await api('/app/api/act',{a:'ask',t});S.busy[t]=false;
  hap(r.ok?'success':'error');if(!r.ok)toast(r.msg||'No offer came in.');await load('live',true);}
-function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;
+function sell(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(!c)return;if(fbFlying(t)){fbBusyToast();return;}
  modal(`<h3>Cash out ${esc(c.label)} for ${lm(c.offer)}?</h3><p>You paid ${lm(c.cost)} (${lsm(c.offer-c.cost)}). If you hold instead: ${pct(c.p)} chance of ${lm(c.pays)}. Kalshi's offer only lasts a few seconds.</p>
  <div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn yes" id="sellgo" data-t="${esc(t)}" onclick="doSell(this.dataset.t)">Cash out</button></div>`);}
 async function doSell(t){return fbSell(t);}   // press.js: pending, result, one tap at a time
-async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${lm(c.hedge.cost)}, so you collect about ${lm(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" data-t="${esc(t)}" onclick="fbHedge(this)">Place hedge</button></div>`);}
+async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);if(fbFlying(t)){fbBusyToast();return;}modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${lm(c.hedge.cost)}, so you collect about ${lm(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" data-t="${esc(t)}" onclick="fbHedge(this)">Place hedge</button></div>`);}
 async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}
 
 /* ---- Live motion (package M2). Display only: it reads what the page already drew and adds motion on top; it never changes a
