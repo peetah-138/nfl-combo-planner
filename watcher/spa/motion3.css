@@ -1,5 +1,7 @@
 /* Motion M3: Games tab, game sheet, Results. Only transform and opacity; --dur-* tokens (calc for longer). Wins celebrate, losses are sober. */
-.m3g{position:absolute;inset:0;display:flex;align-items:center;justify-content:inherit;font:inherit;color:inherit;pointer-events:none;font-style:normal}
+.m3flip{position:relative}.m3flip::after{content:attr(data-old);position:absolute;left:0;right:0;top:0;text-align:inherit;pointer-events:none;animation:m3out var(--dur-2) var(--ease) both}
+@keyframes m3out{to{transform:translateY(-70%);opacity:0}}
+.m3fade{animation:m3fade var(--dur-3) var(--ease) both}@keyframes m3fade{from{opacity:0}to{opacity:1}}
 .m3d{position:absolute;right:0;top:-2px;font:700 11px/1 var(--f,inherit);font-style:normal;pointer-events:none;white-space:nowrap;padding:2px 6px;border-radius:8px;z-index:2}
 .m3d.good{color:var(--yes);background:var(--yesbg)}.m3d.calm{color:var(--sub);background:var(--panel2)}
 .gc .gtr,.gc .gl .ch,.board2 .tm2,.dkpis>div{position:relative}
@@ -7,8 +9,6 @@
 main.enter.m3st>.games{animation:none}
 .m3in{animation:m3in var(--dur-3) var(--out) both;animation-delay:var(--m3i,0ms)}
 @keyframes m3in{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
-/* skeleton to content crossfade: the old skeleton rides on top and fades out */
-.m3x{position:relative}.m3ghost{position:absolute;pointer-events:none;z-index:3;background:var(--bg)}
 /* win-chance bar: a big move sweeps a highlight across; up is green-ish bright, down a calm dim */
 .gc .gl .gbar i{position:relative}
 .gc .gl .gbar i.m3up::after,.gc .gl .gbar i.m3dn::after{content:"";position:absolute;inset:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);transform:translateX(-100%);animation:m3sw var(--dur-3) var(--ease) 1 both}
@@ -35,4 +35,4 @@ rect.brc.m3bar{transform-box:fill-box;animation:m3bar calc(var(--dur-3)*1.6) var
 /* honest motion: a stale feed or a hidden tab holds every running animation */
 main.m3stale .m3d,main.m3hid .m3d{display:none}
 main.m3stale .gc .gl .gbar i::after,main.m3hid *{animation-play-state:paused}
-@media (prefers-reduced-motion:reduce){.m3in,.m3chart,.m3pl,.m3big,.m3bigd,.gc.m3win,.gc.m3loss,rect.brc.m3bar{animation:none}.m3g,.m3d,.m3ghost,.hn.rs.m3w .res::after,.gc .gl .gbar i::after{display:none}.gc .gl .gbar i{transition:none}}
+@media (prefers-reduced-motion:reduce){.m3in,.m3chart,.m3pl,.m3big,.m3bigd,.gc.m3win,.gc.m3loss,rect.brc.m3bar{animation:none}.m3flip::after,.m3fade,.m3d,.hn.rs.m3w .res::after,.gc .gl .gbar i::after{display:none}.gc .gl .gbar i{transition:none}}

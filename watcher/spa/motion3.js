@@ -67,11 +67,9 @@ function cardsByKey(m){const o={};m.querySelectorAll('.gc[data-gk]').forEach(c=>
 const EASE='cubic-bezier(.2,.8,.2,1)',POP='cubic-bezier(.2,.9,.25,1.12)';
 function anim(el,frames,opt){try{return el.animate?el.animate(frames,opt):null;}catch(e){return null;}}
 // The number flips: the old digits rise out, the new ones rise in from below. The text is already final in the DOM.
-function flip(el,oldText){if(!el||oldText==null)return;el.style.position=el.style.position||'relative';
- const g=document.createElement('i');g.className='m3g';g.setAttribute('aria-hidden','true');g.textContent=oldText;el.appendChild(g);
- const a=anim(g,[{transform:'none',opacity:1},{transform:'translateY(-70%)',opacity:0}],{duration:260,easing:EASE,fill:'forwards'});
- if(a)a.onfinish=()=>g.remove();else g.remove();setTimeout(()=>{if(g.isConnected)g.remove();},700);
- anim(el.querySelector?el:el,[{transform:'translateY(60%)',opacity:0},{transform:'none',opacity:1}],{duration:320,easing:POP});}
+function flip(el,oldText){if(!el||oldText==null)return;el.setAttribute('data-old',oldText);el.classList.remove('m3flip');void el.offsetWidth;el.classList.add('m3flip');
+ setTimeout(()=>{el.classList.remove('m3flip');el.removeAttribute('data-old');},500);
+ anim(el,[{transform:'translateY(60%)',opacity:0},{transform:'none',opacity:1}],{duration:320,easing:POP});}
 // A small chip that rises off a number and fades: "+7" (green) in your favour, grey otherwise (a loss is never a colour alarm).
 function chip(host,text,good){if(!host)return;const c=document.createElement('i');c.className='m3d '+(good?'good':'calm');c.textContent=text;c.setAttribute('aria-hidden','true');
  host.appendChild(c);const a=anim(c,[{transform:'translateY(4px) scale(.9)',opacity:0},{transform:'translateY(-6px) scale(1)',opacity:1,offset:.2},{transform:'translateY(-22px) scale(1)',opacity:0}],{duration:1200,easing:EASE,fill:'forwards'});
@@ -79,18 +77,9 @@ function chip(host,text,good){if(!host)return;const c=document.createElement('i'
 function sweep(bar,cls){if(!bar)return;bar.classList.remove('m3up','m3dn');void bar.offsetWidth;bar.classList.add(cls);setTimeout(()=>bar.classList.remove(cls),1400);}
 function once(el,cls,ms){if(!el)return;el.classList.remove(cls);void el.offsetWidth;el.classList.add(cls);setTimeout(()=>el.classList.remove(cls),ms||2200);}
 
-// Count a text up to its final value (visual only; the DOM text is final before and after).
-function countUp(el,tone){if(!el||el.children.length||!/\d/.test(el.textContent))return;const fin=el.textContent,dur=COUNT_MS[tone]||COUNT_MS.flat;let t0=null;
- const step=t=>{if(!el.isConnected)return;if(t0==null)t0=t;const k=(t-t0)/dur;if(k>=1){el.textContent=fin;return;}el.textContent=countText(fin,easeOut(k));requestAnimationFrame(step);};
- el.textContent=countText(fin,0);requestAnimationFrame(step);}
-
-// Skeleton to content: the old skeleton is kept as an overlay and fades out while the real content fades in under it.
-function ghostOf(m){if(reduceNow()||document.hidden)return null;if(!m.querySelector('[aria-busy="true"],.skel,.hsk,.ansk'))return null;
- const g=document.createElement('div');g.className='m3ghost';g.setAttribute('aria-hidden','true');g.innerHTML=m.innerHTML;return g;}
-function place(m,g){if(!g)return;const cs=getComputedStyle(m);g.style.left=cs.paddingLeft;g.style.right=cs.paddingRight;g.style.top=cs.paddingTop;
- m.classList.add('m3x');m.appendChild(g);const a=anim(g,[{opacity:1},{opacity:0}],{duration:240,easing:EASE,fill:'forwards'});
- const done=()=>{g.remove();m.classList.remove('m3x');};if(a)a.onfinish=done;setTimeout(done,700);}
-function before(m){const first=!!(typeof S!=='undefined'&&S.entered);return {first,ghost:m?ghostOf(m):null,hadSkel:!!(m&&m.querySelector('[aria-busy="true"],.skel,.hsk,.ansk'))};}
+// Skeleton to content: the real content fades in (opacity only). No copy of the skeleton is kept, so nothing is ever on the page twice.
+function before(m){const first=!!(typeof S!=='undefined'&&S.entered);return {first,hadSkel:!!(m&&m.querySelector('[aria-busy="true"],.skel,.hsk,.ansk'))};}
+function fadeIn(m){[].slice.call(m.children).forEach(e=>{if(e.classList.contains('m3in'))return;e.classList.add('m3fade');setTimeout(()=>e.classList.remove('m3fade'),700);});}
 
 function staggerIn(m,els){const n=[];let i=0;els.forEach(e=>{const d=stagDelay(i);if(d==null)return;i++;e.classList.add('m3in');e.style.setProperty('--m3i',String(d)+'ms');n.push(e);});
  if(n.length){m.classList.add('m3st');setTimeout(()=>m.classList.remove('m3st'),900);}}
@@ -115,14 +104,13 @@ function afterGames(pre){const m=document.getElementById('main'),d=S.games;if(!m
  m.querySelectorAll('.gbar i[data-m3b]').forEach(el=>{const k=el.dataset.m3b,v=parseFloat(el.dataset.v),was=s.bars[k];s.bars[k]=v;
   const f=barFrom(was,v,ok);if(f==null)return;el.style.transition='none';el.style.transform='scaleX('+f+')';void el.offsetWidth;el.style.transition='';el.style.transform='scaleX('+v+')';});
  if((pre.first||pre.hadSkel)&&!reduce&&!hidden)staggerIn(m,[].slice.call(m.querySelectorAll('.gc')));
- place(m,pre.ghost);}
+ if(pre.hadSkel&&!reduce&&!hidden)fadeIn(m);}
 
 function afterResults(pre){const m=document.getElementById('main'),d=S.res;if(!m||!d||m.querySelector('[aria-busy="true"]')||!m.querySelector('.kpis,.pb,.plc,.hn'))return;
  const reduce=reduceNow(),hidden=document.hidden;
  if((pre.first||pre.hadSkel)&&!reduce&&!hidden){
   const tone=resultTone(d.pl);
-  m.querySelectorAll('.kpis.rk .kpi b,.pbbig>b,.pbk b,.pbclv b').forEach(el=>countUp(el,el.closest('.kpi.rkh,.pbbig')?tone:'flat'));
-  const hero=m.querySelector('.kpi.rkh'),pbb=m.querySelector('.pbbig>b');
+  const hero=m.querySelector('.kpi.rkh b'),pbb=m.querySelector('.pbbig>b');
   if(tone==='win'){if(hero)setTimeout(()=>once(hero,'m3pl',2400),COUNT_MS.win-200);if(pbb&&pbb.classList.contains('up'))setTimeout(()=>once(pbb,'m3pl',2400),COUNT_MS.win-200);}
   // the profit bars grow from their baseline, 30 ms apart; a win bar grows up, a loss bar grows down
   m.querySelectorAll('.plc rect.brc').forEach((r,i)=>{const dl=stagDelay(i);r.style.setProperty('--m3i',(dl==null?MAX_STAG*STAG_MS:dl)+'ms');r.classList.add('m3bar');r.style.transformOrigin=r.getAttribute('fill')==='var(--no)'?'50% 0':'50% 100%';});
@@ -130,7 +118,7 @@ function afterResults(pre){const m=document.getElementById('main'),d=S.res;if(!m
   const rows=[].slice.call(m.querySelectorAll('.hn.rs'));rows.forEach(r=>{const b=r.querySelector('.res b');if(b)r.classList.add(b.classList.contains('up')?'m3w':'m3l');});
   staggerIn(m,rows);
   const grow=[].slice.call(m.querySelectorAll('.bars2 .tr2 i'));grow.forEach((e,i)=>{const dl=stagDelay(i);e.style.animationDelay=(dl==null?0:dl)+'ms';});}
- place(m,pre.ghost);}
+ if(pre.hadSkel&&!reduce&&!hidden)fadeIn(m);}
 
 // The game sheet: the scoreboard digits flip, a "+7" rises off the score, the win-chance number gets its move chip.
 function afterSheet(r){const l=r&&r.leg,t=S.gameOpen,sh=document.getElementById('sheet');if(!l||!t||!sh)return;
