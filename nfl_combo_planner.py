@@ -25634,10 +25634,13 @@ def _fa_extra_loss(todays_settled):
     for _d, c, mine in todays_settled:
         try:
             stake = max(0.0, float(c.get("stake") or 0))
+        except (TypeError, ValueError):
+            stake = 0.0
+        try:
             pl = panel_pl(c)
             pl = None if pl is None else float(pl)
         except (TypeError, ValueError):
-            stake, pl = 0.0, None
+            pl = None                                     # unreadable P/L: counted as the whole stake below
         if pl is None or not math.isfinite(pl):
             tot += stake                                  # unreadable result: assume the stake is gone
         elif not mine and pl < 0:

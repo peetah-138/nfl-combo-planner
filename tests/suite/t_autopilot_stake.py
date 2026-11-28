@@ -530,6 +530,7 @@ ok("extra loss helper: a settled bet with no P/L counts as its whole stake (manu
 ok("extra loss helper: pl_real wins over pl; garbage numbers are safe; nothing = 0",
    xl([("d", {"stake": 5, "pl": 1.0, "pl_real": -2.0, "result": "lost"}, False)]) == 2.0 and xl([]) == 0.0
    and xl([("d", {"stake": "x", "pl": "y", "result": "lost"}, False)]) == 0.0
+   and xl([("d", {"stake": 5, "pl": "y", "result": "lost"}, False)]) == 5.0
    and xl([("d", {"stake": 5, "pl": float("nan"), "result": "lost"}, True)]) == 5.0)
 ok("_fa_loss_fit: fits unchanged, trims to the cent, 0 under $2 / empty / NaN", (fit(5.0, 8.0), fit(10.0, 3.456), fit(10.0, 1.99), fit(10.0, 0.0), fit(10.0, float("nan"))) == (5.0, 3.45, 0.0, 0.0, 0.0))
 ok("money(): a loss reads -$3.50, a gain $3.50, big and zero unchanged", (E.money(-3.5), E.money(3.5), E.money(-12.4), E.money(12.4), E.money(0), E.money(-0.001)) == ("-$3.50", "$3.50", "-$12", "$12", "$0", "$0"))
