@@ -171,7 +171,7 @@ def fetch_settings(conf, E):
             if k in data.get("cfg", {}) and k not in ("stop_loss", "stop_loss_mode"):
                 E.CFG[k] = data["cfg"][k]
         if hasattr(E, "sl_sync"):                      # 'Selling at a loss' (#228): a stale old switch never loosens it
-            E.sl_sync(E.CFG, data.get("cfg", {}))
+            E.sl_sync(E.CFG, data.get("cfg", {}), loosen=False)
         elif "stop_loss" in data.get("cfg", {}):
             E.CFG["stop_loss"] = data["cfg"]["stop_loss"]
         if isinstance(data.get("approve"), dict) and data["approve"].get("version"):

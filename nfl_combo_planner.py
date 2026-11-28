@@ -5320,15 +5320,23 @@ def sl_mode():
     return "allow" if CFG.get("stop_loss") is True else "tune"
 
 
-def sl_sync(cfg, incoming):
+def sl_sync(cfg, incoming, loosen=True):
     """Applies a settings message's 'Selling at a loss' to `cfg` (the watcher's copy of the phone's or web app's
     settings, the web app's own save). A valid stop_loss_mode wins and the old switch is kept in step (on only for
     Allow); a retired 'never' from an older phone or saved file becomes 'tune'. A message without one (an older phone or
     page that only knows the on/off switch, or a phone with no control for it, which sends None) may only make it
     STRICTER: 'off' turns Allow into Let it tune itself; 'on' is ignored, so a stale old switch can never undo Let it
-    tune itself."""
+    tune itself. loosen=False (the watcher applying a phone's relayed settings, #316): a valid 'allow' never replaces a
+    stored 'tune' either; only the web app's own save (loosen=True) can turn Allow on."""
     m = sl_norm(incoming.get("stop_loss_mode"))
     if m:
+        if m == "allow" and not loosen:
+            # #316: a relayed phone message carries the phone's WHOLE settings, so a stale device re-sends an old mode with
+            # a newer `at`: it may only keep or tighten. A stored Allow stays; anything else is never turned into Allow.
+            cur = sl_norm(cfg.get("stop_loss_mode"))
+            cur = cur if cur else ("allow" if cfg.get("stop_loss") is True else "tune")
+            if cur != "allow":
+                return
         cfg["stop_loss_mode"] = m
         cfg["stop_loss"] = m == "allow"
         return
@@ -27477,10 +27485,13 @@ def _sl_replay(c, path, prog, drop, cf=None, hair=False, when=None):
 def _cut_guard_ts(c, slp, loss, prog=None, drop=None, cf=None):
     """The times at which the learned loss cut's guards held for this bet (the same as live: under the cut-off and
     every stop-loss guard, confirmed), so the replay that learns the cut only cuts where live would have. With no
-    prog/drop given, the league's current stop-loss settings."""
-    if not loss or not slp or len(slp) < SL_CHECKS:
-        return set()
+    prog/drop given, the league's current stop-loss settings; with no cf (checks, span, gap) given, the confirmation counts
+    live uses for this bet's league (sl_confirm_params, #316), so the replay never cuts where live would still be waiting."""
     tks = [l["ticker"] for l in c["legs"]]
+    if cf is None:
+        cf = sl_confirm_params(tks)
+    if not loss or not slp or len(slp) < cf[0]:
+        return set()
     if prog is None or drop is None:
         pr = stoploss_params(tks)
         prog, drop = pr["prog"], pr["drop"]
