@@ -169,7 +169,7 @@ E._fa_slot_table()
 _saved = (E.fa_check, E.panel_get, E._fa_candidates, E.panel_approve, E.fa_slot_taken)
 mix = [dict(real_c, id=f"x{i}", legs=[{"ticker": f"X{i}"}]) for i in range(3)]
 E.fa_check = lambda *a, **k: {"brake": None, "caution": {"changed": False, "level": 0, "events": []}, "blockers": [],
-                              "room": 12.0, "slots": 1, "free": 100.0, "open": 15, "cap": 30.0, "day_loss": 20.0, "loss_today": 0.0, "spent": 0.0}
+                              "room": 12.0, "slots": 1, "free": 100.0, "open": 15, "cap": 30.0, "day_loss": 20.0, "loss_today": 0.0, "spent": 0.0, "open_stake": 0.0}
 E.panel_get = lambda *a, **k: {"at": NOW, "status": "draft"}
 E._fa_candidates = lambda *a, **k: list(mix)
 E.panel_approve = lambda *a, **k: (True, "ok")

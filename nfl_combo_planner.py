@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.28.148"
+VERSION = "2026.11.28.149"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -24113,6 +24113,10 @@ def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
     now = time.time() if now is None else now
     at = c.get("bought_at") or c.get("at")
     live = bool(c.get("live"))
+    try:                                                      # (#640) a buy after the start is live even without the flag
+        live = live or (float(at) > float(c.get("kick")) > 0)
+    except (TypeError, ValueError):
+        pass
     bucket, hours = timing_bucket(c.get("kick"), at, live)
     legs = c.get("legs") or []
     ps = [l.get("p") for l in legs]
@@ -24134,6 +24138,7 @@ def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
             "stake": c.get("stake"), "fees": fees, "result": c.get("result"), "pl": c.get("pl"), "pl_real": c.get("pl_real")}
 
 
+_TIMING_WATCH = ("result", "close", "pl_real", "clv", "pl", "fees", "stake")   # (#640 #649) a change in any of these refreshes the row
 _TIMING_COLS = ("key", "ts", "upd", "mode", "day", "auto", "league", "kind", "live", "kick", "bought_at", "hours", "bucket",
                 "p_build", "p_buy", "close", "clv", "clv_buy", "stake", "fees", "result", "pl", "pl_real")
 
@@ -24146,6 +24151,26 @@ def _timing_trim(now):
     store_x("delete from timing_log where ts < ?", (now - TIMING["keep"],))
     store_x("delete from timing_log where key in (select key from timing_log order by ts desc limit -1 offset ?)",
             (TIMING["max_rows"],))
+
+
+def _timing_stake(c):
+    """A bet's stake as a finite number >= 0, else None (unreadable)."""
+    try:
+        v = float(c.get("stake"))
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v >= 0 else None
+
+
+def _timing_fee_part(fee, stakes, mine):
+    """This bet's part of one ticker's ledger fee when `stakes` (one per real buy of it) share it: by stake, or in equal parts
+    when any stake is unreadable or they all are 0, so the parts always add up to the fee, never more. None when unreadable."""
+    n = len(stakes)
+    if n <= 1:
+        return fee
+    if any(v is None for v in stakes) or sum(stakes) <= 0:
+        return fee / n
+    return fee * mine / sum(stakes) if mine is not None else None
 
 
 def timing_log_pass(now=None, log=console_note):
@@ -24177,15 +24202,37 @@ def timing_log_pass(now=None, log=console_note):
         closes = close_prices(sorted(tks), mid=True) if tks else {}
         led = {r["ticker"]: (r["fees"] or 0) + (r["sell_fees"] or 0) for r in store_rows("select ticker, fees, sell_fees from ledger")} \
             if STORE.get("ledger_ok") else {}
-        have = {r["key"]: (r["result"], r["close"], r["pl_real"], r["clv"]) for r in
-                store_rows("select key, result, close, pl_real, clv from timing_log where ts >= ?", (now - TIMING["keep"],))}
+        # (#640) one ticker bought twice: its ledger fees are split across ALL its real buys still on file (the rows are
+        # kept TIMING["keep"] long, longer than the write window), by stake; an unreadable stake or all-zero stakes: equal parts
+        wts, counted = {}, set()
+
+        def _count(m_, d_, c):
+            tk = _panel_ticker(c) if isinstance(c, dict) else None
+            k_ = (m_, d_, c.get("id")) if tk else None
+            if tk and c.get("id") and c.get("state") == "bought" and k_ not in counted:
+                counted.add(k_)
+                wts.setdefault(tk, []).append(_timing_stake(c))
+        for m_, d_, c in items:
+            if m_.startswith("real"):
+                _count(m_, d_, c)
+        try:
+            for r_ in store_rows("select day, mode, body from panel where mode like 'real%' and day >= ?",
+                                 ((dt.datetime.now(PACIFIC).date() - dt.timedelta(seconds=TIMING["keep"])).isoformat(),)):
+                for c in json.loads(r_["body"]).get("items", []):
+                    _count(r_["mode"], r_["day"], c)
+        except Exception:
+            pass                                          # the recent bets above still count
+        have = {r["key"]: tuple(r[k] for k in _TIMING_WATCH) for r in
+                store_rows("select key, " + ",".join(_TIMING_WATCH) + " from timing_log where ts >= ?", (now - TIMING["keep"],))}
         wrote = 0
         for mode, day, c in items:
             if wrote >= TIMING["batch"]:
                 break
             fee = led.get(_panel_ticker(c)) if mode.startswith("real") else None
+            if fee is not None:
+                fee = _timing_fee_part(fee, wts.get(_panel_ticker(c)) or [], _timing_stake(c))
             row = timing_row(mode, day, c, auto, closes, round(fee, 4) if fee is not None else None, now)
-            if not row or have.get(row["key"]) == (row["result"], row["close"], row["pl_real"], row["clv"]):
+            if not row or have.get(row["key"]) == tuple(row[k] for k in _TIMING_WATCH):
                 continue
             row.update(ts=now, upd=now)
             store_x("insert into timing_log(" + ",".join(_TIMING_COLS) + ") values(" + ",".join("?" * len(_TIMING_COLS)) + ") "
@@ -24578,6 +24625,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     recent = _panel_day(now - 10 * 86400)
     live = [(d, c) for d, c in rows if c.get("state") in PANEL_LIVE and d >= recent]   # spent/open stay a recent view
     spent = round(sum(float(c.get("stake") or 0) for d, c in live if d == day), 2)
+    open_stake = round(sum(float(c.get("stake") or 0) for d, c in live if d == day and not c.get("result")), 2)   # (#646) only what is still at risk; a settled bet's loss is already in loss_today
     open_n = sum(1 for d, c in live if not c.get("result") and (c.get("state") != "scheduled" or d == day))
     mine = {}
     grew = True                                           # a bet swapped in for one of ours (new id) is ours too: follow the whole chain
@@ -24601,6 +24649,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
             break
         run += 1
     loss_today = round(sum(panel_pl(c) or 0 for d, c in settled if d == day), 2)
+    extra_loss = _fa_extra_loss([(d, c, f"{d}|{c.get('id')}" in mine) for d, c in live if d == day and c.get("result")])
     brake = st.get("brake") if isinstance(st.get("brake"), dict) else None
     legacy = bool(brake and brake.get("kind") == "streak")   # an older version's streak pause: now it is caution, never a stop
     if brake and (brake.get("kind") != "day" or brake.get("day") != day):
@@ -24612,7 +24661,7 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     stake_mult = ap_stake_mult(st, caut["level"])
     cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap") * cap_use, 2)
     mo = ap_open_limit(st)                                # (#145) Pete's open-bet number, or what autopilot moved it to (8 to 20)
-    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "cap_use": cap_use, "stake_mult": stake_mult, "caution": caut, "open": open_n,
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "open_stake": open_stake, "extra_loss": extra_loss, "cap": cap_eff, "cap_normal": st["cap"], "cap_use": cap_use, "stake_mult": stake_mult, "caution": caut, "open": open_n,
            "max_open": mo, "max_open_set": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
            "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, mo - open_n)}
@@ -24898,7 +24947,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
                 if not items0:
                     return None
                 mult0 = ap_stake_mult(st, caut["level"])
-                loss0 = max(0.0, float(v["day_loss"]) + float(v["loss_today"]) - float(v["spent"]))   # (#633) as the live pass reads it; unreadable: no evidence
+                loss0 = _fa_loss_room(v)                      # (#633) as the live pass reads it; unreadable: no evidence
                 budget0 = float(real0.get("budget") or CFG.get("panel_budget", PANEL["budget"])) \
                     - sum(float(c.get("stake") or 0) for c in real0.get("items", []) if c.get("state") in PANEL_LIVE)
                 if not (math.isfinite(mult0) and math.isfinite(loss0) and math.isfinite(budget0)):
@@ -24937,10 +24986,7 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     budget = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
     riding = sum(float(c.get("stake") or 0) for c in real.get("items", []) if c.get("state") in PANEL_LIVE)
     try:                                              # what is left before Pete's daily loss limit; unreadable or odd data buys nothing (fail closed)
-        loss_room = float(v["day_loss"]) + float(v["loss_today"]) - float(v["spent"])
-        if not math.isfinite(loss_room):
-            raise ValueError("loss room is not a number")
-        loss_room = max(0.0, loss_room)
+        loss_room = _fa_loss_room(v)
     except (KeyError, TypeError, ValueError) as err:
         log("full auto loss room unreadable: nothing approved:", type(err).__name__, err)
         return None
@@ -25575,6 +25621,44 @@ def ap_cap_use(st):
         return FAL["capuse"]["lo"] if got is None else min(got, 1.0)
     except Exception:
         return FAL["capuse"]["lo"]
+
+
+FA_LOSS_MARGIN = 0.10   # (#646) safety cushion on Pete's daily loss limit: full auto plans against 90% of it ($18 of a $20 limit). Never moves the limit itself.
+
+
+def _fa_extra_loss(todays_settled):
+    """(#646 follow-up, tighten-only) Dollars lost today on settled real bets that loss_today does not carry: Pete's own manual bets
+    (losses only; a manual win adds nothing) and any settled bet with no readable profit/loss (counted as the whole stake lost).
+    Takes (day, bet, is_full_auto's) rows. Only ever returns 0 or more, so it can only shrink the loss room."""
+    tot = 0.0
+    for _d, c, mine in todays_settled:
+        try:
+            stake = max(0.0, float(c.get("stake") or 0))
+        except (TypeError, ValueError):
+            stake = 0.0
+        try:
+            pl = panel_pl(c)
+            pl = None if pl is None else float(pl)
+        except (TypeError, ValueError):
+            pl = None                                     # unreadable P/L: counted as the whole stake below
+        if pl is None or not math.isfinite(pl):
+            tot += stake                                  # unreadable result: assume the stake is gone
+        elif not mine and pl < 0:
+            tot += -pl
+    return round(tot, 2)
+
+
+def _fa_loss_room(v):
+    """(#646) What is left of the day's loss room, in dollars (never negative, never more than the exact-limit value).
+    room = (limit less the FA_LOSS_MARGIN cushion) + today's profit/loss - stakes still at risk. A settled bet counts ONCE (its loss is
+    already in loss_today), so its stake is not taken off again. RAISES on a missing, None, text or non-finite number (the caller buys nothing)."""
+    limit, today, at_risk = float(v["day_loss"]), float(v["loss_today"]), float(v["open_stake"])
+    extra = float(v.get("extra_loss", 0.0))               # settled manual / unreadable losses today (only ever shrinks the room)
+    if not all(math.isfinite(x) for x in (limit, today, at_risk, extra)) or at_risk < 0 or extra < 0:
+        raise ValueError("loss room is not readable")
+    exact = limit + today - at_risk - extra
+    cushioned = limit * (1.0 - min(max(FA_LOSS_MARGIN, 0.0), 1.0)) + today - at_risk - extra
+    return round(max(0.0, min(exact, cushioned)), 2)
 
 
 def _fa_loss_fit(stake, loss_room):

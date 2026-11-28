@@ -355,17 +355,17 @@ def small_pass(vals_, n=3, stake=5.0):
 sm0 = small_pass(None)
 sm1 = small_pass({"stake_mult": 1.5})
 ok(f"three $5 bets are bought at $5 each at today's size {sm0}", sm0 == [5.0] * 3)
-ok(f"at 150% three small bets together never pass the $20 loss room {sm1}", len(sm1) >= 1 and sum(sm1) <= 20.01)
-ok(f"at 150% the first two grow to $7.50 and the third gets only the $5 left of the loss room {sm1}", sm1 == [7.5, 7.5, 5.0])
+ok(f"at 150% three small bets together never pass the $20 loss room {sm1}", len(sm1) >= 1 and sum(sm1) <= 18.01)
+ok(f"at 150% the first two grow to $7.50 and the third gets only the $3 left of the $18 loss room {sm1}", sm1 == [7.5, 7.5, 3.0])
 res, base = run_pass(None)
 spend0 = sum(c["stake"] for c in base)
 ok("baseline: the pass approves a draft within the $30 cap", res and 0 < spend0 <= 30.01)
 res, big = run_pass({"stake_mult": 1.5})
 spend1 = sum(c["stake"] for c in big)
 ok("at 150% the day's spend never passes the $30 cap", res and spend1 <= 30.01)
-ok("at 150% the first bet grows from $14.42 to $20.00 (the $20 loss room left, not a per-bet ceiling), never past 150% of it", big and big[0]["stake"] == 20.0 and big[0]["stake"] <= 1.5 * base[0]["stake"] + 0.01)
-ok("at 150% the bet is recorded at its ACTUAL ratio (20.00 / 14.42 = 1.387, the loss room clamped it), not at 1.5", sorted(E.fa_state().get("sizes", {}).values()) == [round(20.0 / 14.42, 4)])
-ok("one bet bought at $20 and the second ($13.33 normal) did not fit what was left", [c["stake"] for c in big] == [20.0])
+ok("at 150% the first bet grows from $14.42 to $18.00 (the $18 loss room left, not a per-bet ceiling), never past 150% of it", big and big[0]["stake"] == 18.0 and big[0]["stake"] <= 1.5 * base[0]["stake"] + 0.01)
+ok("at 150% the bet is recorded at its ACTUAL ratio (18.00 / 14.42 = 1.248, the loss room clamped it), not at 1.5", sorted(E.fa_state().get("sizes", {}).values()) == [round(18.0 / 14.42, 4)])
+ok("one bet bought at $18 and the second ($13.33 normal) did not fit what was left", [c["stake"] for c in big] == [18.0])
 res, small = run_pass({"stake_mult": 0.5})
 ok("at 50% every bet is half size (7.21 from 14.42, never under $2) and the spend is lower", res and small[0]["stake"] == 7.21 and all(c["stake"] >= 2.0 for c in small))
 res, cu = run_pass({"cap_use": 0.5}, cap=30.0)
@@ -471,20 +471,66 @@ def loss_pass(over, stakes, mult=None):
     finally:
         E.fa_check = real_check
     return sorted(c["stake"] for c in E.panel_get("real")["items"] if c.get("state") == "scheduled")
-r3 = {"day_loss": 20.0, "loss_today": 0.0, "spent": 17.0}           # room = $3
-r0 = {"day_loss": 20.0, "loss_today": 0.0, "spent": 20.0}           # room = $0
+r3 = {"day_loss": 20.0, "loss_today": 0.0, "open_stake": 15.0}           # room = $3
+r0 = {"day_loss": 20.0, "loss_today": 0.0, "open_stake": 18.0}           # room = $0
 ok("loss room $3: a normal-size $10 bet is trimmed to exactly $3", loss_pass(r3, [10.0]) == [3.0])
 ok("loss room $3 at 150%: a $10 bet is still trimmed to exactly $3, never $15", loss_pass(r3, [10.0], mult=1.5) == [3.0])
 ok("loss room $0: a normal-size $10 bet is not bought", loss_pass(r0, [10.0]) == [])
 ok("loss room $0 at 150%: nothing is bought", loss_pass(r0, [10.0, 5.0], mult=1.5) == [])
-ok("loss room $1.99 (under the $2 minimum): nothing is bought", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 18.01}, [10.0]) == [])
-ok("room $20, three normal $10 bets: $10, $10 then nothing ($20 total, not $30)", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 0.0}, [10.0, 10.0, 10.0]) == [10.0, 10.0])
-ok("room $15, normal $10 bets: $10 then the last $5 (the room shrinks bet by bet)", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 5.0}, [10.0, 10.0]) == [5.0, 10.0])
-ok("room $14, normal $10 bets: $10 then $4", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 6.0}, [10.0, 10.0]) == [4.0, 10.0])
-ok("room $11, normal $10 bets: $10 then $1 is under the minimum, so only one bet", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "spent": 9.0}, [10.0, 10.0]) == [10.0])
-for nm, bad in (("a missing number", {"loss_today": None}), ("not a number", {"loss_today": float("nan")}), ("text", {"spent": "x"}),
+ok("loss room $1.99 (under the $2 minimum): nothing is bought", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "open_stake": 16.01}, [10.0]) == [])
+ok("room $18 (the $20 limit less the 10% cushion), three normal $10 bets: $10, $8 then nothing ($18 total, not $30)", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "open_stake": 0.0}, [10.0, 10.0, 10.0]) == [8.0, 10.0])
+ok("room $15, normal $10 bets: $10 then the last $5 (the room shrinks bet by bet)", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "open_stake": 3.0}, [10.0, 10.0]) == [5.0, 10.0])
+ok("room $14, normal $10 bets: $10 then $4", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "open_stake": 4.0}, [10.0, 10.0]) == [4.0, 10.0])
+ok("room $11, normal $10 bets: $10 then $1 is under the minimum, so only one bet", loss_pass({"day_loss": 20.0, "loss_today": 0.0, "open_stake": 7.0}, [10.0, 10.0]) == [10.0])
+for nm, bad in (("a missing number", {"loss_today": None}), ("not a number", {"loss_today": float("nan")}), ("text", {"open_stake": "x"}),
                 ("infinite", {"day_loss": float("inf")})):
     ok(f"unreadable loss data ({nm}): nothing is bought", loss_pass(dict(r3, **bad), [10.0]) == [])
 fit = E._fa_loss_fit
+# (#646) a settled loss counts ONCE; the cushion is a named constant and never makes the room bigger than the exact-$20 value
+lr = E._fa_loss_room
+ok("#646 the cushion is a named 10% constant", E.FA_LOSS_MARGIN == 0.10)
+ok("#646 example day: one settled $5 loss, nothing open: old room $10.00, exact $15.00, now $13.00", (20.0 + -5.0 - 5.0, 20.0 + -5.0 - 0.0, lr({"day_loss": 20.0, "loss_today": -5.0, "open_stake": 0.0})) == (10.0, 15.0, 13.0))
+ok("#646 a settled loss is counted once: $5 loss + $4 still open = 18 - 5 - 4 = $9", lr({"day_loss": 20.0, "loss_today": -5.0, "open_stake": 4.0}) == 9.0)
+ok("#646 never above the exact-$20 value (limit 20, 1.5 open, +3 won)", lr({"day_loss": 20.0, "loss_today": 3.0, "open_stake": 1.5}) == 19.5 and 19.5 <= 20.0 + 3.0 - 1.5)
+ok("#646 old code blocked, new allows: settled $9.50 loss (old room $1.00, now $8.50) buys a $5 bet", loss_pass({"day_loss": 20.0, "loss_today": -9.5, "open_stake": 0.0}, [5.0]) == [5.0])
+ok("#646 right at the limit still blocks: down $18, nothing open (room $0)", loss_pass({"day_loss": 20.0, "loss_today": -18.0, "open_stake": 0.0}, [5.0]) == [])
+ok("#646 down $16.01 (room $1.99, under $2) still blocks", loss_pass({"day_loss": 20.0, "loss_today": -16.01, "open_stake": 0.0}, [5.0]) == [])
+ok("#646 down $20 or more: room 0, never negative", lr({"day_loss": 20.0, "loss_today": -25.0, "open_stake": 0.0}) == 0.0)
+ok("#646 a $10 bet with room $13 then $3 left: $10, $3 (room shrinks bet by bet, trimmed down)", loss_pass({"day_loss": 20.0, "loss_today": -5.0, "open_stake": 0.0}, [10.0, 10.0]) == [3.0, 10.0])
+for nm, bad in (("missing open_stake", None), ("None", {"open_stake": None}), ("NaN", {"loss_today": float("nan")}), ("negative open", {"open_stake": -1.0})):
+    v6 = {"day_loss": 20.0, "loss_today": 0.0, "open_stake": 0.0}
+    if bad is None:
+        del v6["open_stake"]
+    else:
+        v6.update(bad)
+    try:
+        lr(v6); bad6 = False
+    except (KeyError, TypeError, ValueError):
+        bad6 = True
+    ok(f"#646 loss room fails closed on {nm}", bad6)
+# (#646 follow-up) Pete's settled manual losses (and a settled bet with no readable P/L) shrink the room, never grow it
+xl = E._fa_extra_loss
+base = {"day_loss": 20.0, "loss_today": -5.0, "open_stake": 0.0}
+ok("extra loss: no manual loss = identical to the #646 value ($13.00)", lr(base) == 13.0 and lr(dict(base, extra_loss=0.0)) == 13.0)
+ok("extra loss: a $4 manual loss takes the room from $13.00 to $9.00", lr(dict(base, extra_loss=4.0)) == 9.0)
+ok("extra loss: never below 0", lr(dict(base, extra_loss=99.0)) == 0.0)
+ok("extra loss: never more than the #646 value", all(lr(dict(base, extra_loss=x)) <= lr(base) for x in (0.0, 0.01, 3.0, 50.0)))
+ok("extra loss: a manual loss that leaves under $2 buys nothing", loss_pass(dict(base, extra_loss=11.5), [5.0]) == [])
+for nm, bad in (("NaN", float("nan")), ("None", None), ("negative", -1.0), ("text", "x"), ("infinite", float("inf"))):
+    try:
+        lr(dict(base, extra_loss=bad)); b7 = False
+    except (KeyError, TypeError, ValueError):
+        b7 = True
+    ok(f"extra loss: fails closed on {nm}", b7)
+ok("extra loss helper: manual loss counts, manual win and full auto's own loss do not",
+   xl([("d", {"stake": 5, "pl": -3.0, "result": "lost"}, False), ("d", {"stake": 5, "pl": 4.0, "result": "won"}, False),
+       ("d", {"stake": 5, "pl": -2.0, "result": "lost"}, True)]) == 3.0)
+ok("extra loss helper: a settled bet with no P/L counts as its whole stake (manual or full auto)",
+   xl([("d", {"stake": 6, "result": "lost"}, False), ("d", {"stake": 2.5, "result": "lost", "pl": None}, True)]) == 8.5)
+ok("extra loss helper: pl_real wins over pl; garbage numbers are safe; nothing = 0",
+   xl([("d", {"stake": 5, "pl": 1.0, "pl_real": -2.0, "result": "lost"}, False)]) == 2.0 and xl([]) == 0.0
+   and xl([("d", {"stake": "x", "pl": "y", "result": "lost"}, False)]) == 0.0
+   and xl([("d", {"stake": 5, "pl": "y", "result": "lost"}, False)]) == 5.0
+   and xl([("d", {"stake": 5, "pl": float("nan"), "result": "lost"}, True)]) == 5.0)
 ok("_fa_loss_fit: fits unchanged, trims to the cent, 0 under $2 / empty / NaN", (fit(5.0, 8.0), fit(10.0, 3.456), fit(10.0, 1.99), fit(10.0, 0.0), fit(10.0, float("nan"))) == (5.0, 3.45, 0.0, 0.0, 0.0))
 ok("money(): a loss reads -$3.50, a gain $3.50, big and zero unchanged", (E.money(-3.5), E.money(3.5), E.money(-12.4), E.money(12.4), E.money(0), E.money(-0.001)) == ("-$3.50", "$3.50", "-$12", "$12", "$0", "$0"))
