@@ -1191,6 +1191,27 @@ Live numbers that could move: none (a new read-only field).
 ##### Tests
 `t_money_h144.py` (new; never-higher total curve, skipped-deal scoring).
 
+##### Buy path follow-ups to the CBB totals report (#482 items 5-7, release 148)
+
+Three stricter-only fixes; none adds spending, loosens a gate or size, or touches Pause, the caps or rule 8.
+- **Date on the ESPN match (item 6).** `line_candidates` priced a Kalshi event from an ESPN game on the two team codes
+  alone, so a later rematch of the same teams could be priced from today's book total. `_event_day_ok` now requires the
+  event ticker's own day (`26NOV27`) to be the local day of the ESPN start (start minus 10 hours, one day only, so
+  tonight's book total never prices tomorrow night's rematch). An unreadable ticker date or start skips the market.
+- **Pace only for full-game totals (item 5/7).** `_full_game_total` is true only for a league's `<series>TOTAL` ticker.
+  The Live card's "On track / Not on track" text (`_single_how`) is no longer claimed for first-half or team totals,
+  whose line is not the whole game's points. Display only: `_bet_kind`, the score lookup and smart sell are unchanged.
+- **Alert path runs the Build page's checks (item 7).** `line_pass` now calls `_line_rec_one` (learned bar at the real
+  book, a route to profit under smart sell's exit policy, expected-dollars floor) and drops a strike it refuses or
+  cannot read; the idea's contracts are capped at what fills inside the edge (`rec["n"]`; a NaN, None or 0 fill count means no idea).
+
+Not done here: item 3 (learned "too good to be true" shrink; needs settled history and a design call), item 4 (the
+"game not found" badge wording, display only), and the live-score last-three-letters lookup (changing it would change
+the state smart sell reads for held totals, so it needs its own money review).
+
+Tests: `t_buypath482.py` (date window, full-game-total names, `line_pass` refusal, fail-closed error, contract cap 7 not
+47); `t_push_gate.py` and `t_orderbook.py` stub the new checks.
+
 ### Kalshi's pots (cash by exchange shard) and moving money between them (issue #144)
 - Kalshi keeps API cash in a separate **pot per exchange shard** (GET /portfolio/balance's `balance_breakdown`; public
   `/exchange/status` names them: 0 Default, 1 Combos, 2 Crypto & Commodities, 3 Tennis, Baseball, Basketball), and an
@@ -1761,6 +1782,69 @@ cap, the free bankroll, what is left before the daily loss limit, the panel budg
   a revert after a losing week, unreadable data = no change, switch/freeze/undo/hold, exact stakes in `_fa_sized`, cap/bankroll/loss
   limit never exceeded in the buy pass, the card). The older autopilot tests take the two new records out of their way.
 
+##### Autopilot: Drift since start and Back to start (issue #145, plan section 5)
+
+Many small autopilot steps can add up. The Autopilot card now has a "Drift since start" section: for every setting autopilot
+has moved it shows one plain line, for example "Bet size: 100% → 90%, tighter", grouped as How much it bets (per-game limit,
+open-bet limit, budget shares, bet size, share of the daily cap used), How picky it is (combo bars, Smart Buy bars and their
+borrowed values) and How smart sell sells (a league's own exit-knob values). The open-bet limit is measured from Pete's own
+number, which autopilot never writes. A setting at its start is not listed. Once a calendar month (Pacific) the weekly look
+adds one summary line to the log (`L["drift_m"]` keys it), "Autopilot, month in review: N settings are away from where you started. ...".
+
+**Back to start** is a button per setting and "Reset all", each behind an app sheet (never `confirm()`). `ap_reset(key)` removes
+the saved value (nothing saved = the start; for the open-bet limit, Pete's own number), stamps `since`, holds the setting two
+weeks (`AP_HOLD`, like Undo: a hold blocks only loosening), marks the matching last step judged and the last change undone (so
+Undo and the weekly review cannot put it back), and logs it ("you put X back to its start: a → b. It stays there for 2 weeks").
+Exit knobs: the group's own `lv` value is pinned to the start value on purpose (so smart_tune's looser number cannot show through), a `reset` history entry and a `knob:<group>:<name>`
+hold are written, in the knob file first (like `_ap_undo_knob`).
+
+Safety, all enforced in the engine, not the page:
+- The start value is the LOOSE end for most settings, so a reset that would loosen is refused while `ap_brake_cautious` is true
+  (hard brake or soft-brake level above 0), and for bet size and cap use also until `_ap_quiet` (the same rule as an automatic
+  loosening). The setting stays exactly where it is, nothing is queued, and the message and card say why in words. A reset that
+  tightens (a setting that had drifted looser than start, e.g. bet size 120%) is always allowed.
+- Reset all skips frozen settings and names them; a tap on one frozen setting is Pete's own call and keeps the freeze. Works
+  with the master switch off (same gates).
+- Fail closed: `fa_state()` turns a damaged `caution` into level 0 and `_fa_update` would save defaults over an unreadable
+  file, so `_ap_raw_fa()` reads the raw file first (unreadable file, or lessons/caution/brake not a record, or a malformed saved
+  value = refuse, file untouched); the knob file is checked the same way (`_ap_raw_knobs`). The card then shows no buttons.
+- Never writes the outer limits ($300 bankroll, daily cap, loss limit, streak, max open, Pause).
+- `/app/api/act` `autopilot_reset` (`watcher/combo_watcher.py` -> `ap_reset_act`) needs `confirm: true` (exactly) and a key that
+  is `all`, a known `bar:`/`sbev:`/`share:` key, `game_share`, `open_slots`, `stake_mult`, `cap_use` or `knob:<group>:<knob>`;
+  anything else changes nothing. It is logged to the watcher log.
+
+Card: `fal_view()["drift"]` = `ap_drift_view(st)`; page code `faDrift` / `faResetAsk` / `faResetDo` in `watcher/spa/fullauto.js`,
+styles in `settings.css` (`.fadrift`, 44px taps).
+
+Tests: `t_autopilot_drift.py` (exact lines, one reset, hold and log, cautious not loosening, quiet period, Reset all with frozen
+settings, master off, Undo after reset, unreadable state byte-for-byte unchanged, act validation, open-bet limit, exit knobs,
+monthly line). Phone screenshots: `~/dev/wt/screens/autopilot-drift/`.
+
+##### Autopilot invariant simulator (tests only)
+
+- New `tests/suite/t_autopilot_sim.py`: a seeded, offline simulator that runs full auto with every autopilot step active (registry,
+  soft brake, knob log, buy-bar borrow, open-bet limit, league/bet-type shares, stake size/cap-use, loss-room fit) over 50-day
+  runs (about 1,000 passes) of normal, winning, losing, bad-week, small-stake and empty-data worlds, with Pause days, a clock jump,
+  an Undo, and frozen / master-off / full-auto-off runs. It also feeds unreadable, truncated, NaN, wrong-type and missing-key
+  state files.
+- After every pass it checks: daily stake under the $30 cap, no bet over 150% of normal or free bankroll, open exposure under $300,
+  daily loss room, open bets under 15, learned values inside their bounds, Pete's limits untouched, no loosening while the soft
+  brake is up, no more than 2 looser settings a week, Undo hold, nothing moves when frozen or master-off, no buys when off or paused,
+  no crash and no buys on unreadable data.
+- Registration is automatic through the `# CHECK: group=engine` first line; no `run_checks.sh` or CI shard edit is needed.
+- Loosening runs (added): a boom world where every setting starts tightened, the brake has been quiet 40 days and every evidence
+  table (league shadow, Smart Buy paper, per-game, open-slot, practice and real bets) holds winning results. Over 63 and 49 days the
+  autopilot loosens all seven settings (bar, Smart Buy bar, per-game limit, open-bet limit, budget share, bet size, cap use); run B
+  starts near the 150% / 100% ceilings, run C tightens only the two budget shares and run D only bet size and cap use, so the result never depends on who wins the weekly rotation (the exclusion pairs make those settings take turns). The shares are judged against the cap Autopilot actually allows (cap use applied), so run D starts cap use at 90%, not lower. Checked on every step: an exact notch (bet size 5% of the current size, cap use and share 5
+  points, bar half a point, Smart Buy one level, per-game 2.5 points, open limit one bet), a card line with gate evidence (positive
+  bootstrap low end and newest-30% gain), one step per setting per week, at most 2 loosened settings a week, the exclusion pairs, no
+  loosening while the brake is cautious or within 14 days of it (bet size / cap use), open limit never above Pete's number, and the live
+  size multiple and cap use inside their bounds. Undo right after the first loosening must succeed, restore the previous value and
+  hold it 2 weeks; 12-day frozen / master-off / full-auto-off controls that would otherwise loosen must move nothing.
+- Known gap: the tightening rules for bet size and cap use are exercised only by the losing / bad-week runs; evidence tables for the
+  loosening runs are synthetic (seeded directly), not produced by the production writers.
+- No product code changed.
+
 ##### Autopilot card polish (#618-#621; wording and display only)
 
 - Freeze/Unfreeze buttons name their setting for screen readers (aria-label), say "Freeze this", and are at least 44pt tall.
@@ -1768,6 +1852,21 @@ cap, the free bankroll, what is left before the daily loss limit, the panel budg
 - Log lines use one arrow (the arrow character) for undo lines.
 - Autopilot save/undo/read errors show a plain message; the exception name goes to the server log only.
 - No buying, selling or limit logic touched.
+
+##### No-money follow-ups, batch 5 (display and safety only, release 148)
+
+Changed (no pricing, buying, selling, sizing, limits or gates):
+
+- **#651 (h):** the Autopilot "Freeze / Unfreeze this" button no longer builds a JavaScript string from `esc(x.rec)`.
+  The record key sits in `data-rec` (HTML-escaped) and the handler reads `this.dataset.rec`. Same call, same 44px button.
+- **#650 (e):** `_cut_guard_ts` reads `c.get("legs") or []`, so a bet with no legs returns the empty set instead of raising.
+- **#652:** Games cards are real buttons for keyboards and screen readers (`role="button"`, `tabindex="0"`, Enter or Space opens the game, visible focus ring).
+  A card with no win chance yet keeps its chance row's height (`visibility:hidden`, was `display:none`), so the card no longer jumps when the number arrives.
+- **#652 (docs):** the polish-games-2 entry in CLAUDE.md wrongly said the bet-type chips tick on iOS. They are in `HSWX`, so they get no see-through haptic switch; corrected there.
+
+Not done: #652 "fair-chance bars all green" (the cited `build.css:1244` no longer exists; Games bars already colour yes/no),
+the #633 copy items (money sign already fixed; wording sits next to money code), #646 (needs Pete), #640/#645/#647-#649/#650 (f)(g)
+(touch spending evidence or stop-loss values; money batch).
 
 ##### Wording only: cash-out help text and Smart Buy evidence bar (#431, #283)
 
@@ -3833,7 +3932,7 @@ Changed (markup, CSS and one client-side filter; no pricing, buying, selling, si
 
 - **Bet-type chips on Games** (`All`, `Moneyline`, `Total`, `Spread`, each with a count). A sideways row that scrolls inside itself, the selected chip outlined, 44px tall.
   It only hides cards you already have, by the kind of bet on them. A chip shows only when a card of that kind exists, and the whole row only when there is a choice.
-  The row is added to `HSWX` (sideways strips get no see-through haptic switches, scrolling first, as the game page's tabs do), so `test_hsw` and `test_gtabscroll` keep their meaning; the chips still press and tick through the normal tap feedback. No test needed changing.
+  The row is added to `HSWX` (sideways strips get no see-through haptic switches, scrolling first, as the game page's tabs do), so `test_hsw` and `test_gtabscroll` keep their meaning; the chips therefore get no see-through haptic switch, so on iOS a chip tap gives no tick (corrected in nomoney-batch-5). No test needed changing.
 - Games loading state: a heading placeholder and shimmering card placeholders. One 12px gap between cards (was 14px, the Build board used 12px).
 - Build board: each game card's league and start time share one line (was two).
 
@@ -4608,7 +4707,7 @@ Tests: `test_singlesell_ui.py` (new wording), `test_knobs_ui.py` (null, Try agai
     clock (red live dot), your side ("YOURS") and theirs with the score, the chance (rolling, with a bar) and a chance
     line with a glowing end dot (the Mac's `ticks`, plus what the page saw itself in `S.gh`), and chips for the bets
     riding on it. When someone scores the card pulses green (your side) or red (theirs), the number bumps and the
-    phone ticks (`scoreWatch`). Tap pushes the game page. Skeleton cards while loading.
+    phone ticks (`scoreWatch`). Tap pushes the game page. Skeleton cards while loading. `renderGames` calls `scoreWatch(allG)` (every game, not the chip-filtered list), so score memory (`S.gsc`) keeps updating for cards a bet-type chip hides and switching chips never fires a stale scored pulse (display only).
     **Both teams and both scores on every card (issue #95, display only):** their row shows the full opponent name, else the
     short code on the score (`sc.opp_abbr`), else "Opponent" when only their score is known; a card with no opponent score
     (tennis/UFC on Kalshi's live data) shows no number, never a fake 0 (a real 0 shows). The server fills the leg/single

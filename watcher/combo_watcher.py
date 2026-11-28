@@ -22,7 +22,7 @@ ENGINE = os.path.join(HOME, "engine.py")
 CONF = os.path.join(HOME, "watcher.json")
 REPO = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main/"
 NTFY = os.environ.get("COMBOWATCH_NTFY", "https://ntfy.sh")
-WATCHER_VERSION = "2026.11.27.147"
+WATCHER_VERSION = "2026.11.28.148"
 
 # Settings the phone may change on the watcher. Keys and anything else are never accepted.
 SYNCED = ("take_profit", "lock_trail", "stop_loss", "smart_sell", "panel_budget", "bankroll", "ride", "tp_follow", "tp_auto", "tp_ladder", "refresh_secs", "auto_sell", "auto_cap", "flex_sell", "flex_learn", "flex_backstop", "sell_more_cheap", "sell_more_loss", "sell_more_cap", "real_offer_ask", "loss_cut_default", "learned_guards", "mkt_hold",
@@ -4735,6 +4735,10 @@ def webapp_main():
                 else:
                     ok, msg = A.ap_freeze(str(d.get("key") or ""), d.get("on") is True)
                 log("full auto autopilot", a.split("_")[1], "ok" if ok else "refused", "from the app")
+                return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
+            if a == "autopilot_reset":              # (#145) Back to start: one setting or "all"; its own tap, confirmed, checked again by the engine
+                ok, msg = A.ap_reset_act(d)
+                log("full auto autopilot", "reset", "ok" if ok else "refused", "from the app")
                 return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
             if a == "skim_moved":
                 amt = A.skim_moved()

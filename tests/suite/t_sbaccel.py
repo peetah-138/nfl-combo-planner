@@ -66,7 +66,8 @@ ok("'cand' is exactly single_candidates' own rule", {x["ticker"] for x in same i
    == {c["legs"][0]["ticker"] for c in pool if c["grade"] == "cand"})
 
 # line_candidates: its answer is unchanged; every strike it priced with an edge is stashed
-E.line_markets = lambda code: [{"ticker": f"KXNBASPREAD-26NOV21BOSNYK-BOS{k}", "event_ticker": "KXNBASPREAD-26NOV21BOSNYK",
+DAY = time.strftime("%y%b%d", time.gmtime(now + 5 * 3600)).upper()   # the event's own date must be the game's day (#482)
+E.line_markets = lambda code: [{"ticker": f"KXNBASPREAD-{DAY}BOSNYK-BOS{k}", "event_ticker": f"KXNBASPREAD-{DAY}BOSNYK",
                                 "kind": "spread", "floor_strike": k - 0.5, "yes_sub_title": f"Boston Celtics wins by over {k - 0.5}",
                                 "yes_ask_dollars": "0.50"} for k in (4, 5, 6)]
 start = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 5 * 3600))

@@ -5,8 +5,8 @@ spec=importlib.util.spec_from_file_location("E","wahome/engine.py");E=importlib.
 ok=lambda n,c: print(("PASS " if c else "FAIL ")+n)
 # two games whose teams share mascots ("Bears", "Seahawks"-style collisions)
 E.espn_lines=lambda code:{
- frozenset({"brown bears","unc wilmington seahawks"}):{"home":"Brown Bears","away":"UNC Wilmington Seahawks","home_abbr":"BRWN","away_abbr":"UNCW","spread_home":-4.5,"total":140,"start":None},
- frozenset({"baylor bears","tennessee tech golden eagles"}):{"home":"Baylor Bears","away":"Tennessee Tech Golden Eagles","home_abbr":"BAY","away_abbr":"TNTC","spread_home":-18.5,"total":145,"start":None}}
+ frozenset({"brown bears","unc wilmington seahawks"}):{"home":"Brown Bears","away":"UNC Wilmington Seahawks","home_abbr":"BRWN","away_abbr":"UNCW","spread_home":-4.5,"total":140,"start":"2026-11-19T01:00:00Z"},
+ frozenset({"baylor bears","tennessee tech golden eagles"}):{"home":"Baylor Bears","away":"Tennessee Tech Golden Eagles","home_abbr":"BAY","away_abbr":"TNTC","spread_home":-18.5,"total":145,"start":"2026-11-19T01:00:00Z"}}
 def m(ev,tk,sub,strike,p): return {"ticker":tk,"event_ticker":ev,"yes_sub_title":sub,"floor_strike":strike,"yes_ask_dollars":str(p+.01),"yes_bid_dollars":str(p-.01),"last_price_dollars":str(p),"kind":"spread"}
 E.line_markets=lambda code:[
  m("KXNCAAMBSPREAD-26NOV18UNCWBRWN","KXNCAAMBSPREAD-26NOV18UNCWBRWN-UNCW1","UNC Wilmington wins by over 1.5 Points",1.5,.30),
