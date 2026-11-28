@@ -2,11 +2,10 @@
 .fld .fball,.fld .fdir{transition:none}
 .fstrip .fld{--fxc:var(--acc,#2a6)}
 /* richer end zones: a stripe texture and a bright goal line, team colour comes from the existing inline background */
-.fstrip .ez{position:relative;overflow:hidden}
+.fstrip .ez{overflow:hidden}
 .fstrip .ez::before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(135deg,rgba(255,255,255,.14) 0 6px,rgba(255,255,255,0) 6px 12px);pointer-events:none}
 .fstrip .ez.l::after,.fstrip .ez.r::after{content:"";position:absolute;top:0;bottom:0;width:2px;background:rgba(255,255,255,.7);pointer-events:none}
 .fstrip .ez.l::after{right:0}.fstrip .ez.r::after{left:0}
-.fstrip .grass{position:relative}
 /* drive trail */
 .fld i.fxtrl{position:absolute;top:50%;height:6px;margin-top:-3px;background:var(--c,#fff);opacity:.4;border-radius:3px;transform-origin:0 50%;pointer-events:none}
 .fld i.fxtrl.r{transform-origin:100% 50%}
