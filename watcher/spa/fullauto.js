@@ -45,10 +45,10 @@ function faDrift(D,full){if(!D)return '';S.faDrift=D;
  const its=D.items||[],ck=its.length?'':'<div class="m" style="font-size:12px">Everything is where you started it.</div>';
  const grp=FA_DG.map(([g,t])=>{const xs=its.map((x,i)=>[x,i]).filter(([x])=>x.group===g);if(!xs.length)return '';
   return `<div class="m" style="font-size:12px;margin-top:8px"><b>${esc(t)}</b></div><ul class="fab fadr">${xs.map(([x,i])=>`<li><span>${esc(x.line)}${x.frozen?' (frozen)':''}${x.note?`<br><span class="m">${esc(x.note)}</span>`:''}${full&&x.why_not&&!x.reset_ok?`<br><span class="m fadw">${esc(x.why_not)}</span>`:''}</span>${full&&x.resettable!==false?`<button class="btn ghost" type="button" aria-label="Back to start: ${esc(x.name)}" onclick="faResetAsk(${i})">Back to start</button>`:''}</li>`).join('')}</ul>`;}).join('');
- return `<details class="m fadrift" style="font-size:12px;margin-top:8px"${its.length?' open':''}><summary><b>Drift since start</b>${its.length?` (${its.length})`:''}</summary>
+ return `<div class="m fadrift" style="font-size:12px;margin-top:8px"><div class="fadh"><b>Drift since start</b>${its.length?` &nbsp;(${its.length})`:''}</div>
   ${D.err?`<div class="sbw sbx"><i>⚠️</i><span style="flex:1">${esc(D.err)}</span></div>`:ck+grp}
   ${D.cautious&&its.length&&!D.err?'<div class="m" style="font-size:12px">The brake is being careful, so a reset that would loosen something waits.</div>':''}
-  ${full&&D.can_reset?`<div class="fabtns"><button class="btn" type="button" onclick="faResetAsk(-1)">Reset all</button></div>`:''}</details>`;}
+  ${full&&D.can_reset?`<div class="fabtns"><button class="btn" type="button" onclick="faResetAsk(-1)">Reset all</button></div>`:''}</div>`;}
 function faResetAsk(i){const D=S.faDrift||{};const its=D.items||[],one=i>=0?its[i]:null;if(i>=0&&!one)return;
  const all=its.filter(x=>x.reset_ok&&!x.frozen),body=one?`<p style="font-size:14px;line-height:1.45">${esc(one.name)} goes from ${esc(one.cur_text)} back to ${esc(one.start_text)}, where you started it.${one.reset_ok?'':' '+esc(one.why_not||'')}</p>`:
   `<p style="font-size:14px;line-height:1.45">${all.length} setting${all.length===1?'':'s'} go back to where you started:</p><ul class="fab">${all.map(x=>`<li>${esc(x.name)}: ${esc(x.cur_text)} to ${esc(x.start_text)}</li>`).join('')}</ul>${its.length>all.length?'<p class="m" style="font-size:12.5px">Frozen settings and ones that would loosen while the brake is careful stay as they are.</p>':''}`;
