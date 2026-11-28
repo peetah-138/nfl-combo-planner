@@ -9,6 +9,8 @@ E.store_open(os.path.join(tempfile.mkdtemp(), "h.db")); E.HERE = tempfile.mkdtem
 E.can_trade = lambda: True
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 NOW = time.time()
+for _r in ("stake", "capuse"):   # step 7 has its own test (t_autopilot_stake): out of this older test's way
+    E.AP_REG.pop(_r, None)
 DAY = 86400
 PL = {}
 E._fa_rows = lambda now, days=None: [(k.split("|")[0], {"id": k.split("|")[1], "result": "x", "pl": v}) for k, v in PL.items()]

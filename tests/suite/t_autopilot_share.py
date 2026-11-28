@@ -25,6 +25,8 @@ E._held_all = lambda: []
 E.panel_record = lambda: {"paper": {"ready": True, "bets": 60, "pl": 40.0, "days": 20, "days_up": 14, "clv": 0.01}, "real": {}}
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 NOW = time.time()
+for _r in ("stake", "capuse"):   # step 7 has its own test (t_autopilot_stake): out of this older test's way
+    E.AP_REG.pop(_r, None)
 DAY = 86400
 NBA, NHL = "KXNBAGAME-26NOV20LALBOS-LAL", "KXNHLGAME-26NOV20TORBOS-TOR"
 

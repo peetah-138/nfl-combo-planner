@@ -24423,9 +24423,11 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
     caut = _fa_caution_eval(st, after, run, now, legacy)
     if not brake and loss_today <= -st["day_loss"]:
         brake = {"kind": "day", "day": day, "why": f"down {money(-loss_today)} today (the limit is {money(st['day_loss'])}). It starts again tomorrow."}
-    cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap"), 2)
+    cap_use = ap_cap_use(st)                              # (#145 step 7) autopilot's share of Pete's cap (1 = all of it); only ever lowers it
+    stake_mult = ap_stake_mult(st, caut["level"])
+    cap_eff = round(st["cap"] * _fa_knob(caut["level"], "cap") * cap_use, 2)
     mo = ap_open_limit(st)                                # (#145) Pete's open-bet number, or what autopilot moved it to (8 to 20)
-    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "caution": caut, "open": open_n,
+    out = {"on": st["on"], "gate": st.get("gate"), "day": day, "spent": spent, "cap": cap_eff, "cap_normal": st["cap"], "cap_use": cap_use, "stake_mult": stake_mult, "caution": caut, "open": open_n,
            "max_open": mo, "max_open_set": st["max_open"], "bank": st["bank"], "free": free, "pl": pl, "streak": run,
            "streak_limit": st["streak"], "loss_today": loss_today, "day_loss": st["day_loss"], "brake": brake,
            "room": round(max(0.0, cap_eff - spent), 2), "slots": max(0, mo - open_n)}
@@ -24438,7 +24440,8 @@ def fa_check(st=None, paused=False, may_trade=True, now=None, read_positions=Fal
         b.append("Paused itself: " + brake["why"])
     if out["room"] < PANEL_OWN_MIN:
         b.append(f"Today's {money(cap_eff)} spending cap is used up ({money(spent)} spent)"
-                 + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else "."))
+                 + (f", already cut to {caut['pct']}% of your {money(st['cap'])}." if caut["level"] else
+                    f", the share of your {money(st['cap'])} cap autopilot lets it use ({round(cap_use * 100):g}%)." if cap_use < 1 - 1e-9 else "."))
     slot_msg = f"{open_n} bets are open, the most it allows is {mo}."
     if out["slots"] <= 0:
         b.append(slot_msg)
@@ -24727,9 +24730,14 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     except Exception as err:                              # unreadable shares or bets: approve nothing this pass
         log("full auto budget shares: nothing approved:", type(err).__name__, err)
         return None
+    mult = ap_stake_mult(st, caut["level"])               # (#145 step 7) autopilot's bet-size multiple (1 = today's size)
+    budget = float(real.get("budget") or CFG.get("panel_budget", PANEL["budget"]))
+    riding = sum(float(c.get("stake") or 0) for c in real.get("items", []) if c.get("state") in PANEL_LIVE)
+    loss_room = max(0.0, float(v.get("day_loss", st.get("day_loss", 20.0))) + float(v.get("loss_today", 0)) - float(v.get("spent", 0)))   # stakes stay inside what is left before the loss limit
+    taken = 0.0
     for c in items:
         normal = float(c.get("stake") or 0)
-        s = _fa_scaled(normal, _fa_knob(caut["level"], "size"))            # cautious: smaller bets (never above the normal size)
+        s = _fa_sized(normal, _fa_knob(caut["level"], "size"), mult, room, free, loss_room, budget - riding - taken)   # cautious: smaller bets
         if guard and not guard.allows(c, s):
             continue                                      # (#145 step 6) over its league's / bet type's share of the day's cap: left out, not an open-slot skip
         if s >= PANEL_OWN_MIN and s <= room + 0.01 and s <= free + 0.01 and len(ids) >= slots:
@@ -24739,14 +24747,30 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
         ids.append(c["id"])
         if guard:
             guard.take(c, s)
-        if s < normal - 0.005:
-            own[c["id"]] = s
-        room, free = room - s, free - s
+        if abs(s - normal) > 0.005:
+            own[c["id"]] = s                              # smaller (brake or autopilot) or, within every clamp, larger than the panel's own size
+        room, free, taken = room - s, free - s, taken + s
     if not ids:
         return None
     day = _panel_day(real.get("at"))
     book = {c["id"]: own.get(c["id"], float(c.get("stake") or 0)) for c in items if c["id"] in ids}
-    _fa_update(lambda s: s["bets"].update({f"{day}|{i}": a for i, a in book.items()}))   # written BEFORE approving
+    def _book(s):
+        s["bets"].update({f"{day}|{i}": a for i, a in book.items()})   # written BEFORE approving
+        rat = {}                                          # (#145 step 7) each bet's REAL size against its normal size (the brake's own cut taken out), so a clamp that shrank it is counted
+        f0 = _fa_knob(caut["level"], "size")
+        for c in items:
+            if c["id"] in book:
+                n0 = float(c.get("stake") or 0)
+                r0 = book[c["id"]] / (n0 * f0) if n0 > 0 and f0 > 0 else 1.0
+                if math.isfinite(r0) and r0 > 0 and abs(r0 - 1.0) > 1e-9:
+                    rat[f"{day}|{c['id']}"] = round(r0, 4)
+        if rat:
+            sz = s["sizes"] = s["sizes"] if isinstance(s.get("sizes"), dict) else {}
+            sz.update(rat)
+            for k in list(sz)[:-400]:
+                del sz[k]
+        _ap_stamp(s, now)
+    _fa_update(_book)
     fa_slot_taken(items, ids, book, v["open"], day, now, log)     # (#145) evidence for the open-bet limit; never blocks the buy
     if skipped:
         fa_slot_skips(skipped, caut["level"], {"room": room, "free": free}, v["open"] + len(ids), real, now)
@@ -24779,18 +24803,33 @@ FAL = {"week": 7 * 86400, "look": 6 * 3600, "judge_max": 14 * 86400, "days": 60,
        "sbev": {"lo": 0, "hi": 4, "step": 1},                # SB_DIAL_BARS level: none .. +$0.10 expected on $5
        "game": {"lo": 0.10, "hi": 0.30, "step": 0.025},      # share of the full-auto bankroll one game may carry
        "open": {"lo": 8, "hi": 20, "step": 1},               # (#145) the most bets full auto may have open at once
-       "share": {"lo": 0.05, "hi": 1.0, "step": 0.05}}       # (#145 step 6) the most of a day's cap one league / bet type may use
-FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30, "open": FA["max_open"], "share": 1.0}   # = today's behaviour (the identity); "open" starts from Pete's own number
-FAL_RECS = ("bar", "sbev", "game", "open", "share")
+       "share": {"lo": 0.05, "hi": 1.0, "step": 0.05},       # (#145 step 6) the most of a day's cap one league / bet type may use
+       "stake": {"lo": 0.5, "hi": 1.5, "step": 0.05},        # (#145 step 7) bet size as a multiple of today's size; a step is 5% of the CURRENT size
+       "capuse": {"lo": 0.5, "hi": 1.0, "step": 0.05}}       # (#145 step 7) the share of Pete's daily cap full auto may use
+FAL_START = {"bar": 0.0, "sbev": 0, "game": 0.30, "open": FA["max_open"], "share": 1.0, "stake": 1.0, "capuse": 1.0}   # = today's behaviour (the identity); "open" starts from Pete's own number
+FAL_RECS = ("bar", "sbev", "game", "open", "share", "stake", "capuse")
 FAL_NAMES = {"bar": "Combo bars, league by league", "sbev": "Smart Buy bars", "game": "Per-game limit", "open": "Open-bet limit",
-             "share": "Budget share, league by league and combo vs single"}
+             "share": "Budget share, league by league and combo vs single",
+             "stake": "Bet size (a multiple of today's size)", "capuse": "How much of your daily cap it uses"}
 FAL_OPEN = {"min_n": 25, "loose_mult": 2, "loose_wait": 14 * 86400, "keep": 90 * 86400, "look": 600}
 # (#145 step 6) the budget-share record: judged on the PRACTICE (paper) panel's settled bets, which the shares never filter, so a
 # shrunk league keeps producing the evidence that could win it its share back. min_n bets per key, loosening needs twice that and
 # 14 days since the last move, and the league's closing-line value must be readable and not negative.
 FAL_SHARE = {"min_n": 40, "loose_mult": 2, "loose_wait": 14 * 86400, "clv_n": 10, "tight_max": 3, "kinds": ("@combo", "@single")}
-FAL_SLOW = {"open": FAL_OPEN, "share": FAL_SHARE}          # records that loosen slowly (the tighter step is always the fast one)
-AP_EXCL = {"bar": ("share",), "share": ("bar",)}           # plan section 3: these two are never moved in the same week
+# (#145 step 7) the two most dangerous settings: they scale every loss. TIGHTEN FAST, LOOSEN SLOW. Loosening needs, on top of the
+# shared gate, the last 30 days of REAL full-auto bets net positive after fees (at least net_min_n of them), the soft brake at level 0
+# now and no brake or cautious episode for `quiet` (14 days; a record that was never watched is not quiet), and twice the sample and
+# 14 days since the last move. Tightening needs no bootstrap: ONE step after a brake week (an episode in the last `brake_week`) or when
+# the last 30 days AND the bets since the last step both net negative (at least tight_min_n bets). A tightening is never undone by the
+# weekly review (that would be a way to loosen); a loosening that loses is put back.
+FAL_RISK = {"min_n": 40, "loose_mult": 2, "loose_wait": 14 * 86400, "days": 30, "net_min_n": 10, "quiet": 14 * 86400,
+            "brake_week": 7 * 86400, "tight_min_n": 5, "keep_sizes": 400}
+FAL_RISKY = ("stake", "capuse")
+FAL_SLOW = {"open": FAL_OPEN, "share": FAL_SHARE, "stake": FAL_RISK, "capuse": FAL_RISK}   # records that loosen slowly (the tighter step is always the fast one)
+# plan section 3: settings that depend on each other are never moved in the same week (size and cap use; bar, share, size and cap use)
+AP_EXCL = {"bar": ("share", "stake", "capuse"), "share": ("bar", "stake", "capuse"),
+           "stake": ("capuse", "bar", "share"), "capuse": ("stake", "bar", "share")}
+AP_WEEK_MAX = 2                                              # plan section 3: at most two autopilot settings change in one week
 FAL_RUN = {"at": 0.0}
 FAL_NOT_WIRED = (
     ("Paper panel", "it is the practice gate that unlocks full auto itself and has no number to adjust"),
@@ -24929,7 +24968,7 @@ def fal_on(st):
 
 
 def _fal_key(rec, lg=None):
-    return "game_share" if rec == "game" else "open_slots" if rec == "open" else f"{rec}:{lg}"
+    return {"game": "game_share", "open": "open_slots", "stake": "stake_mult", "capuse": "cap_use"}.get(rec) or f"{rec}:{lg}"
 
 
 def _fal_split(key):
@@ -24938,6 +24977,10 @@ def _fal_split(key):
         return "game", None
     if key == "open_slots":
         return "open", None
+    if key == "stake_mult":
+        return "stake", None
+    if key == "cap_use":
+        return "capuse", None
     rec, lg = key.split(":", 1)
     if rec not in ("bar", "sbev", "share") or not lg:
         raise ValueError(key)
@@ -24947,7 +24990,8 @@ def _fal_split(key):
 def _fal_vals(st):
     """(values, None) or (None, why). values = {'bar': {league: points}, 'sbev': {league: level}, 'game': share}. Nothing
     saved yet = the start values. A value that isn't a plain number inside its fixed range is a blocker, never a guess."""
-    out = {"bar": {}, "sbev": {}, "share": {}, "game": FAL_START["game"], "open": _ap_open_base(st)}
+    out = {"bar": {}, "sbev": {}, "share": {}, "game": FAL_START["game"], "open": _ap_open_base(st),
+           "stake": FAL_START["stake"], "capuse": FAL_START["capuse"]}
     L = st.get("lessons")
     if L is None:
         return out, None
@@ -24967,6 +25011,8 @@ def _fal_vals(st):
                 if int(v) != v:
                     raise ValueError(key)
                 out["open"] = int(v)
+            elif rec in FAL_RISKY:
+                out[rec] = float(v)
             else:
                 out[rec][lg] = int(v) if rec == "sbev" else float(v)
         return out, None
@@ -24977,7 +25023,7 @@ def _fal_vals(st):
 
 def _fal_cur(vals, key):
     rec, lg = _fal_split(key)
-    return vals["game"] if rec == "game" else vals["open"] if rec == "open" else vals[rec].get(lg, FAL_START[rec])
+    return vals[rec] if rec in ("game", "open") + FAL_RISKY else vals[rec].get(lg, FAL_START[rec])
 
 
 def _fal_moves(rec, cur, rs=None, passes=None):
@@ -24998,6 +25044,11 @@ def _fal_moves(rec, cur, rs=None, passes=None):
             if v is not None:
                 out.append((d, v))
         return out
+    if rec in FAL_RISKY:                                     # (#145 step 7) smaller = tighter; a stake step is 5% of the current size, cap use moves 5 pts
+        t = round(cur * 0.95, 4) if rec == "stake" else round(cur - b["step"], 4)
+        u = round(cur * 1.05, 4) if rec == "stake" else round(cur + b["step"], 4)
+        return [d for d in (("tighter", max(t, b["lo"])) if cur > b["lo"] + 1e-9 else None,
+                            ("looser", min(u, b["hi"])) if cur < b["hi"] - 1e-9 else None) if d]
     sg = -1 if rec == "game" else 1                          # tighter = a smaller game share, a bigger bar
     end = b["lo"] if rec == "game" else b["hi"]              # the tight end of the range (the loose end is the start)
     out = []
@@ -25013,7 +25064,7 @@ def _fal_moves(rec, cur, rs=None, passes=None):
 def _fal_min_n(rec):
     """The record's own minimum sample (the stepper's 10 changed / 20 new bets come on top, in knob_evidence)."""
     return {"bar": LGSH["k_roi"], "sbev": SB_OPTIN["n"], "game": EXPO["dollar_n"], "open": FAL_OPEN["min_n"],
-            "share": FAL_SHARE["min_n"]}[rec]
+            "share": FAL_SHARE["min_n"], "stake": FAL_RISK["min_n"], "capuse": FAL_RISK["min_n"]}[rec]
 
 
 def share_keys(c):
@@ -25101,6 +25152,225 @@ def _share_clv_ok(rs):
     return len(v) >= FAL_SHARE["clv_n"] and sum(v) / len(v) >= 0
 
 
+# ---- (#145 step 7) bet size and daily cap use: the evidence, the live readers and the shared facts their steps are judged on.
+def _fa_mine_keys(items, st):
+    """The keys ('day|id') of the full-auto bets among `items` [(day, bet)], with every bet swapped in for one of ours (as fa_check)."""
+    mine, grew = set(), True
+    while grew:
+        grew = False
+        for d, c in items:
+            k = f"{d}|{c.get('id')}"
+            if k not in mine and (k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine)):
+                mine.add(k)
+                grew = True
+    return mine
+
+
+def _ap_real_rows(st, now, days):
+    """Full auto's own settled bets over the last `days`, oldest first: {k: when it was bought, d: what it really made after
+    fees (panel_pl), s: its stake, m: the bet-size multiple in force when it was bought (1 when none was recorded: until step 7
+    every bet was at today's size), day}. RAISES when the bets or a recorded size can't be read (the caller then takes no step)."""
+    if not STORE.get("db"):
+        raise RuntimeError("no database")
+    _panel_table()
+    first = _panel_day(now - (days + 3) * 86400)
+    items = [(r["day"], c) for r in store_rows_strict("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
+             for c in json.loads(r["body"]).get("items", [])]
+    mine = _fa_mine_keys(items, st)
+    sizes = st.get("sizes") if isinstance(st.get("sizes"), dict) else {}
+    out = []
+    for d, c in items:
+        k = f"{d}|{c.get('id')}"
+        if k not in mine or not c.get("result"):
+            continue
+        pl, stake = panel_pl(c), float(c.get("stake") or 0)
+        if pl is None or stake <= 0:
+            continue
+        m = sizes.get(k, 1.0)
+        if isinstance(m, bool) or not isinstance(m, (int, float)) or not math.isfinite(m) or m <= 0 or not math.isfinite(pl):
+            raise ValueError("a recorded bet size can't be read")
+        t = float(_fa_stamp(c))
+        if t >= now - days * 86400:
+            out.append({"k": t, "d": float(pl), "s": stake, "m": float(m), "day": d})
+    out.sort(key=lambda r: r["k"])
+    return out
+
+
+class _RiskScale:
+    """`passes` for the bet-size record: nothing is filtered, every bet is scaled, so its evidence is the dollars each bet would
+    have made at the new multiple instead of the old (d * (b - a) / m, where m is the multiple it was really bought at). The third
+    number is the EXTRA stake the move puts at risk, so the gate's 2% gain bar is a return on that extra money."""
+
+    def __call__(self, rs, v):
+        return [True] * len(rs)
+
+    def ds(self, rs, a, b):
+        return [(r["k"], r["d"] * (b - a) / r["m"], r["s"] * abs(b - a) / r["m"]) for r in rs]
+
+
+def _stake_load(now):
+    """({'stake_mult': [row]}, passes): full auto's own settled bets (not the practice panel: a bet size changes every bet, so the
+    real record at the real sizes is the evidence). RAISES when unreadable."""
+    rows = _ap_real_rows(fa_state(), now, FAL["days"])
+    return ({"stake_mult": rows} if rows else {}), _RiskScale()
+
+
+def _capuse_passes(rs, v):
+    """Replay of the practice bets in order under a cap use `v`: a bet passes while its day's running total stays inside v of the daily cap."""
+    run, out = defaultdict(float), []
+    for r in rs:
+        ok = run[r["day"]] + r["s"] <= v * r["base"] + 1e-9
+        out.append(ok)
+        if ok:
+            run[r["day"]] += r["s"]
+    return out
+
+
+def _capuse_load(now):
+    """({'cap_use': [row]}, passes) from the practice panel's settled bets (never filtered by the dial, so a tightened dial keeps
+    producing the evidence that could win its room back), each day first fitted into the live daily cap (_share_load). Every bet
+    counts once (it sits under exactly one of the combo / single keys). RAISES when unreadable."""
+    by, _ = _share_load(now)
+    rows = sorted([r for k in ("share:@combo", "share:@single") for r in by.get(k, [])], key=lambda r: (r["day"], r["k"]))
+    return ({"cap_use": rows} if rows else {}), _capuse_passes
+
+
+def _ap_quiet(st, now):
+    """(quiet, last): `last` = when full auto last saw the brake or a cautious state (the pass and every weekly look stamp it in
+    lessons['cq']), `quiet` = it has been watched for at least FAL_RISK['quiet'] with no such episode. Also reads the soft brake's own
+    record: a level above 0, a level change within the window and the saved history, which keeps only 20 notes; a full history whose
+    oldest note is inside the window may have dropped an episode, so it is not quiet. Anything unreadable = (False, None): `last` is
+    None, never a made-up time, and the caller takes no step either way."""
+    try:
+        w, last, first = FAL_RISK["quiet"], 0.0, None
+        L = st.get("lessons") if isinstance(st.get("lessons"), dict) else {}
+        cq = L.get("cq") if isinstance(L.get("cq"), dict) else {}
+        for k in ("first", "last"):
+            v = cq.get(k)
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)):
+                return False, None
+        first = cq.get("first")
+        last = float(cq.get("last") or 0)
+        c = st.get("caution")
+        c = {} if c is None else c
+        if not isinstance(c, dict):
+            return False, None
+        since = c.get("since", 0)
+        if isinstance(since, bool) or not isinstance(since, (int, float)) or not math.isfinite(since):
+            return False, None
+        last = max(last, float(since))
+        if ap_brake_cautious(st, now):
+            last = now
+        h = st.get("history")
+        if h is not None:
+            if not isinstance(h, list):
+                return False, None
+            for e in h:
+                if not isinstance(e, dict) or not isinstance(e.get("at"), (int, float)):
+                    return False, None
+                if e.get("ev") in ("caution", "brake"):
+                    last = max(last, float(e["at"]))
+            if len(h) >= 20 and float(h[0]["at"]) > now - w:
+                last = max(last, float(h[0]["at"]))
+        return (first is not None and now - max(float(first), last) >= w), last
+    except Exception:
+        return False, None
+
+
+def _ap_stamp(s, now):
+    """Inside _fa_update: note that full auto is being watched (first) and whether the brake is up right now (last). The loosening
+    of bet size and cap use needs a quiet record, and a stamp is the only record that can't fall off a 20-note history."""
+    L = s.get("lessons")
+    if L is None:
+        L = s["lessons"] = {}
+    if not isinstance(L, dict):
+        return
+    cq = L.get("cq") if isinstance(L.get("cq"), dict) else {}
+    cq.setdefault("first", round(now))
+    cq.setdefault("last", 0)
+    c = s.get("caution")
+    lv = c.get("level", 0) if isinstance(c, dict) else 1
+    if ap_brake_cautious(s, now) or not isinstance(lv, (int, float)) or lv > 0:
+        cq["last"] = round(now)
+    L["cq"] = cq
+
+
+def _ap_risk(st, rows, now, since):
+    """The facts a bet-size or cap-use step is judged on, from full auto's own settled bets (`rows`) and the brake's record:
+    n30 / net30 (the last 30 days after fees), `loosen_ok`, and `tighten` (None, 'brake' or 'loss'). `since` is when this setting
+    last moved: a brake week or a loss only counts again if it is NEW since then. Raises on a number that isn't finite."""
+    cut = now - FAL_RISK["days"] * 86400
+    last30 = [r for r in rows if r["k"] >= cut]
+    net30 = round(sum(r["d"] for r in last30), 2)
+    post = [r for r in last30 if r["k"] > since]
+    netp = sum(r["d"] for r in post)
+    if not (math.isfinite(net30) and math.isfinite(netp)):
+        raise ValueError("a result isn't a number")
+    quiet, last = _ap_quiet(st, now)
+    if last is None:
+        raise ValueError("the brake's record can't be read")   # no step in either direction, and no false 'the brake stepped in' line
+    cautious = ap_brake_cautious(st, now)
+    tight = None
+    if last > since and now - last <= FAL_RISK["brake_week"]:
+        tight = "brake"
+    elif len(last30) >= FAL_RISK["tight_min_n"] and net30 < 0 and len(post) >= FAL_RISK["tight_min_n"] and netp < 0:
+        tight = "loss"
+    return {"n30": len(last30), "net30": net30, "quiet": quiet, "last": last, "tighten": tight,
+            "loosen_ok": bool(quiet and not cautious and len(last30) >= FAL_RISK["net_min_n"] and net30 > 0)}
+
+
+def _ap_week_n(steps, rec, now, actions=()):
+    """How many OTHER autopilot settings stepped in the last week (saved steps) or are about to in this plan."""
+    names = {o for o, t in (steps or {}).items() if o in AP_REG and o != rec and now - float(t or 0) < FAL["week"]}
+    return len(names | {x["rec"] for x in actions if x.get("do") == "step" and x["rec"] != rec})
+
+
+def ap_stake_mult(st, level=0):
+    """The bet-size multiple full auto buys at right now: autopilot's learned multiple (0.5 to 1.5 of today's size) while Autopilot
+    is on and its saved numbers can be read, else 1. While the soft brake is cautious it is never above 1: the brake's own cut
+    (50% / 25%) always applies in full and a bigger multiple never partly cancels it. Never raises; any error reads as 1 (today)."""
+    try:
+        if not fal_on(st):
+            return 1.0
+        vals, err = _fal_vals(st)
+        got = None if err or vals is None else ap_clamp("stake", vals["stake"])
+        if got is None:
+            return FAL["stake"]["lo"]                        # unreadable: the smallest size, never a bigger one
+        return min(got, 1.0) if level else got
+    except Exception:
+        return FAL["stake"]["lo"]
+
+
+def ap_cap_use(st):
+    """The share of Pete's daily cap full auto may use right now (0.5 to 1): autopilot's learned dial while Autopilot is on and its
+    saved numbers can be read, else 1. It only ever lowers the cap, on top of the soft brake's own cut. Never raises."""
+    try:
+        if not fal_on(st):
+            return 1.0
+        vals, err = _fal_vals(st)
+        got = None if err or vals is None else ap_clamp("capuse", vals["capuse"])
+        return FAL["capuse"]["lo"] if got is None else min(got, 1.0)
+    except Exception:
+        return FAL["capuse"]["lo"]
+
+
+def _fa_sized(normal, factor, mult, room=None, free=None, loss_room=None, panel_room=None):
+    """One bet's stake: the soft brake's cut (_fa_scaled, as before) with the autopilot multiple on top. Below 1 it only shrinks
+    (never under $2, never above normal). Above 1 (only with the brake at level 0) it grows to normal * mult but never past the 1.5
+    ceiling, OWN_MAX, what is left of the day's cap, the free bankroll, what is left before a day's stakes could reach the daily loss
+    limit, or the panel budget; and never below what it would have been without the multiple, so it never costs a bet its place."""
+    base = _fa_scaled(normal, factor)
+    if factor < 1 and math.isfinite(mult):
+        mult = min(mult, 1.0)                              # the brake's own cut is never partly undone, whoever calls
+    if mult == 1 or not math.isfinite(mult):
+        return base
+    if mult < 1:
+        return min(base, _fa_scaled(normal, factor * mult))
+    top = min(normal * factor * min(mult, FAL["stake"]["hi"]), normal * FAL["stake"]["hi"], OWN_MAX,
+              *[x for x in (room, free, loss_room, panel_room) if x is not None])
+    return max(base, math.floor(top * 100 + 1e-9) / 100)
+
+
 def _fal_load(rec, now):
     """({key: [row]}, passes) for one record, from its own table. A row is {k: when, d: dollars the bet made after fees,
     s: stake, ...}; passes(rows, value) says which rows the value would let through. RAISES when the data can't be read
@@ -25111,6 +25381,10 @@ def _fal_load(rec, now):
     by = defaultdict(list)
     if rec == "share":
         return _share_load(now)
+    if rec == "stake":
+        return _stake_load(now)
+    if rec == "capuse":
+        return _capuse_load(now)
     if rec == "bar":
         _league_shadow_q_table()
         for r in store_rows_strict("select ts, league, pct, cut_now, stake, pnl from league_shadow_q where outcome is not null "
@@ -25162,6 +25436,8 @@ def _fal_load(rec, now):
 def _fal_ds(rs, passes, a, b):
     """The knob stepper's per-bet changes [(when, dollars gained, stake)] for moving the value from a to b: the dollars of
     each bet the move newly lets through, minus those of each it newly stops (0 where nothing changes)."""
+    if hasattr(passes, "ds"):                                # (#145 step 7) a size change scales every bet instead of filtering some
+        return passes.ds(rs, a, b)
     pa, pb = passes(rs, a), passes(rs, b)
     return [(r["k"], (int(y) - int(x)) * (r["d"] or 0.0), r["s"]) for r, x, y in zip(rs, pa, pb)]
 
@@ -25176,6 +25452,10 @@ def _fal_val_text(rec, v):
         return f"{int(v)} open bets"
     if rec == "share":
         return f"{v * 100:g}% of the day's cap"
+    if rec == "stake":
+        return f"{round(v * 100, 1):g}% of today's bet size"
+    if rec == "capuse":
+        return f"{round(v * 100, 1):g}% of your daily cap"
     if rec == "bar":
         return f"+{v:g} points"
     if rec == "sbev":
@@ -25186,8 +25466,8 @@ def _fal_val_text(rec, v):
 def _fal_change(key, dirn, to=None):
     """A step in plain words: 'Raised the NBA combo bar a little' (a per-game limit goes the other way: tighter = lower)."""
     rec, _ = _fal_split(key)
-    up = (dirn == "tighter") != (rec in ("game", "open", "share"))
-    tail = f" to {_fal_val_text(rec, to)}" if rec in ("game", "open", "share") and to is not None else " one level" if rec == "sbev" else " a little"
+    up = (dirn == "tighter") != (rec in ("game", "open", "share") + FAL_RISKY)
+    tail = f" to {_fal_val_text(rec, to)}" if rec in ("game", "open", "share") + FAL_RISKY and to is not None else " one level" if rec == "sbev" else " a little"
     return f"{'Raised' if up else 'Lowered'} the {_fal_name(key)}{tail}"
 
 
@@ -25197,6 +25477,10 @@ def _fal_name(key):
         return "per-game limit"
     if rec == "open":
         return "open-bet limit"
+    if rec == "stake":
+        return "bet size"
+    if rec == "capuse":
+        return "share of the daily cap it uses"
     if rec == "share":
         return "combo budget share" if lg == "@combo" else "single-bet budget share" if lg == "@single" else f"{league_label(lg)} budget share"
     return f"{league_label(lg)} combo bar" if rec == "bar" else f"{league_label(lg)} Smart Buy bar"
@@ -25207,6 +25491,8 @@ ap_register("sbev", FAL_NAMES["sbev"], lambda rec, now: _fal_load(rec, now), _fa
 ap_register("game", FAL_NAMES["game"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["game"], FAL_START["game"], -1)
 ap_register("open", FAL_NAMES["open"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["open"], FAL_START["open"], -1)
 ap_register("share", FAL_NAMES["share"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["share"], FAL_START["share"], -1)
+ap_register("stake", FAL_NAMES["stake"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["stake"], FAL_START["stake"], -1)
+ap_register("capuse", FAL_NAMES["capuse"], lambda rec, now: _fal_load(rec, now), _fal_min_n, _fal_val_text, FAL["capuse"], FAL_START["capuse"], -1)
 
 
 def _fal_slow(L, key, rs, now, rec="open"):
@@ -25227,6 +25513,8 @@ def _fal_plan(st, now):
     last, steps, since = L.get("last") or {}, L.get("steps") or {}, L.get("since") or {}
     actions, status, nochange = [], {}, []
     cautious = ap_brake_cautious(st)
+    real, real_err = None, None
+    pending = []                                             # (rec, chosen step): arbitrated after every record has looked
     for rec, spec in AP_REG.items():
         s = {"n": None, "min": spec["min_n"](rec), "pass": False, "at": round(now), "note": ""}
         status[rec] = s
@@ -25271,6 +25559,33 @@ def _fal_plan(st, now):
                         continue
                     skip_key = lr["key"]
             cands = []
+            if rec in FAL_RISKY:
+                rkey = _fal_key(rec)
+                if _ap_frozen(L, rkey):
+                    s["note"] = "frozen by you"
+                    continue
+                if real is None and real_err is None:
+                    try:
+                        real = _ap_real_rows(st, now, FAL["days"])
+                    except Exception as e2:
+                        real_err = e2
+                if real_err is not None:
+                    raise real_err                           # unreadable: no step, in either direction
+                facts = _ap_risk(st, real, now, since.get(rkey) or 0)
+                rs, cur = by.get(rkey, []), _fal_cur(vals, rkey)
+                mv = dict(_fal_moves(rec, cur, rs, passes))
+                s["n"] = facts["n30"]
+                if facts["tighten"] and "tighter" in mv:     # tighten fast: one step, no bootstrap
+                    cands.append({"do": "step", "rec": rec, "key": rkey, "from": cur, "to": mv["tighter"], "dir": "tighter",
+                                  "ev": {"band": facts["n30"], "gain": facts["net30"], "hold_n": 0, "hold": 0.0,
+                                         "why": facts["tighten"]}, "lb": 0.0, "borrow": False, "stale": False})
+                elif "looser" in mv and not cautious and not _ap_held(L, rkey, now) and facts["loosen_ok"] \
+                        and not _fal_slow(L, rkey, rs, now, rec):   # loosen slow: a quiet month, a profitable month, the shared gate
+                    ok, ev, lb = ap_gate(rec, rkey, rs, passes, cur, mv["looser"], since.get(rkey) or 0)
+                    if ok:
+                        cands.append({"do": "step", "rec": rec, "key": rkey, "from": cur, "to": mv["looser"], "dir": "looser",
+                                      "ev": ev, "lb": lb, "borrow": False, "stale": False})
+                by = {}                                      # (the generic loop below has nothing to do for these)
             for key, rs in by.items():
                 found = []
                 if _ap_frozen(L, key) or key == skip_key:
@@ -25310,14 +25625,24 @@ def _fal_plan(st, now):
                 s["note"] = "no clear lesson yet"
             elif now - float(steps.get(rec) or 0) < FAL["week"]:
                 s["note"] = "one step a week: next one waits"
-            elif any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
-                     for o in AP_EXCL.get(rec, ())):
-                s["note"] = "waits: the combo bars and the budget shares never move in the same week"
             else:
-                actions.append(max(cands, key=lambda c: c["lb"]))
+                pending.append((rec, max(cands, key=lambda c: c["lb"])))
         except Exception as err:
             s["note"] = "couldn't read its data, no step (" + type(err).__name__ + ")"
             nochange.append(rec)
+    # (#145 step 7) arbitration: tightening goes first and is never held back by the two-a-week cap (tighten fast); loosening then goes
+    # to whichever setting has waited longest since it last stepped (a fair rotation, so no setting always wins the slot).
+    for rec, a in sorted(pending, key=lambda p: (p[1]["dir"] != "tighter", float(steps.get(p[0]) or 0), list(AP_REG).index(p[0]))):
+        s = status[rec]
+        if any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
+               for o in AP_EXCL.get(rec, ())):
+            s["note"] = "waits: " + ", ".join(FAL_NAMES[o].lower() for o in AP_EXCL.get(rec, ())
+                                                if now - float(steps.get(o) or 0) < FAL["week"]
+                                                or any(x["rec"] == o and x["do"] == "step" for x in actions)) + " moved this week; these never move in the same week"
+        elif a["dir"] != "tighter" and _ap_week_n(steps, rec, now, actions) >= AP_WEEK_MAX:
+            s["note"] = "waits: two settings already changed this week"
+        else:
+            actions.append(a)
     return {"actions": actions, "status": status, "nochange": nochange}
 
 
@@ -25331,6 +25656,7 @@ def _fal_apply(s, plan, now):
     if err:
         return
     L = s.setdefault("lessons", {})
+    _ap_stamp(s, now)
     for k in ("vals", "steps", "since", "last", "status", "frozen", "holds", "nochg", "src"):
         if not isinstance(L.get(k), dict):
             L[k] = {}
@@ -25355,10 +25681,13 @@ def _fal_apply(s, plan, now):
             if to is None or abs(to - a["to"]) > 1e-9 or _ap_frozen(L, key) \
                     or (_ap_looser(rec, a["from"], to) and (cautious or _ap_held(L, key, now)))\
                     or (rec in FAL_SLOW and _ap_looser(rec, a["from"], to)
-                        and now - float(L["since"].get(key) or 0) < FAL_SLOW[rec]["loose_wait"]):
+                        and now - float(L["since"].get(key) or 0) < FAL_SLOW[rec]["loose_wait"])\
+                    or (rec in FAL_RISKY and _ap_looser(rec, a["from"], to) and not _ap_quiet(s, now)[0]):
                 continue
             if any(now - float(L["steps"].get(o) or 0) < FAL["week"] for o in AP_EXCL.get(rec, ())):
                 continue                                     # section 3: never the same week as its partner record
+            if a["dir"] != "tighter" and _ap_week_n(L["steps"], rec, now) >= AP_WEEK_MAX:
+                continue                                     # section 3: at most two settings LOOSEN or move in a week; a tightening is never held back by it
             if now - float(L["steps"].get(rec) or 0) < FAL["week"] \
                     or (lr and not lr.get("judged") and not (lr.get("borrow") and lr.get("key") != key)) \
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
@@ -25374,7 +25703,15 @@ def _fal_apply(s, plan, now):
                 L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
                 continue
             src = "the other leagues' record (this one has too little of its own)" if a.get("borrow") else "this league"
-            if rec == "open":
+            if rec in FAL_RISKY and a["dir"] == "tighter":
+                if ev.get("why") == "brake":
+                    why = "the soft brake stepped in within the last week, so it eases off right away."
+                else:
+                    why = f"full auto's last 30 days were ${ev['gain']:.2f} after fees ({ev['band']} bets) and the bets since this setting last moved are also down."
+            elif rec in FAL_RISKY:
+                why = (f"the last 30 days were up after fees, the brake has been quiet for two weeks, and on {ev['band']} past bets "
+                       f"this would have made ${ev['gain']:.2f} more after fees.")
+            elif rec == "open":
                 why = (f"the bets that fit only as the {max(a['from'], a['to'])}th open one {'lost' if a['dir'] == 'tighter' else 'would have made'} "
                        f"money: on {ev['band']} past bets this would have made ${ev['gain']:.2f} more after fees.")
             elif a.get("borrow"):
@@ -25394,8 +25731,9 @@ def _fal_apply(s, plan, now):
             else:
                 L["src"][key] = "borrow"
             L["steps"][rec], L["since"][key] = round(now), round(now)
-            L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now), "judged": False,
-                            **({"borrow": True} if a.get("borrow") else {})}
+            L["last"][rec] = {"key": key, "from": a["from"], "to": a["to"], "at": round(now),
+                              "judged": rec in FAL_RISKY and not _ap_looser(rec, a["from"], to),   # a tightening is never undone by the weekly review
+                              **({"borrow": True} if a.get("borrow") else {})}
             L["change"] = {"rec": rec, "key": key, "from": a["from"], "to": a["to"], "at": round(now), "kind": "step"}
         elif lr and not lr.get("judged") and lr.get("key") == key:
             if a["do"] == "revert" and abs(_fal_cur(vals, key) - lr["to"]) < 1e-9 \
@@ -25404,7 +25742,7 @@ def _fal_apply(s, plan, now):
                        if a.get("why", "lost") == "lost" else
                        "its results could not be read." if a.get("why") == "unreadable" else
                        "too few bets came in over two weeks to show it helped.")
-                back = f" to {_fal_val_text(rec, lr['from'])}" if rec in ("game", "share") else " where it was"
+                back = f" to {_fal_val_text(rec, lr['from'])}" if rec in ("game", "share") + FAL_RISKY else " where it was"
                 say("revert", key, f"Put the {_fal_name(key)} back{back}: " + why,
                     ev={"net": a["net"], "n": a["n"], "why": a.get("why", "lost"), "from": lr["to"], "to": lr["from"]})
                 _fal_set(L, rec, key, ap_clamp(rec, lr["from"]))
@@ -25467,6 +25805,7 @@ def fal_filter(items, st, now):
         except Exception:
             return [], list(items)
     kept, held = [], []
+    mult = ap_stake_mult(st, 0)                              # (#145 step 7) always the full multiple, never capped by the SAVED brake level: the buy pass uses a freshly computed level, so this is the safe upper bound
     for c in items:
         try:
             tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
@@ -25482,6 +25821,8 @@ def fal_filter(items, st, now):
             if ok and ex is not None:
                 games = {overlap_key(l.get("event") or "", l.get("ticker") or "") for l in c.get("legs") or []} - {""}
                 s = float(c.get("stake") or 0)
+                if mult > 1.0:                               # (#145 step 7) the per-game limit is checked on the stake that would really be bought
+                    s = max(s, _fa_sized(s, 1.0, mult))      # (at most this: the buy pass can only size it smaller)
                 ok = bool(games) and all(ex.get(g, 0.0) + s <= vals["game"] * st["bank"] + 1e-9 for g in games)
                 if ok:
                     for g in games:
@@ -25665,6 +26006,10 @@ def fal_view(st):
                 learned.append({"name": _fal_name("game_share"), "text": _fal_val_text("game", vals["game"])})
             learned += [{"name": _fal_name(_fal_key("share", k)), "text": _fal_val_text("share", v)}
                         for k, v in sorted(vals["share"].items()) if v < FAL_START["share"] - 1e-9]
+            if abs(vals["stake"] - FAL_START["stake"]) > 1e-9:
+                learned.append({"name": _fal_name("stake_mult"), "text": _fal_val_text("stake", vals["stake"])})
+            if vals["capuse"] < FAL_START["capuse"] - 1e-9:
+                learned.append({"name": _fal_name("cap_use"), "text": _fal_val_text("capuse", vals["capuse"])})
             if vals["open"] != _ap_open_base(st):
                 learned.append({"name": _fal_name("open_slots"), "text": _fal_val_text("open", vals["open"])
                                 + f" (you set {_ap_open_base(st)})"})

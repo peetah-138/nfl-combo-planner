@@ -93,9 +93,11 @@ def step_bar():
 
 
 # ---- the registry and the shared gate
-ok("registry lists the five lessons settings", list(E.AP_REG) == ["bar", "sbev", "game", "open", "share"])
+ok("registry lists the seven lessons settings", list(E.AP_REG) == ["bar", "sbev", "game", "open", "share", "stake", "capuse"])
 ok("registry bounds and steps are #602's", E.AP_REG["bar"]["bounds"] == {"lo": 0.0, "hi": 5.0, "step": 0.5}
    and E.AP_REG["game"]["bounds"]["step"] == 0.025 and E.AP_REG["sbev"]["bounds"]["hi"] == 4)
+for _r in ("stake", "capuse"):   # step 7 has its own test (t_autopilot_stake)
+    E.AP_REG.pop(_r, None)
 reset(); seed_bar()
 by, passes = E._fal_load("bar", NOW)
 okg, ev, lb = E.ap_gate("bar", "bar:nba", by["bar:nba"], passes, 0.0, 0.5, 0)
