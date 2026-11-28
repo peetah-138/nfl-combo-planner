@@ -93,4 +93,4 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 /* Autopilot drift since start (#145): one calm line per setting, a 44pt Back to start beside it */
 .fadrift .fadh{min-height:44px;display:flex;align-items:center}
 .fa .fadr{list-style:none;padding-left:0;color:inherit}.fa .fadr li{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}
-.fa .fadr li>span{flex:1;min-width:0;line-height:1.4}.fa .fadr .btn{min-height:44px;min-width:44px;flex:none}.fadw{color:var(--muted,inherit)}
+.fa .fadr li>span{flex:1;min-width:0;line-height:1.4}.fa .fadr .btn{min-height:44px;min-width:44px;flex:none}.fadw{color:var(--mute,inherit)}

@@ -38,12 +38,12 @@ def lines():
 ALL = {"bar:nba": 1.5, "sbev:nba": 2, "game_share": 0.2, "share:nba": 0.8, "stake_mult": 0.9, "cap_use": 0.8}
 fresh(ALL)
 ok("the drift lines are exact and plain",
-   lines() == ["Per-game limit: 30% of bankroll → 20% of bankroll, tighter",
-               "Share of the day's cap: 100% → 80%, tighter".replace("Share of the day's cap", "NBA budget share"),
-               "Bet size: 100% → 90%, tighter",
-               "Share of the daily cap it uses: 100% → 80%, tighter",
-               "NBA combo bar: +0 points → +1.5 points, tighter",
-               "NBA Smart Buy bar: no extra bar → $-0.10 expected on $5, tighter"] or print(lines()))
+   lines() == ["Per-game limit: from 30% of bankroll to 20% of bankroll, tighter",
+               "Share of the day's cap: from 100% to 80%, tighter".replace("Share of the day's cap", "NBA budget share"),
+               "Bet size: from 100% to 90%, tighter",
+               "Share of the daily cap it uses: from 100% to 80%, tighter",
+               "NBA combo bar: from +0 points to +1.5 points, tighter",
+               "NBA Smart Buy bar: from no extra bar to $-0.10 expected on $5, tighter"] or print(lines()))
 v = E.full_auto_view()["lessons"]
 ok("the card carries the drift, grouped, with every item resettable and nothing looser", v["drift"]["err"] is None
    and [x["group"] for x in v["drift"]["items"]] == ["spend"] * 4 + ["picky"] * 2 and v["drift"]["all_n"] == 6)
@@ -160,7 +160,7 @@ ok("act: a confirmed known key goes through", okc is True and "bar:nba" not in L
 
 # the open-bet limit goes back to Pete's own number, not a fixed one
 fresh({"open_slots": 10}, max_open=14)
-ok("open-bet drift is measured from Pete's own number", lines() == ["Open-bet limit: 14 open bets → 10 open bets, tighter"])
+ok("open-bet drift is measured from Pete's own number", lines() == ["Open-bet limit: from 14 open bets to 10 open bets, tighter"])
 okc, msg = E.ap_reset("open_slots", NOW)
 ok("open-bet reset removes the saved value and leaves Pete's number", okc is True and "open_slots" not in L()["vals"] and E.fa_state()["max_open"] == 14)
 
@@ -260,7 +260,65 @@ n1 = [x for x in L()["log"] if x["kind"] == "drift"]
 run(NOW + 3600)
 n2 = [x for x in L()["log"] if x["kind"] == "drift"]
 ok("one summary line in the month, exact", len(n1) == 1 and len(n2) == 1 and n1[0]["text"].startswith(
-   "Autopilot, month in review: 6 settings are away from where you started. Per-game limit: 30% of bankroll → 20% of bankroll, tighter;")
+   "Autopilot, month in review: 6 settings are away from where you started. Per-game limit: from 30% of bankroll to 20% of bankroll, tighter;")
    and n1[0]["text"].endswith("Tap Back to start on the card to put one or all of them back."))
 run(NOW + 40 * DAY)
 ok("...and another a month later", len([x for x in L()["log"] if x["kind"] == "drift"]) == 2)
+
+# ---- #665 hardening (tighten-only) and #664 wording
+print("# --- #665")
+loose = pick("smart_floor")[1]
+def knobfile2(val, brake=None):
+    d = {"groups": {"nba": {"v": {"smart_floor": val}, "lv": {"smart_floor": val}, "lat": {"smart_floor": NOW - DAY}, "hist": [
+        {"at": int(NOW - DAY), "knob": "smart_floor", "from": k["start"], "to": val, "live": True, "prev_own": False}]}}}
+    if brake:
+        d["brake"] = {"nba": {"at": NOW - 100, "until": NOW + DAY, "why": "x", "mode": "live"}}
+    E.save_json(E.KNOBS_FILE, d); E.KNOB_STATE_CACHE["d"] = None
+KB_WHY = "Smart sell's own brake is on for a league, so nothing is loosened right now. Try again once it has ended."
+# the exit number is looser than its start (a reset would tighten it): allowed under smart sell's brake
+tight_v = pick("smart_floor")[0]
+fresh(ALL); knobfile2(loose, brake=True)
+it = [x for x in E.ap_drift_view(E.fa_state(), NOW)["items"] if x["rec"] == "knob"]
+ok("exit knob already looser than start: the reset (a tightening) is still allowed under the knob brake",
+   len(it) == 1 and it[0]["loosens"] is False and it[0]["reset_ok"] is True)
+fresh(ALL); knobfile2(tight_v, brake=True)
+it = [x for x in E.ap_drift_view(E.fa_state(), NOW)["items"] if x["rec"] == "knob"]
+ok("exit knob tighter than start: a reset would loosen, so the knob brake refuses it, with the exact reason",
+   len(it) == 1 and it[0]["loosens"] is True and it[0]["reset_ok"] is False and it[0]["why_not"] == KB_WHY)
+okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)
+ok("...ap_reset changes nothing and says why", okc is False and KB_WHY in msg and E.knob_state()["groups"]["nba"]["lv"]["smart_floor"] == tight_v
+   and "holds" not in L() or L().get("holds") == {})
+okc, msg = E.ap_reset("all", NOW)
+ok("...Reset all leaves the loosening knob alone", E.knob_state()["groups"]["nba"]["lv"]["smart_floor"] == tight_v)
+fresh(ALL); knobfile2(tight_v)
+okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)
+ok("same loosening reset with no knob brake: allowed (control)", okc is True and E.knob_state()["groups"]["nba"]["lv"]["smart_floor"] == k["start"])
+# the brake begins between the look and the write: the knob file's own check refuses
+fresh(ALL); knobfile2(tight_v)
+orig_items = E.ap_drift_items
+def late_brake(st, now=None, kst=None):
+    r = orig_items(st, now, kst); knobfile2(tight_v, brake=True); return r
+E.ap_drift_items = late_brake
+okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)
+E.ap_drift_items = orig_items
+ok("a knob brake that starts after the look still stops the loosening", okc is False and KB_WHY in msg
+   and E.knob_state()["groups"]["nba"]["lv"]["smart_floor"] == tight_v)
+# an unreadable knob brake state counts as braked (fail closed)
+fresh(ALL)
+ok("unreadable knob state counts as braked", E._ap_knob_braked(None, NOW) is False and E._ap_knob_braked({"brake": 5}, NOW) is True)
+# note(): the saved file is re-read before the hold is written; unreadable = no hold, said in words
+fresh(ALL); knobfile2(tight_v)
+orig_raw, orig_ks, flag = E._ap_raw_fa, E._knob_save, {"saved": False}
+def ks(fn):
+    r = orig_ks(fn); flag["saved"] = True; return r
+E._knob_save = ks
+E._ap_raw_fa = lambda: ((None, "the saved full-auto file can't be read") if flag["saved"] else orig_raw())
+okc, msg = E.ap_reset("knob:nba:smart_floor", NOW)
+E._ap_raw_fa, E._knob_save = orig_raw, orig_ks
+ok("hold unreadable after the knob write: no hold or log line written, and the card message says so",
+   "knob:nba:smart_floor" not in (L().get("holds") or {}) and not [x for x in L().get("log", []) if x.get("key") == "knobs"]
+   and "The 2-week hold and log line for the exit numbers couldn't be saved just now." in msg)
+# a damaged caution level is cautious (refuses loosening) from the saved file too
+fresh(ALL, caution={"level": "x"})
+okc, msg = E.ap_reset("bar:nba", NOW)
+ok("damaged caution level: loosening refused", okc is False and L()["vals"] == ALL)
