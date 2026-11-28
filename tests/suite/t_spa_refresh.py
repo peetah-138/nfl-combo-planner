@@ -7,7 +7,7 @@ HERE = os.path.abspath("wtest")
 REPO = os.environ.get("REPO") or os.path.dirname(os.path.dirname(HERE))
 rd = lambda n: open(os.path.join(REPO, "watcher", "spa", n)).read()
 common, boot, moments = rd("common.js"), rd("boot.js"), rd("moments.js")
-ok("pacing constants have the exact values", "const TICK_GATE_MS=1500,POLL_EVERY_MS=5000,POLL_SSE_SKIP_MS=30000,POLL_NOSSE_SKIP_MS=4000,FG_RELOAD_MIN_MS=5000;" in common)
+ok("pacing constants have the exact values", "const TICK_GATE_MS=1500,POLL_EVERY_MS=5000,POLL_SSE_SKIP_MS=30000,POLL_NOSSE_SKIP_MS=4000,FG_RELOAD_MIN_MS=5000," in common)
 ok("a stream tick refetches Live/Games when the last load is over TICK_GATE_MS old",
    "Date.now()-(S.lastLoad||0)>TICK_GATE_MS&&!$('#modal').classList.contains('on')){S.lastLoad=Date.now();load(S.view);}" in moments
    and "S.lastLoad||0)>4000&&!$('#modal')" not in moments)
