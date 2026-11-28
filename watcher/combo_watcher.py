@@ -1405,17 +1405,19 @@ class ScorePacer:
     reads fail. Pure bookkeeping (no network); the web app wraps its scoreboard read with it."""
 
     def __init__(self, clock=time.time):
-        self.clock, self.fails, self.calls = clock, 0, []
+        self.clock, self.fails, self.calls = clock, {}, []     # fails: consecutive bad reads per league
 
-    def max_age(self, fast):
-        """How old a league's scores may be before they are read again."""
-        if self.fails >= SCORES_FAIL_LIMIT:
-            return min(SCORES_BACKOFF_SECS * 2 ** (self.fails - SCORES_FAIL_LIMIT), SCORES_BACKOFF_MAX_SECS)
-        return max(SCORES_FAST_SECS if fast else SCORES_SLOW_SECS, SCORES_FLOOR_SECS)
+    def max_age(self, fast, code=None):
+        """How old a league's scores may be before they are read again. Backing off only ever lengthens it."""
+        normal = max(SCORES_FAST_SECS if fast else SCORES_SLOW_SECS, SCORES_FLOOR_SECS)
+        return max(normal, self.backoff_age(code))
 
-    def backoff_age(self):
-        """The minimum age while reads are failing (0 when they are not)."""
-        return self.max_age(False) if self.fails >= SCORES_FAIL_LIMIT else 0
+    def backoff_age(self, code=None):
+        """The minimum age while this league's reads are failing (0 when they are not)."""
+        n = self.fails.get(code, 0)
+        if n < SCORES_FAIL_LIMIT:
+            return 0
+        return min(SCORES_BACKOFF_SECS * 2 ** (n - SCORES_FAIL_LIMIT), SCORES_BACKOFF_MAX_SECS)
 
     def allow(self):
         """True when one more read fits under the per-minute ceiling."""
@@ -1426,8 +1428,9 @@ class ScorePacer:
     def record_call(self):
         self.calls.append(self.clock())
 
-    def note(self, ok):
-        self.fails = 0 if ok else self.fails + 1
+    def note(self, ok, code=None):
+        """A good read resets only that league's count."""
+        self.fails[code] = 0 if ok else self.fails.get(code, 0) + 1
 
 
 class TickGate:
@@ -3266,29 +3269,30 @@ def webapp_main():
     _orig_fetch_scores = A.fetch_scores
 
     def paced_fetch_scores(max_age=None, code=None):
-        """ESPN scoreboard read with a per-minute ceiling and a back-off after failures (display only; this is the web
-        app's copy of the engine, the watcher's own loop and every trading read use theirs)."""
+        """ESPN scoreboard read with a per-minute ceiling and a per-league back-off after failures (display only; this
+        is the web app's copy of the engine, the watcher's own loop and every trading read use theirs). A failure is
+        never retried here: the cached copy is served until the paced age allows the next read."""
+        c = code or A.LEAGUE["code"]
+        got = A.SCORES_BY.get(c) or {"at": 0, "by": {}}
         try:
-            c = code or A.LEAGUE["code"]
             sp = A.SPORTS.get(c) or {}
-            got = A.SCORES_BY.get(c) or {"at": 0, "by": {}}
             age = A.SCORES_MAX_AGE if max_age is None else max_age
             if max_age is None:
                 age = max(age, SCORES_FLOOR_SECS)
-            age = max(age, PACER.backoff_age())
+            age = max(age, PACER.backoff_age(c))
             if not sp.get("espn") or sp.get("feed") or time.time() - got["at"] < age:
-                return _orig_fetch_scores(max_age=age if max_age is None else max_age, code=code)
+                return _orig_fetch_scores(max_age=age, code=c)
             if not PACER.allow():                    # ceiling reached: serve the cached copy
                 return got["by"]
             PACER.record_call()
-            by = _orig_fetch_scores(max_age=age, code=code)
+            by = _orig_fetch_scores(max_age=age, code=c)
             now_got = A.SCORES_BY.get(c) or {}
             # a failed read keeps the old timestamp; a 429 or error page comes back as an empty board
-            PACER.note(not ((now_got.get("at") or 0) <= (got.get("at") or 0) or (not by and got.get("by"))))
-            A.SCORES_MAX_AGE = PACER.max_age(bool(LIVE.get("fast")))
+            PACER.note(not ((now_got.get("at") or 0) <= (got.get("at") or 0) or (not by and got.get("by"))), c)
             return by
         except Exception:
-            return _orig_fetch_scores(max_age=max_age, code=code)
+            PACER.note(False, c)
+            return got["by"]
 
     A.fetch_scores = paced_fetch_scores
 

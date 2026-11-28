@@ -17,3 +17,5 @@ Never touches: the watcher engine's `E.SCORES_MAX_AGE` (8 s), `SL_FEED_AGE`, `LI
 `max_age=0` guard read, buy/sell/stop-loss logic, Pause, caps, rule 8.
 
 Test: `t_server_cadence.py`.
+
+Review follow-ups (tighten only): while backing off, the score age is the longer of the normal age and the back-off (an idle board stays at 30s); failures are counted per league so a good read in one league cannot reset another; a failed read is never retried outside the pacer, the cached copy is served instead.
