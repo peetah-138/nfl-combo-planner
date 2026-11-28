@@ -28051,7 +28051,7 @@ def _cut_guard_ts(c, slp, loss, prog=None, drop=None, cf=None):
     every stop-loss guard, confirmed), so the replay that learns the cut only cuts where live would have. With no
     prog/drop given, the league's current stop-loss settings; with no cf (checks, span, gap) given, the confirmation counts
     live uses for this bet's league (sl_confirm_params, #316), so the replay never cuts where live would still be waiting."""
-    tks = [l["ticker"] for l in c["legs"]]
+    tks = [l["ticker"] for l in (c.get("legs") or [])]
     if cf is None:
         cf = sl_confirm_params(tks)
     if not loss or not slp or len(slp) < cf[0]:
