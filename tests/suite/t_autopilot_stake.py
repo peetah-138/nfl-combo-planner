@@ -21,7 +21,7 @@ E.buy_single = lambda t, n, px: (n, None)
 E.can_trade = lambda: True
 E._held_all = lambda: []
 E.panel_record = lambda: {"paper": {"ready": True, "bets": 60, "pl": 40.0, "days": 20, "days_up": 14, "clv": 0.01}, "real": {}}
-ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
+ok = lambda n, c: print(("PASS " if c else "FAIL ") + n + ("" if c else "   [vals=%s]" % vals()))
 NOW = time.time()
 DAY = 86400
 NBA = "KXNBAGAME-26NOV20LALBOS-LAL"
@@ -54,6 +54,15 @@ def seed(days=25, pls=(4, 3, -2, 4), stake=5.0, mult=None):
                 sizes[f"{E._panel_day(t0)}|{cid}"] = mult
         E.store_x("insert or replace into panel values(?,?,?,?,?)", (E._panel_day(t0), "real", t0, "done", json.dumps({"at": t0, "items": items})))
     E._fa_update(lambda s: (s["bets"].update(bets), s.update(sizes=sizes) if sizes else None))
+
+
+def seed_paper(days=20, pl=2.0, n=6, stake=5.0, clv=0.02):
+    """Practice panel history: `n` bets of `stake` a day, all won, totalling exactly the $30 live cap (what the cap-use judge replays)."""
+    for d in range(1, days + 1):
+        t0 = NOW - d * DAY
+        items = [{"id": f"p{i}", "kind": "combo", "state": "paper", "legs": [{"ticker": NBA}], "stake": stake, "result": "won", "pl": pl,
+                  "clv": clv, "at": t0 + 600 + i * 60} for i in range(n)]
+        E.store_x("insert into panel values(?,?,?,?,?)", (E._panel_day(t0), "paper", t0, "done", json.dumps({"at": t0, "items": items})))
 
 
 def lessons():
@@ -122,9 +131,13 @@ ok("loosen past today's size is allowed on evidence (1.0 -> 1.05)", vals().get("
 reset(); seed(); learned("stake_mult", 1.5)
 tick()
 ok("at the 150% ceiling nothing more happens", vals().get("stake_mult") == 1.5)
-reset(); seed(); learned("cap_use", 0.8)
+reset(); seed(); seed_paper(); learned("cap_use", 0.8); E._fa_update(lambda s: s["lessons"].update(steps={"stake": NOW - 20 * DAY, "capuse": NOW - 30 * DAY}))
 tick()
-ok("cap use loosens exactly 5 points (0.8 -> 0.85) on the practice-panel evidence", vals().get("cap_use") == 0.8)
+ok("cap use loosens exactly 5 points (0.8 -> 0.85) on the practice-panel evidence", vals().get("cap_use") == 0.85)
+ok("cap use loosening is logged in plain words", any("cap" in e["text"].lower() and e.get("kind") == "step" for e in lessons()["log"]))
+reset(); learned("cap_use", 0.8)
+tick()
+ok("cap use with no practice-panel evidence stays at 0.8", vals().get("cap_use") == 0.8)
 
 # 4. loosening gates
 reset(); seed(); learned("stake_mult", 0.9, since=NOW - 3 * DAY)
@@ -135,22 +148,22 @@ tick()
 ok("loosen needs twice the minimum sample", vals().get("stake_mult") == 0.9)
 reset(); seed(pls=(2, -3, -3, 3)); learned("stake_mult", 0.9)
 tick()
-ok("loosen refused when the last 30 days lost money", vals().get("stake_mult", 0.9) <= 0.9 and vals().get("stake_mult", 0.9) != 0.945)
+ok("loosen refused when the last 30 days lost money: tightens, never loosens (0.9 -> 0.855)", vals().get("stake_mult") == 0.855)
 reset(quiet=False); seed(); learned("stake_mult", 0.9)
 tick()
 ok("loosen refused when full auto has not been watched for 14 days (never quiet)", vals().get("stake_mult") == 0.9)
 reset(); seed(); learned("stake_mult", 0.9); cautious(1)
 tick()
-ok("brake gating: cautious now = no loosening", vals().get("stake_mult", 0.9) <= 0.9)
+ok("brake gating: cautious now = no loosening, only a tightening (0.9 -> 0.855)", vals().get("stake_mult") == 0.855)
 reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s.update(caution={"level": 0, "base_at": 0, "since": NOW - 5 * DAY, "why": "x"}))
 tick()
-ok("brake gating: a cautious episode 5 days ago = no loosening", vals().get("stake_mult", 0.9) <= 0.9)
+ok("brake gating: a cautious episode 5 days ago = no loosening, only a tightening (0.9 -> 0.855)", vals().get("stake_mult") == 0.855)
 reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s.update(caution={"level": "x"}))
 tick()
-ok("brake gating: an unreadable caution level fails closed (no loosening)", vals().get("stake_mult", 0.9) <= 0.9)
+ok("brake gating: an unreadable caution level fails closed (no loosening; tightens 0.9 -> 0.855)", vals().get("stake_mult") == 0.855)
 reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s.update(history=[{"at": NOW - 6 * DAY, "ev": "brake"}]))
 tick()
-ok("brake gating: a day-brake note inside 14 days = no loosening", vals().get("stake_mult", 0.9) <= 0.9)
+ok("brake gating: a day-brake note inside 14 days = no loosening, only a tightening (0.9 -> 0.855)", vals().get("stake_mult") == 0.855)
 reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s.update(history=[{"at": NOW - 20 * DAY, "ev": "brake"}] + [{"at": NOW - 19 * DAY, "ev": "x"}] * 19))
 tick()
 ok("an old brake (20 days ago) does not block loosening", vals().get("stake_mult") == 0.945)
@@ -191,10 +204,34 @@ reset(); seed(pls=(2, -4, -4, 1))
 plan = E._fal_plan(E.fa_state(), NOW)
 acts = [a["rec"] for a in plan["actions"] if a["do"] == "step"]
 ok("never stake and cap use together in one plan, and at most two settings", not ({"stake", "capuse"} <= set(acts)) and len(acts) <= E.AP_WEEK_MAX)
-ok("a risky step does not ride with a bar and a share step (at most 2 in all)", E.AP_WEEK_MAX == 2)
+ok("the weekly limit is two settings", E.AP_WEEK_MAX == 2)
+# tightening is never held by the two-a-week limit; a loosening is
 reset(); seed(pls=(2, -4, -4, 1)); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}))
 tick()
-ok("two other settings already moved this week: bet size waits (limit 2)", "stake_mult" not in vals() and "cap_use" not in vals())
+ok("two other settings moved this week: a losing month still tightens bet size (1.0 -> 0.95)", vals().get("stake_mult") == 0.95)
+reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}))
+tick()
+ok("two other settings moved this week: a loosening of bet size waits (stays 0.9)", vals().get("stake_mult") == 0.9)
+reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY}))
+tick()
+ok("only one other setting moved this week: the loosening goes through (0.9 -> 0.945)", vals().get("stake_mult") == 0.945)
+reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}))
+plan = E._fal_plan(E.fa_state(), NOW)
+ok("the plan says why a loosening waits", "two settings already changed" in plan["status"]["stake"]["note"])
+# a brake week tightens stake even with two others already moved
+reset(); seed(); learned("stake_mult", 1.0); E._fa_update(lambda s: (s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}), s.update(history=[{"at": NOW - 2 * DAY, "ev": "brake"}])))
+tick()
+ok("a brake week tightens bet size even with two others already moved", vals().get("stake_mult") == 0.95)
+# fair rotation: two loosenings compete for one slot; the one stepped longest ago wins
+reset(); seed(); seed_paper(); learned("stake_mult", 0.9); learned("cap_use", 0.8)
+E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "stake": NOW - 20 * DAY, "capuse": NOW - 30 * DAY}))
+tick()
+ok("rotation: bet size and cap use never move together", not ("stake_mult" in vals() and vals().get("stake_mult") != 0.9 and vals().get("cap_use") != 0.8))
+ok("rotation: the setting stepped longest ago (cap use) takes the one free slot", vals().get("cap_use") == 0.85 and vals().get("stake_mult") == 0.9)
+reset(); seed(); seed_paper(); learned("stake_mult", 0.9); learned("cap_use", 0.8)
+E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "stake": NOW - 30 * DAY, "capuse": NOW - 20 * DAY}))
+tick()
+ok("rotation: and the other way round (bet size is longer waiting, so it goes)", vals().get("stake_mult") == 0.945 and vals().get("cap_use") == 0.8)
 
 # 7. a revert after a losing week puts it back; a tightening is never reverted
 reset(); seed(); learned("stake_mult", 0.9); tick(); v1 = vals().get("stake_mult")
@@ -297,8 +334,9 @@ ok("baseline: the pass approves a draft within the $30 cap", res and 0 < spend0 
 res, big = run_pass({"stake_mult": 1.5})
 spend1 = sum(c["stake"] for c in big)
 ok("at 150% the day's spend never passes the $30 cap", res and spend1 <= 30.01)
-ok("at 150% the first bet grows to $20 (the per-bet ceiling) from $14.42, never past 150% of it", big and big[0]["stake"] == 20.0 and big[0]["stake"] <= 1.5 * base[0]["stake"] + 0.01)
-ok("at 150% the bigger bets are recorded for the review (sizes)", sorted(set(E.fa_state().get("sizes", {}).values())) == [1.5])
+ok("at 150% the first bet grows from $14.42 to $20.00 (the $20 loss room left, not a per-bet ceiling), never past 150% of it", big and big[0]["stake"] == 20.0 and big[0]["stake"] <= 1.5 * base[0]["stake"] + 0.01)
+ok("at 150% the bet is recorded at its ACTUAL ratio (20.00 / 14.42 = 1.387, the loss room clamped it), not at 1.5", sorted(E.fa_state().get("sizes", {}).values()) == [round(20.0 / 14.42, 4)])
+ok("one bet bought at $20 and the second ($13.33 normal) did not fit what was left", [c["stake"] for c in big] == [20.0])
 res, small = run_pass({"stake_mult": 0.5})
 ok("at 50% every bet is half size (7.21 from 14.42, never under $2) and the spend is lower", res and small[0]["stake"] == 7.21 and all(c["stake"] >= 2.0 for c in small))
 res, cu = run_pass({"cap_use": 0.5}, cap=30.0)
@@ -314,6 +352,53 @@ E.panel_pass()
 res = E.full_auto_pass(now=time.time())
 off = [c for c in E.panel_get("real")["items"] if c.get("state") == "scheduled"]
 ok("Autopilot off: sizes are exactly today's", res and abs(sum(c["stake"] for c in off) - spend0) < 0.01)
+
+# 11b. the per-game limit is judged on the stake that would really be bought (the multiplied one), with exact numbers
+reset()
+GL = {"id": "g1", "kind": "single", "stake": 10.0, "legs": [{"ticker": NBA, "event": "KXNBAGAME-26NOV20LALBOS"}]}
+GK = E.overlap_key("KXNBAGAME-26NOV20LALBOS", NBA)
+E.killer_exposure = lambda now=None: {GK: {"n": 1, "risk": 20.0}}
+def gl_pass(extra):
+    reset(); E._fa_update(lambda s: s["lessons"].update(vals={"game_share": 0.10, **extra}))
+    k, h = E.fal_filter([dict(GL)], E.fa_state(), NOW)
+    return [c["id"] for c in k], [c["id"] for c in h]
+ok("game limit 10% of $300 = $30: $20 open + a normal $10 bet lands exactly on $30 and is kept", gl_pass({}) == (["g1"], []))
+ok("the same bet at 150% would really cost $15 ($35 on the game): held back", gl_pass({"stake_mult": 1.5}) == ([], ["g1"]))
+ok("at 100% the learned multiple changes nothing", gl_pass({"stake_mult": 1.0}) == (["g1"], []))
+ok("at 90% (smaller bets) the check never uses a smaller stake than the panel's own", gl_pass({"stake_mult": 0.9}) == (["g1"], []))
+reset(); E._fa_update(lambda s: s["lessons"].update(vals={"game_share": 0.10, "stake_mult": 1.5})); cautious(1)
+k, h = E.fal_filter([dict(GL)], E.fa_state(), NOW)
+ok("while cautious the multiple is capped at 1.0, so the same bet is kept", [c["id"] for c in k] == ["g1"] and not h)
+E.killer_exposure = lambda now=None: {GK: {"n": 1, "risk": 14.0}}
+reset(); E._fa_update(lambda s: s["lessons"].update(vals={"game_share": 0.10, "stake_mult": 1.5}))
+two = [dict(GL, id="a"), dict(GL, id="b")]
+k, h = E.fal_filter(two, E.fa_state(), NOW)
+ok("running total uses the multiplied stake: $14 + $15 = $29 fits, the second ($44) is held", [c["id"] for c in k] == ["a"] and [c["id"] for c in h] == ["b"])
+
+# 6b. rotation of the free slots for loosening is fair, tightening never starved
+reset(); seed(pls=(2, -4, -4, 1)); E._fa_update(lambda s: s["lessons"].update(steps={"open": NOW - DAY, "game": NOW - DAY}))
+plan = E._fal_plan(E.fa_state(), NOW)
+ok("plan: tightening goes ahead past the weekly limit", [a["rec"] for a in plan["actions"] if a["do"] == "step"] == ["stake"])
+
+# 8b. an unreadable brake record means no step at all, and never the false 'soft brake' line
+for label, mod in (("a history that is not a list", {"history": "junk"}),
+                   ("a caution time that is not a number", {"caution": {"level": 0, "since": float("nan")}})):
+    reset(); seed(); learned("stake_mult", 0.9); E._fa_update(lambda s, m=mod: s.update(m))
+    tick()
+    ok("unreadable brake record (" + label + "): no loosening", vals().get("stake_mult") == 0.9)
+    reset(); seed(pls=(2, -4, -4, 1)); learned("stake_mult", 1.0); E._fa_update(lambda s, m=mod: s.update(m))
+    tick()
+    ok("unreadable brake record (" + label + "): no tightening either, and no 'soft brake stepped in' line",
+       vals().get("stake_mult") == 1.0 and not any("soft brake" in e.get("text", "") for e in lessons().get("log") or []))
+reset(); E._fa_update(lambda s: s.update(history="junk"))
+ok("_ap_quiet on an unreadable record: not quiet, and no time made up", E._ap_quiet(E.fa_state(), NOW) == (False, None))
+
+# 10b. the evidence divides by the bet's ACTUAL size ratio, not the multiple in force
+reset(); seed(days=3, pls=(4,), mult=1.25); E._fa_update(lambda s: s.update(sizes={k: 1.25 for k in s["sizes"]} if s.get("sizes") else {}))
+rows = E._ap_real_rows(E.fa_state(), NOW, 30)
+ok("each real bet carries the ratio it was actually bought at (m = 1.25)", rows and all(r["m"] == 1.25 for r in rows))
+ds = E._RiskScale().ds(rows[:1], 0.9, 0.945)[0]
+ok("loosening 0.9 -> 0.945 on a $4 win bought at 1.25x: 4 * 0.045 / 1.25 = 0.144 dollars, extra stake 5 * 0.045 / 1.25 = 0.18", abs(ds[1] - 0.144) < 1e-9 and abs(ds[2] - 0.18) < 1e-9)
 
 # 12. the card
 reset(); learned("stake_mult", 1.1); learned("cap_use", 0.8)

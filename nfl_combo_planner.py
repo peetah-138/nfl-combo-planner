@@ -24755,9 +24755,17 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
     book = {c["id"]: own.get(c["id"], float(c.get("stake") or 0)) for c in items if c["id"] in ids}
     def _book(s):
         s["bets"].update({f"{day}|{i}": a for i, a in book.items()})   # written BEFORE approving
-        if abs(mult - 1.0) > 1e-9:                        # the multiple each bet was sized at, so a later look can scale its result
+        rat = {}                                          # (#145 step 7) each bet's REAL size against its normal size (the brake's own cut taken out), so a clamp that shrank it is counted
+        f0 = _fa_knob(caut["level"], "size")
+        for c in items:
+            if c["id"] in book:
+                n0 = float(c.get("stake") or 0)
+                r0 = book[c["id"]] / (n0 * f0) if n0 > 0 and f0 > 0 else 1.0
+                if math.isfinite(r0) and r0 > 0 and abs(r0 - 1.0) > 1e-9:
+                    rat[f"{day}|{c['id']}"] = round(r0, 4)
+        if rat:
             sz = s["sizes"] = s["sizes"] if isinstance(s.get("sizes"), dict) else {}
-            sz.update({f"{day}|{i}": mult for i in book})
+            sz.update(rat)
             for k in list(sz)[:-400]:
                 del sz[k]
         _ap_stamp(s, now)
@@ -25230,7 +25238,8 @@ def _ap_quiet(st, now):
     """(quiet, last): `last` = when full auto last saw the brake or a cautious state (the pass and every weekly look stamp it in
     lessons['cq']), `quiet` = it has been watched for at least FAL_RISK['quiet'] with no such episode. Also reads the soft brake's own
     record: a level above 0, a level change within the window and the saved history, which keeps only 20 notes; a full history whose
-    oldest note is inside the window may have dropped an episode, so it is not quiet. Anything unreadable = not quiet."""
+    oldest note is inside the window may have dropped an episode, so it is not quiet. Anything unreadable = (False, None): `last` is
+    None, never a made-up time, and the caller takes no step either way."""
     try:
         w, last, first = FAL_RISK["quiet"], 0.0, None
         L = st.get("lessons") if isinstance(st.get("lessons"), dict) else {}
@@ -25238,33 +25247,33 @@ def _ap_quiet(st, now):
         for k in ("first", "last"):
             v = cq.get(k)
             if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)):
-                return False, now
+                return False, None
         first = cq.get("first")
         last = float(cq.get("last") or 0)
         c = st.get("caution")
         c = {} if c is None else c
         if not isinstance(c, dict):
-            return False, now
+            return False, None
         since = c.get("since", 0)
         if isinstance(since, bool) or not isinstance(since, (int, float)) or not math.isfinite(since):
-            return False, now
+            return False, None
         last = max(last, float(since))
         if ap_brake_cautious(st, now):
             last = now
         h = st.get("history")
         if h is not None:
             if not isinstance(h, list):
-                return False, now
+                return False, None
             for e in h:
                 if not isinstance(e, dict) or not isinstance(e.get("at"), (int, float)):
-                    return False, now
+                    return False, None
                 if e.get("ev") in ("caution", "brake"):
                     last = max(last, float(e["at"]))
             if len(h) >= 20 and float(h[0]["at"]) > now - w:
                 last = max(last, float(h[0]["at"]))
         return (first is not None and now - max(float(first), last) >= w), last
     except Exception:
-        return False, now
+        return False, None
 
 
 def _ap_stamp(s, now):
@@ -25297,6 +25306,8 @@ def _ap_risk(st, rows, now, since):
     if not (math.isfinite(net30) and math.isfinite(netp)):
         raise ValueError("a result isn't a number")
     quiet, last = _ap_quiet(st, now)
+    if last is None:
+        raise ValueError("the brake's record can't be read")   # no step in either direction, and no false 'the brake stepped in' line
     cautious = ap_brake_cautious(st, now)
     tight = None
     if last > since and now - last <= FAL_RISK["brake_week"]:
@@ -25502,7 +25513,8 @@ def _fal_plan(st, now):
     actions, status, nochange = [], {}, []
     cautious = ap_brake_cautious(st)
     real, real_err = None, None
-    for rec, spec in sorted(AP_REG.items(), key=lambda kv: kv[0] not in FAL_RISKY):   # (#145 step 7) size and cap use choose first
+    pending = []                                             # (rec, chosen step): arbitrated after every record has looked
+    for rec, spec in AP_REG.items():
         s = {"n": None, "min": spec["min_n"](rec), "pass": False, "at": round(now), "note": ""}
         status[rec] = s
         try:
@@ -25612,18 +25624,24 @@ def _fal_plan(st, now):
                 s["note"] = "no clear lesson yet"
             elif now - float(steps.get(rec) or 0) < FAL["week"]:
                 s["note"] = "one step a week: next one waits"
-            elif any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
-                     for o in AP_EXCL.get(rec, ())):
-                s["note"] = "waits: " + ", ".join(FAL_NAMES[o].lower() for o in AP_EXCL.get(rec, ())
-                                                    if now - float(steps.get(o) or 0) < FAL["week"]
-                                                    or any(x["rec"] == o and x["do"] == "step" for x in actions)) + " moved this week; these never move in the same week"
-            elif _ap_week_n(steps, rec, now, actions) >= AP_WEEK_MAX:
-                s["note"] = "waits: two settings already changed this week"
             else:
-                actions.append(max(cands, key=lambda c: c["lb"]))
+                pending.append((rec, max(cands, key=lambda c: c["lb"])))
         except Exception as err:
             s["note"] = "couldn't read its data, no step (" + type(err).__name__ + ")"
             nochange.append(rec)
+    # (#145 step 7) arbitration: tightening goes first and is never held back by the two-a-week cap (tighten fast); loosening then goes
+    # to whichever setting has waited longest since it last stepped (a fair rotation, so no setting always wins the slot).
+    for rec, a in sorted(pending, key=lambda p: (p[1]["dir"] != "tighter", float(steps.get(p[0]) or 0), list(AP_REG).index(p[0]))):
+        s = status[rec]
+        if any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
+               for o in AP_EXCL.get(rec, ())):
+            s["note"] = "waits: " + ", ".join(FAL_NAMES[o].lower() for o in AP_EXCL.get(rec, ())
+                                                if now - float(steps.get(o) or 0) < FAL["week"]
+                                                or any(x["rec"] == o and x["do"] == "step" for x in actions)) + " moved this week; these never move in the same week"
+        elif a["dir"] != "tighter" and _ap_week_n(steps, rec, now, actions) >= AP_WEEK_MAX:
+            s["note"] = "waits: two settings already changed this week"
+        else:
+            actions.append(a)
     return {"actions": actions, "status": status, "nochange": nochange}
 
 
@@ -25667,8 +25685,8 @@ def _fal_apply(s, plan, now):
                 continue
             if any(now - float(L["steps"].get(o) or 0) < FAL["week"] for o in AP_EXCL.get(rec, ())):
                 continue                                     # section 3: never the same week as its partner record
-            if _ap_week_n(L["steps"], rec, now) >= AP_WEEK_MAX:
-                continue                                     # section 3: at most two settings change in a week
+            if a["dir"] != "tighter" and _ap_week_n(L["steps"], rec, now) >= AP_WEEK_MAX:
+                continue                                     # section 3: at most two settings LOOSEN or move in a week; a tightening is never held back by it
             if now - float(L["steps"].get(rec) or 0) < FAL["week"] \
                     or (lr and not lr.get("judged") and not (lr.get("borrow") and lr.get("key") != key)) \
                     or abs(_fal_cur(vals, key) - a["from"]) > 1e-9:
@@ -25786,6 +25804,7 @@ def fal_filter(items, st, now):
         except Exception:
             return [], list(items)
     kept, held = [], []
+    mult = ap_stake_mult(st, 1 if ap_brake_cautious(st, now) else 0)   # (#145 step 7) 1 while cautious: the brake's cut is never undone
     for c in items:
         try:
             tks = [l.get("ticker") for l in c.get("legs") or [] if l.get("ticker")]
@@ -25801,6 +25820,8 @@ def fal_filter(items, st, now):
             if ok and ex is not None:
                 games = {overlap_key(l.get("event") or "", l.get("ticker") or "") for l in c.get("legs") or []} - {""}
                 s = float(c.get("stake") or 0)
+                if mult > 1.0:                               # (#145 step 7) the per-game limit is checked on the stake that would really be bought
+                    s = max(s, _fa_sized(s, 1.0, mult))      # (at most this: the buy pass can only size it smaller)
                 ok = bool(games) and all(ex.get(g, 0.0) + s <= vals["game"] * st["bank"] + 1e-9 for g in games)
                 if ok:
                     for g in games:

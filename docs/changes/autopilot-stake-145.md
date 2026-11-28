@@ -14,14 +14,19 @@ cap, the free bankroll, what is left before the daily loss limit, the panel budg
 
 - **Tighten fast, loosen slow.** Loosening needs all of: the last 30 days net positive after fees, the soft brake quiet now
   (`caution.level == 0`) with no brake or cautious episode in the last 14 days (`_ap_quiet`, tracked in `lessons["cq"]`; unreadable
-  data = not quiet), and the shared gate (70/30 out of sample, bootstrap low end above zero, minimum sample). Tightening is one
+  data = not quiet, and no step of either kind is taken, with no made-up log line), and the shared gate (70/30 out of sample, bootstrap low end above zero, minimum sample). Tightening is one
   step after any brake week or net-negative evidence, and needs no bootstrap. A tighten step is never auto-reverted.
 - **Scheduling.** Stake and cap use never move in the same week; neither moves in the same week as a league-share or bar step
-  (`AP_EXCL`); at most 2 autopilot settings change a week overall (`AP_WEEK_MAX`). Size and cap use choose first.
+  (`AP_EXCL`). At most 2 autopilot settings LOOSEN or change a week (`AP_WEEK_MAX`), but a tightening of any setting is never held
+  back by that cap (tighten fast), and it comes first in the plan. When loosenings compete for the free slot, the setting stepped
+  longest ago wins (fair rotation, ties in registry order), so bet size and cap use cannot starve the bar or the shares.
 - **Soft brake stays on top.** The live readers (`ap_stake_mult`, `ap_cap_use`) never go above 1 while the brake is cautious, and
   `_fa_sized` never lets a multiple undo the brake's own 50%/25% cut. Unreadable values fail toward 50%.
 - **Evidence.** `_stake_load` / `_capuse_load` replay full-auto real settled bets (stake multiple recorded in `sizes`) and the paper
-  panel; stake evidence is a linear approximation (profit scales with the multiple).
+  panel; stake evidence is a linear approximation (profit scales with the multiple), divided by each bet's ACTUAL size ratio (what it really
+  cost over its normal size, brake cut taken out; a clamp that shrank a bet is counted), not the multiple in force.
+- **Per-game limit.** `fal_filter` checks the learned per-game limit on the stake that would really be bought (multiplied, capped
+  at 1.0 while cautious), and its running total adds the same figure.
 - **Controls.** Undo, per-setting freeze, the master Autopilot switch and the 2-week hold work as for the other settings; changes
   appear on the Autopilot card in plain words with the dollars behind them. Data starts empty, so nothing loosens until there is evidence.
 - **Tests:** `tests/suite/t_autopilot_stake.py` (bounds, step sizes, loosen gates, brake gating, tighten fast, same-week exclusion,
