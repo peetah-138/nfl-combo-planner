@@ -24707,7 +24707,7 @@ def fa_slot_taken(items, ids, book, open_n, day, now, log=print):
         log("full auto open-bet evidence:", type(err).__name__, err)
 
 
-def fa_slot_skips(items, level, v, open_at, real, now, log=print):
+def fa_slot_skips(items, level, v, open_at, real, now, log=print, mult=1.0, loss_room=None, panel_room=None):
     """Record bets turned away only for want of a free slot (they must fit the room and the free bankroll as they stood).
     One row per bet, never overwritten (a bet bought later replaces it with its 'taken' row). Never raises."""
     try:
@@ -24716,7 +24716,10 @@ def fa_slot_skips(items, level, v, open_at, real, now, log=print):
         room, free, n = float(v["room"]), float(v["free"]), 0       # as if each turned-away bet had been bought, in order
         for c in items:
             normal = float(c.get("stake") or 0)
-            s = _fa_scaled(normal, _fa_knob(level, "size"))
+            # sized exactly as the live buy pass sizes it (#633: the autopilot multiple, the loss room and the panel budget too)
+            s = _fa_sized(normal, _fa_knob(level, "size"), mult, room, free, loss_room, panel_room)
+            if loss_room is not None:
+                s = _fa_loss_fit(s, loss_room)
             if s < PANEL_OWN_MIN or s > room + 0.01 or s > free + 0.01:
                 continue
             pays = _fa_slot_pays(c, s)
@@ -24727,6 +24730,10 @@ def fa_slot_skips(items, level, v, open_at, real, now, log=print):
                     (f"{day}|{c['id']}", now, day, "skip", int(open_at) + n, round(s, 2), round(pays, 4),
                      json.dumps([c.get("kind")] + tks), None, None))
             room, free, n = room - s, free - s, n + 1
+            if loss_room is not None:
+                loss_room -= s
+            if panel_room is not None:
+                panel_room -= s
     except Exception as err:
         log("full auto open-bet evidence:", type(err).__name__, err)
 
@@ -24846,16 +24853,27 @@ def _full_auto_pass(paused=False, may_trade=True, now=None, log=print):
             try:
                 real0 = panel_get("real")
                 items0 = _fa_candidates(st, real0, now, caut, log, quiet=True) if real0 else None
+                if not items0:
+                    return None
+                mult0 = ap_stake_mult(st, caut["level"])
+                loss0 = max(0.0, float(v["day_loss"]) + float(v["loss_today"]) - float(v["spent"]))   # (#633) as the live pass reads it; unreadable: no evidence
+                budget0 = float(real0.get("budget") or CFG.get("panel_budget", PANEL["budget"])) \
+                    - sum(float(c.get("stake") or 0) for c in real0.get("items", []) if c.get("state") in PANEL_LIVE)
+                if not (math.isfinite(mult0) and math.isfinite(loss0) and math.isfinite(budget0)):
+                    raise ValueError("sizing numbers are not readable")
                 if items0 and fal_on(st):                    # a bet a budget share would stop is not an open-slot skip
                     g0, kept0 = FaShareGuard(st, v["cap"], _panel_day(real0.get("at")), now), []
-                    for c in items0:
-                        s0 = _fa_scaled(float(c.get("stake") or 0), _fa_knob(caut["level"], "size"))
-                        if g0.allows(c, s0):
+                    room0, free0, left0, bud0 = float(v["room"]), float(v["free"]), loss0, budget0
+                    for c in items0:                         # sized as the live pass sizes them (_fa_sized), each as if the ones before were bought
+                        s0 = _fa_sized(float(c.get("stake") or 0), _fa_knob(caut["level"], "size"), mult0, room0, free0, left0, bud0)
+                        s0 = _fa_loss_fit(s0, left0)
+                        if s0 >= PANEL_OWN_MIN and g0.allows(c, s0):
                             g0.take(c, s0)
                             kept0.append(c)
+                            room0, free0, left0, bud0 = room0 - s0, free0 - s0, left0 - s0, bud0 - s0
                     items0 = kept0
                 if items0:
-                    fa_slot_skips(items0, caut["level"], v, v["open"], real0, now)
+                    fa_slot_skips(items0, caut["level"], v, v["open"], real0, now, mult=mult0, loss_room=loss0, panel_room=budget0)
             except Exception as err:
                 log("full auto open-bet evidence:", type(err).__name__, err)
         return None
@@ -25241,6 +25259,16 @@ def _share_passes(rs, v):
     return out
 
 
+def _fa_level_saved(st):
+    """The soft brake's saved level for evidence code that has no live brake read. Anything unreadable reads as the most cautious
+    row (the smallest cap), so evidence is never judged against a bigger cap than live could use. Never raises."""
+    try:
+        lv = int(st["caution"]["level"])
+        return lv if 0 <= lv < len(FA_LADDER) else len(FA_LADDER) - 1
+    except Exception:
+        return len(FA_LADDER) - 1
+
+
 def _share_load(now):
     """({key: [row]}, passes) from the practice (paper) panel's settled bets, which the shares never filter: so a league held to a
     small share keeps producing its own evidence. A row is {k: when, d: dollars after fees, s: stake, day, base: the live daily
@@ -25248,7 +25276,8 @@ def _share_load(now):
     cap in the order they were bought (a bet that would not fit is dropped, as fa_check's room would have), and a share is judged
     against that same cap: the replay measures the rule the live guard enforces. RAISES when the data can't be read (the caller
     then takes no step)."""
-    cap = float(fa_state()["cap"])
+    st0 = fa_state()
+    cap = round(float(st0["cap"]) * _fa_knob(_fa_level_saved(st0), "cap") * ap_cap_use(st0), 2)   # (#633) the cap the live share check uses, not Pete's plain one
     if not math.isfinite(cap) or cap <= 0:
         raise ValueError("no readable daily cap")
     _panel_table()
@@ -25795,8 +25824,8 @@ def _fal_plan(st, now):
     # to whichever setting has waited longest since it last stepped (a fair rotation, so no setting always wins the slot).
     for rec, a in sorted(pending, key=lambda p: (p[1]["dir"] != "tighter", float(steps.get(p[0]) or 0), list(AP_REG).index(p[0]))):
         s = status[rec]
-        if any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
-               for o in AP_EXCL.get(rec, ())):
+        if not _ap_brake_tighten(a) and any(now - float(steps.get(o) or 0) < FAL["week"] or any(x["rec"] == o and x["do"] == "step" for x in actions)
+                                            for o in AP_EXCL.get(rec, ())):      # (#633) the soft brake's tightening never waits a week behind a partner's step
             s["note"] = "waits: " + ", ".join(FAL_NAMES[o].lower() for o in AP_EXCL.get(rec, ())
                                                 if now - float(steps.get(o) or 0) < FAL["week"]
                                                 or any(x["rec"] == o and x["do"] == "step" for x in actions)) + " moved this week; these never move in the same week"
@@ -25805,6 +25834,12 @@ def _fal_plan(st, now):
         else:
             actions.append(a)
     return {"actions": actions, "status": status, "nochange": nochange}
+
+
+def _ap_brake_tighten(a):
+    """(#633) True only for a step that TIGHTENS because the soft brake stepped in this week: it is never held back by the
+    same-week partner rule (tighten fast). Every other step, tightening or not, still waits for its partners."""
+    return a.get("dir") == "tighter" and isinstance(a.get("ev"), dict) and a["ev"].get("why") == "brake"
 
 
 def _fal_apply(s, plan, now):
@@ -25845,7 +25880,7 @@ def _fal_apply(s, plan, now):
                         and now - float(L["since"].get(key) or 0) < FAL_SLOW[rec]["loose_wait"])\
                     or (rec in FAL_RISKY and _ap_looser(rec, a["from"], to) and not _ap_quiet(s, now)[0]):
                 continue
-            if any(now - float(L["steps"].get(o) or 0) < FAL["week"] for o in AP_EXCL.get(rec, ())):
+            if not _ap_brake_tighten(a) and any(now - float(L["steps"].get(o) or 0) < FAL["week"] for o in AP_EXCL.get(rec, ())):
                 continue                                     # section 3: never the same week as its partner record
             if a["dir"] != "tighter" and _ap_week_n(L["steps"], rec, now) >= AP_WEEK_MAX:
                 continue                                     # section 3: at most two settings LOOSEN or move in a week; a tightening is never held back by it
@@ -27636,7 +27671,8 @@ def _cut_guard_ts(c, slp, loss, prog=None, drop=None, cf=None):
 
 def _sl_tune(e, rows, move=True):
     """One league's stop-loss settings: replay its combos with nearby settings and move one small step toward what
-    clearly did better (only with SL_MIN_N combos; on a tie the smallest change wins). Updates `e`, returns why or ''."""
+    clearly did better (only with SL_MIN_N combos; on a tie the smallest change wins). Tighten-only (#592, as #590 made the
+    stepper): a setting never moves down, so this legacy mover can never loosen what the live loss cut serves. Updates `e`, returns why or ''."""
     cur = {"prog": float(e.get("sl_prog", SL_DEFAULT["prog"])), "drop": float(e.get("sl_drop", SL_DEFAULT["drop"]))}
     n = len(rows)
     e["sl_n"] = n
@@ -27658,8 +27694,9 @@ def _sl_tune(e, rows, move=True):
 
     def clamp(v, k):
         return round(min(max(v, SL_BOUNDS[k][0]), SL_BOUNDS[k][1]), 2)
-    for a in sorted({clamp(cur["prog"] + d, "prog") for d in (-SL_STEP, 0, SL_STEP)}):
-        for b in sorted({clamp(cur["drop"] + d, "drop") for d in (-SL_STEP, 0, SL_STEP)}):
+    # (#592) tighten-only, as the stepper is (#590): a higher "not before" and a bigger fall are the stricter guards; never lower
+    for a in sorted({v for v in (clamp(cur["prog"] + d, "prog") for d in (0, SL_STEP)) if v >= cur["prog"] - 1e-9}):
+        for b in sorted({v for v in (clamp(cur["drop"] + d, "drop") for d in (0, SL_STEP)) if v >= cur["drop"] - 1e-9}):
             v = score(a, b)
             moves = sum(1 for x, y in zip((a, b), here) if x != y)
             if v > best_v + 1e-9 or (abs(v - best_v) <= 1e-9 and moves < sum(1 for x, y in zip(best, here) if x != y)):
