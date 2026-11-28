@@ -81,13 +81,9 @@
 .pitem .pdet:focus-visible{outline:2px solid var(--acc);outline-offset:2px;border-radius:8px}
 
 .pitem .pn.stl{opacity:.75}
-/* Phone polish (display only): a sideways-scrolling chip row with the picked chip outlined, one quiet card per game with the
+/* Phone polish (display only): one quiet card per game with the
    teams stacked and a thin bar sized by each team's fair chance, and a calm dark tray for the combo. */
 @media (max-width:900px){
- .chips.hs{display:flex;flex-wrap:nowrap;overflow-x:auto;gap:8px;margin-right:-14px;padding:2px 14px 2px 0;scrollbar-width:none;-webkit-overflow-scrolling:touch}
- .chips.hs::-webkit-scrollbar{display:none}
- .chips.hs .chip{flex:none;min-height:44px;padding:0 16px;font-size:14px;background:transparent}
- .chips.hs .chip.on{background:var(--panel2);color:var(--ink);border-color:var(--ink)}
  .board{background:none;border:0;border-radius:0;overflow:visible;display:grid;gap:12px}
  .mrow{grid-template-columns:minmax(0,1fr);grid-template-areas:none;gap:8px;padding:14px 16px;background:var(--panel);border:1px solid var(--line);border-radius:20px}
  .mrow:last-child{border-bottom:1px solid var(--line)}.mrow .when{grid-area:auto;font-weight:600;color:var(--mute);margin-bottom:2px}

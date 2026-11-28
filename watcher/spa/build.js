@@ -2,8 +2,7 @@
 function buildSkel(){/* the panel's shape while it loads: header, a few bet rows with a price block, the Approve bar */
  return `<div class="card hsk" style="margin-bottom:14px"><i style="height:16px;width:42%"></i><i style="height:11px;width:70%"></i>${'<div style="display:grid;grid-template-columns:1fr 64px;gap:12px;align-items:center"><div style="display:grid;gap:6px"><i style="height:14px;width:80%"></i><i style="height:10px;width:50%"></i></div><i style="height:34px"></i></div>'.repeat(4)}<i style="height:44px;border-radius:12px"></i></div>`+skel(3);}
 /* Build redraws itself often (picks, quotes, folds), so its numbers roll on every redraw, not only on page loads */
-function renderBuild(){const keep=[...document.querySelectorAll('#main .ccard[data-ph]')].filter(n=>n.dataset.ph!=='idle');const cr=document.querySelector('#main > .chips.hs'),crx=cr?cr.scrollLeft:0;_renderBuild();   // the chip row keeps its sideways scroll across a redraw
- const cr2=document.querySelector('#main > .chips.hs');if(cr2&&crx)cr2.scrollLeft=crx;
+function renderBuild(){const keep=[...document.querySelectorAll('#main .ccard[data-ph]')].filter(n=>n.dataset.ph!=='idle');_renderBuild();
  keep.forEach(old=>{const nw=document.querySelector(`#main .ccard[data-i="${old.dataset.i}"]`);   // same card, same phase: keep the very same button (no flicker, no lost tap)
   if(nw&&nw!==old&&nw.dataset.ph===old.dataset.ph&&nw.dataset.sig===old.dataset.sig){nw.replaceWith(old);
    const q=S.quotes&&S.quotes[old.dataset.i];      // putting a node back restarts its CSS animations: keep the draining bar where it was, and don't replay the entrance
@@ -21,7 +20,7 @@ function _renderBuild(){const d=S.build;const m=$('#main');
  if(d&&d.leagues&&d.leagues.length>1){S.lgs=d.leagues;try{localStorage.setItem('cw_leagues',JSON.stringify(d.leagues))}catch(e){}}
  if(S.panel){S.gn=S.panel.games||null;try{localStorage.setItem('cw_gn',JSON.stringify(S.gn))}catch(e){}}   /* a panel replaces the counts; none at all while one loads */
  const lgs=S.lgs||Object.keys(SPN).map(k=>[k,SPN[k],ICON[k]||'🎲']);
- const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips hs" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
+ const pv=S.pview||'all';const gameN=S.gn;const chipRow=`<div class="chips" style="margin-bottom:14px"><button class="chip ${pv==='all'?'on':''}" onclick="setPview('all')">⭐ All</button>${lgs.filter(([k])=>k!=='mix'&&(k===pv||k===S.lg||!gameN||gameN[k]==null||gameN[k]>0)).map(([k,n,i])=>`<button class="chip ${pv===k?'on':''}" onclick="setPview('${k}')">${esc(i||'')} ${esc(SPN[k]||n)}</button>`).join('')}</div>`;
  if(!d||d.lg!==S.lg){m.innerHTML=chipRow+(S.dayHold&&S.dayHold.lg===S.lg&&S.dayHold.days?dayRange(S.dayHold):'')+((S.lerr||{}).build&&!d?errCard('build'):'<div class="grid"><div>'+buildSkel()+'</div><div class="skel" style="height:300px"></div></div>');return;}
  S.dayHold=null;const adv=S.adv||S.slip.length>0,narrow=narrowBuild();
  m.innerHTML=chipRow+dayRange(d)+`<div class="grid"><div>
