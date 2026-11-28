@@ -3,13 +3,17 @@ async function openGame(t){if(!t)return;S.comboOpen=null;S.ideaOpen=null;S.gameO
 // The open game sheet redraws on its own: on every Mac tick, on a score event for this game, and on a slow timer if the
 // live link is down. It only repaints when something changed (and keeps its scroll place), and the clock below it counts
 // down between updates while it is running. Only the first draw waits for the slide-in to finish.
+/* Plain-English problem states: a failed load offers Try again, a missing game says why. Never a bare "not found". */
+function gameErr(failed){return failed?`<div class="gerr"><h3>This game didn't load</h3><p>Check your connection and try again. Your bets are not affected.</p><button class="btn acc" type="button" onclick="gameRetry(this)">Try again</button></div>`
+ :`<div class="gerr"><h3>This game isn't on the board</h3><p>It may have finished and been paid out. Check Results for the final.</p></div>`;}
+function gameRetry(b){if(b)b.disabled=true;S.gameSig=null;const pb=document.querySelector('#sheet .pbody');if(pb)pb.innerHTML=pushSkel();drawGame();}
 function gxAgain(){if(S.gxWant&&S.gameOpen&&$('#modal').classList.contains('on')){clearTimeout(S.gxT);S.gxT=setTimeout(drawGame,2500);}}   // team data still loading: look again soon, however this draw ends
 async function drawGame(){const t=S.gameOpen;if(!t||!$('#modal').classList.contains('on'))return;
  if(S.gameBusy||S.scrub){gxAgain();return;}   // a finger on the chart holds the page still
  if(typeof gtabHeld==='function'&&gtabHeld()){clearTimeout(S.gtabRT);S.gtabRT=setTimeout(drawGame,700);return;}   // #218: a finger on the tab row too
  const sh=$('#sheet');S.gameBusy=true;S.gameAt=Date.now();
  try{const [r]=await Promise.all([api('/app/api/game?t='+encodeURIComponent(t)).catch(()=>null),S.gameSig?null:pushWait()]);if(S.gameOpen!==t)return;
-  if(!r||!r.leg){if(!S.gameSig)pushFill('<h3>Game not found</h3><p>It may have finished and settled.</p>','Game');gxAgain();return;}
+  if(!r||!r.leg){if(!S.gameSig)pushFill(gameErr(!r),'Game');gxAgain();return;}
   frSet('G',r.fresh);clkNote(t,r.leg);
   S.gxWant=!!(r.detail&&r.detail.gxp);clearTimeout(S.gxT);gxAgain();   // last 5 / season leaders still being fetched: look again soon, quietly
   const sig=JSON.stringify([r.leg,r.combos,r.story,r.whatif,r.detail,r.buy]);
@@ -37,7 +41,7 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
     <div class="wi down"><span>${esc(short(l.opp||'They'))} get it</span><b>${pct(r.whatif.down)}</b><small>to win${r.combos[0]&&r.combos[0].if_down!=null?` · ≈${money(r.combos[0].if_down)}`:''}</small></div></div>
     ${r.combos[0]&&r.combos[0].now!=null?`<div class="m" style="font-size:12px;margin-top:6px">Worth ≈${money(r.combos[0].now)} now. Estimates use Kalshi's usual cash-out discount.</div>`:''}`:''}</div></div>
   ${l.url?`<div class="row" style="margin-top:14px"><a class="btn" href="${esc(l.url)}" target="_blank">Kalshi game page ↗</a></div>`:''}`;
- pushFill(`<div class="dhead"><div><div class="m" style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh" data-fr="G" style="margin-left:8px">${frTxt('G')}</span></div>
+ pushFill(`<div class="dhead"><div><div class="m dsport">${esc(SPN[l.sport]||l.sport)}${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?' · <span style="color:var(--live)">LIVE</span>':''} <span class="fresh dfresh" data-fr="G">${frTxt('G')}</span></div>
    ${l.matchup&&l.found!==false?`<h3 style="font-size:20px">${ICON[l.sport]||''} ${l.kind==='total'||l.kind==='spread'?'Game: ':''}${esc(l.matchup)}</h3><div class="bwhat">Your bet: ${esc(betPlain(l))}</div>`:l.matchup?`<h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(betPlain(l))}</h3><div class="bwhat">${betWhere(l)}</div>`:`<h3 style="font-size:20px">${ICON[l.sport]||''} ${esc(l.name)}${l.opp?` <span class="m" style="font-weight:500">vs ${esc(l.opp)}</span>`:''}</h3>`}</div></div>
   <div class="board2 ${lc}">${sc?`<div class="tm2"><div><span>${esc(sc.abbr)}${scbPoss(r.detail,sc.abbr)}</span>${scbTimeouts(r.detail,sc.abbr)}</div><b data-num="sm:${t}" data-v="${sc.me}" data-f="int">${sc.me}</b></div><div class="mid2"><div class="clk"${(S.clk||{})[t]?` data-clk="${esc(t)}"`:''}>${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'<span class="live-dot"></span>':''}${esc(sc.detail||'')}</div><div class="m">${(l.state==='live'||l.on)&&l.phase!=='probably_over'&&l.phase!=='waiting'?'in progress':''}${l.src==='kalshi'?'<div style="font-size:10.5px;opacity:.75">score from Kalshi</div>':''}</div></div><div class="tm2 r"><b data-num="so:${t}" data-v="${sc.opp}" data-f="int">${sc.opp}</b><div><span>${scbPoss(r.detail,sc.opp_abbr)}${esc(sc.opp_abbr)}</span>${scbTimeouts(r.detail,sc.opp_abbr)}</div></div>`:
    `<div class="mid2" style="grid-column:1/-1"><div class="clk">${esc(l.note||l.starts||'Not started')}</div></div>`}</div>
@@ -54,7 +58,7 @@ function paintGame(r){const t=S.gameOpen;S.gameR=r;{const gb=document.querySelec
 /* The game page's pinned buy buttons (#113): each team's Kalshi price now as a chance and what $1 turns into after the
    fee ("IND · 24% · 3.96x"). A tap opens the buy sheet for that side, which prices it afresh; nothing is bought here. */
 function gameBuyBar(r){const b=((r&&r.buy)||[]).filter(s=>/^[A-Z0-9._-]+$/.test(s.t||''));if(b.length<2)return '';const sp=(r.leg||{}).sport||'';
- return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" data-t="${esc(s.t)}" onclick="sbOpen(this.dataset.t,'${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
+ return `<div class="gbuy" role="group" aria-label="Buy a team straight">${b.map(s=>`<button type="button" aria-label="Buy ${esc(short(s.name)||s.t)} at ${Math.round(s.ask*100)} cents, pays ${(+s.mult).toFixed(2)} times" data-t="${esc(s.t)}" onclick="sbOpen(this.dataset.t,'${/^[a-z0-9_]+$/.test(sp)?sp:''}')"><b>${esc(short(s.name)||s.t)}</b><small>${Math.round(s.ask*100)}% · ${(+s.mult).toFixed(2)}x</small></button>`).join('')}</div>`;}
 function fcolor(c,fb){c=(c||'').replace(/^#/,'');return /^[0-9a-f]{6}$/i.test(c)?'#'+c:fb;}
 function fieldStrip(d,l){if(!d)return '';const b=d.board||{},sit=d.situation||{},dr=d.drive||{};
  const home=b.home||{},away=b.away||{};const hc=fcolor(home.color,'var(--no)'),ac=fcolor(away.color,'var(--yes)');

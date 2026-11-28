@@ -52,7 +52,7 @@ CARDS = [
 ]
 PROBE = """(cards)=>{S.games={games:cards,fresh:null};S.view='games';render();
   return [...document.querySelectorAll('#main .gc')].map(e=>({gk:e.dataset.gk,me:e.querySelector('.gtr.me .nm')&&e.querySelector('.gtr.me .nm').textContent,
-   mine:!!e.querySelector('.gtr.me .mine'),myPts:(e.querySelector('.gtr.me .pts')||{}).textContent,them:e.querySelector('.gtr.them .nm')&&e.querySelector('.gtr.them .nm').textContent,
+   mine:!!e.querySelector('.gh .mine'),myPts:(e.querySelector('.gtr.me .pts')||{}).textContent,them:e.querySelector('.gtr.them .nm')&&e.querySelector('.gtr.them .nm').textContent,
    oppPts:(e.querySelector('.gtr.them .pts')||{}).textContent,nPts:e.querySelectorAll('.pts').length,chance:!!e.querySelector('.gl .ch b'),line:!!e.querySelector('.mline .sdot'),
    chips:e.querySelectorAll('.bets .bt').length,html:e.innerHTML}));}"""
 
