@@ -1,0 +1,17 @@
+/* Button feedback (press.js). Pressed: instant and CSS-only, so it lands in the first frame even before any script runs. */
+.btn:not(:disabled):active,.btn.prs:not(:disabled){filter:brightness(.84)}
+.btn.fb-pend,.btn.fb-ok,.btn.fb-bad,.btn.fb-chk{display:inline-flex;align-items:center;justify-content:center;gap:7px;opacity:1!important;pointer-events:none}
+.btn.fb-bad{pointer-events:auto}
+.btn.fb-pend{cursor:progress}
+.btn.fb-ok{background:var(--yesbg)!important;color:var(--yes)!important;border-color:color-mix(in srgb,var(--yes) 45%,transparent)!important}
+.btn.fb-bad{background:var(--nobg)!important;color:var(--no)!important;border-color:color-mix(in srgb,var(--no) 45%,transparent)!important}
+.btn.fb-chk{background:rgba(255,176,32,.16)!important;color:#b97a00!important;border-color:rgba(255,176,32,.5)!important}
+:root:not([data-theme="light"]) .btn.fb-chk{color:#ffc04d!important}
+.btn.fb-ok i,.btn.fb-bad i,.btn.fb-chk i{font-style:normal;font-weight:800}
+.fbnote.chk{background:rgba(255,176,32,.16);color:#b97a00}
+:root:not([data-theme="light"]) .fbnote.chk{color:#ffc04d}
+@media (prefers-reduced-motion:reduce){.btn:not(:disabled):active,.btn.prs:not(:disabled){transform:none!important}.btn.fb-pend .spin{animation:none;border-right-color:currentColor;opacity:.7}}
+
+/* the plain-words line under a button. Its own class (not .berr): paintErr() wipes every .berr on a repaint */
+.fbnote{display:flex;align-items:flex-start;gap:8px;margin:8px 0 0;padding:10px 12px;min-height:44px;border-radius:12px;background:var(--nobg);color:var(--no);font-size:14px;font-weight:600;line-height:1.35}
+.fbnote i{font-style:normal;font-weight:800}
