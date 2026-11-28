@@ -14980,8 +14980,9 @@ def settings_page(all_games, days, counts):
                          "has already won and Kalshi's offer beats waiting another game at your level. It works "
                          "while the planner is open, or all the time if your watcher (Mac or Pi) is running (Kalshi buys "
                          "combos back only through live offers), and tells you each time. It stops after the daily "
-                         "limit and never sells for less than you paid, except to cut a loss (a game turning against you) when selling now "
-                         "loses less than waiting; a profit-taking sale never retries below what you paid, and a loss cut never "
+                         "limit and never sells for less than you paid, except to cut a loss (a game turning against you): a learned loss cut "
+                         "when selling now loses less than waiting, or the stop-loss override when its game guards all hold. A "
+                         "profit-taking sale never retries below what you paid, and a loss cut never "
                          "retries under 97% of its first offer. When a combo is "
                          "down to its last game and buying the other team locks in more than the cash-out offer, it "
                          "hedges instead (a purchase, up to your hedge limit; above it, it cashes out). "
@@ -27599,8 +27600,8 @@ KNOBS = (
      "min": 0.5, "max": 2.0, "step": 0.05, "unit": "table", "stricter": "down", "borrow": "none", "learned": None,
      "metric": "recorded game prices: how far chances really move per sport", "judge": "_replay"},
     {"name": "below_cost", "group": "loss", "cls": "tunable", "label": "Never sells below what you paid",
-     "what": "Automatic sales skip an offer under what you paid, unless a learned loss cut or your stop-loss "
-             "override (every guard held) says selling now loses less than waiting. A sale that was a profit never "
+     "what": "Automatic sales skip an offer under what you paid, unless a learned loss cut (selling now loses less "
+             "than waiting) or your stop-loss override (every game guard held) allows it. A sale that was a profit never "
              "retries below cost; a loss cut never retries under 97% of its first offer. (Flexible sell, on by default, "
              "can judge a retry at the current moment instead.)",
      "owner": "auto_sell_now", "src": None, "start": True, "min": None, "max": None, "step": None, "unit": "rule",
@@ -27632,9 +27633,9 @@ KNOBS = (
     {"name": "sb_dial_mean", "group": "evidence", "cls": "evidence", "label": "Smart Buy: band average at least",
      "owner": "_sb_step", "src": "SB_DIAL_MEAN", "start": 0.25, "unit": "usd",
      "why": "the evidence bar: the band must average this much on $5 the right way"},
-    {"name": "sb_dial_t", "group": "evidence", "cls": "evidence", "label": "Smart Buy: standard errors from zero",
+    {"name": "sb_dial_t", "group": "evidence", "cls": "evidence", "label": "Smart Buy: how clearly more than luck",
      "owner": "_sb_step", "src": "SB_DIAL_T", "start": 2.0, "unit": "num",
-     "why": "the evidence bar: a step must be this many standard errors from luck"},
+     "why": "the evidence bar: a step must beat luck by this many standard errors (clearly more than luck)"},
     {"name": "sb_dial_new", "group": "evidence", "cls": "evidence", "label": "Smart Buy: new results since the last step",
      "owner": "_sb_step", "src": "SB_DIAL_NEW", "start": 20, "unit": "count",
      "why": "the evidence bar: this many results from games after the last step"},
