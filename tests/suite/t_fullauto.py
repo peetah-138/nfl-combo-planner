@@ -115,7 +115,7 @@ E.full_auto_pass(now=time.time()); E.panel_exec()
 ok("at the cap: no extras are added, nothing more is bought", len(BOUGHT) == n0 and E.fa_check(E.fa_state())["spent"] <= max(2, cap) + 0.01)
 ok("the card says the cap is used up", v["room"] < 2.0 and any("spending cap is used up" in b for b in v["blockers"]))
 ok("633: the cap-used-up sentence reads 'Today's spending cap is used up: $X of $Y spent.' plus Autopilot's cut",
-   any(re.fullmatch(r"Today's spending cap is used up: \$[\d.,]+ of \$[\d.,]+ spent\.( Autopilot (has cut it to \d+%|only lets it use \d+%) of your usual \$[\d.,]+\.)?", b) for b in v["blockers"]), v["blockers"])
+   any(re.fullmatch(r"Today's spending cap is used up: \$[\d.,]+ of \$[\d.,]+ spent\.( Autopilot (has cut it to \d+%|only lets it use \d+%) of your usual \$[\d.,]+\.)?", b) for b in v["blockers"]))
 
 # ---- room under the cap: extras are added through panel_add
 reset_state()
