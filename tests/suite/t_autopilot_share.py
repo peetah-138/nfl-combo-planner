@@ -330,7 +330,7 @@ orig_b = {"id": "o1", "kind": "combo", "state": "swapped", "bought_at": NOW - 90
 swap_b = {"id": "o2", "kind": "combo", "state": "bought", "bought_at": NOW - 600, "swap_of": "o1", "legs": [{"ticker": NBA}], "stake": 10.0}
 E.store_x("insert into panel values(?,?,?,?,?)", (day0, "real", NOW, "done", json.dumps({"at": NOW, "items": [orig_b, swap_b]})))
 E._fa_update(lambda s: s.update(bets={f"{day0}|o1": {"at": NOW}}))
-ok("a bet swapped in for one of ours (new id) counts toward the share", E.FaShareGuard(E.fa_state(), 30.0, day0, NOW).spent["share:nba"] >= 10.0)
+ok("a bet swapped in for one of ours (new id) counts toward the share", E.FaShareGuard(E.fa_state(), 30.0, day0, NOW).spent["share:nba"] == 20.0)
 
 # 19. the bar side of 'never the same week': a bar step is refused when a share stepped this week
 reset(); bk = E._fal_key("bar", "nba")
