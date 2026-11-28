@@ -498,3 +498,11 @@ k1, h1 = E._fa_caution_bar([_c], 1, {_lg: 1.0})
 k2, h2 = E._fa_caution_bar([_combo(_cut + 0.0155)], 1, {_lg: 1.0})
 ok("without a learned bar the cautious notch is unchanged", len(k0) == 1 and not h0)
 ok("cautious level 1 adds 0.5 on top of a learned +1.0", not k1 and len(h1) == 1 and len(k2) == 1)
+
+# ---- (#633) wording nits, exact text
+ok("633: 5%-compounded stake steps show whole percents (0.9025 -> 90%)", E._fal_val_text("stake", 0.9025) == "90% of today's bet size")
+ok("633: cap use shows whole percents", E._fal_val_text("capuse", 0.8) == "80% of your daily cap")
+ok("633: the Mix league's budget share reads 'mixed-sports budget share'", E._fal_name("share:mix") == "mixed-sports budget share", E._fal_name("share:mix"))
+ok("633: money() puts the minus before the dollar sign", E.money(-3.5) == "-$3.50" and E.money(-12) == "-$12")
+ok("633: the cap-used-up sentence names spent and cap in plain words",
+   any(b.startswith("Today's spending cap is used up: $") and " of $" in b and b.endswith(" spent.") or "spent. Autopilot" in b for b in v["blockers"]), v["blockers"])
