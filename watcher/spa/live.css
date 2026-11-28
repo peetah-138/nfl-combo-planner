@@ -30,3 +30,44 @@
  .trow .numwrap .offer small{font-size:12px;color:var(--sub)}
  .trow .numwrap .offer .chg{flex-direction:row;gap:8px;min-width:0;font-size:12.5px}
 }
+/* ---- Live motion (package M2). Display only. Only transform and opacity animate, on the --dur-* / --elev-* tokens; every
+   block has its own reduced-motion rule (the final state, no movement). The Live dots pulse only while the feed is fresh and the
+   tab is visible (main.lvfresh): a stale feed is a grey still dot, so nothing implies live data. ---- */
+/* the live dots: a ring that scales and fades (the old pulse animated box-shadow); still and grey when the feed is stale */
+.livedot,.leg .pd{position:relative;animation:none}
+.livedot::after,.leg .pd::after{content:"";position:absolute;inset:0;border-radius:50%;background:currentColor;opacity:0;pointer-events:none}
+.livedot{color:var(--live)}
+main.lvfresh .livedot::after,main.lvfresh .leg .pd::after{animation:lvring 1.8s var(--ease) infinite}
+main.lvfresh .leg .pd{animation:pulse2 1.6s infinite}
+main.lvstale .livedot,main.lvstale .leg .pd{background:var(--mute);animation:none}
+main.lvstale .leg .pd::after,main.lvstale .livedot::after{animation:none}
+main.lvhid .livedot::after,main.lvhid .leg .pd::after,main.lvhid .leg .pd,main.lvhid .trow.lvhot::after{animation-play-state:paused}
+@keyframes lvring{0%{transform:scale(1);opacity:.5}70%,100%{transform:scale(2.6);opacity:0}}
+/* first paint: leg chips settle in after their row, 30 ms apart (first six); never on a refresh (main.arrived is first paint only) */
+main.arrived .trow[data-key^="c:"] .leg{animation:lvchip var(--dur-3) var(--ease) both}
+main.arrived .trow[data-key^="c:"] .leg:nth-child(2){animation-delay:30ms}
+main.arrived .trow[data-key^="c:"] .leg:nth-child(3){animation-delay:60ms}
+main.arrived .trow[data-key^="c:"] .leg:nth-child(4){animation-delay:90ms}
+main.arrived .trow[data-key^="c:"] .leg:nth-child(5){animation-delay:120ms}
+main.arrived .trow[data-key^="c:"] .leg:nth-child(n+6){animation-delay:150ms}
+@keyframes lvchip{from{opacity:0;transform:translateY(5px) scale(.94)}}
+/* a leg that just hit: the chip pops once and a ring spreads from it; a leg that just missed only dims once (sober) */
+.leg.lvhit{position:relative;animation:lvpop var(--dur-3) var(--spring)}
+.leg.lvhit::after{content:"";position:absolute;inset:0;border-radius:inherit;box-shadow:0 0 0 2px var(--yes);opacity:0;pointer-events:none;animation:lvhring .7s var(--ease)}
+@keyframes lvpop{0%{transform:scale(.9)}45%{transform:scale(1.14)}100%{transform:none}}
+@keyframes lvhring{0%{transform:scale(1);opacity:.85}100%{transform:scale(1.7,1.9);opacity:0}}
+.leg.lvmiss{animation:lvdim var(--dur-2) var(--ease)}
+@keyframes lvdim{from{opacity:.4}}
+/* a combo that just won: a gold sheen crosses the row once and the payout pill pops; one that just lost fades in grey, nothing else */
+.trow.lvwin,.trow.lvloss,.trow.lvhot{position:relative;overflow:hidden}
+.trow.lvwin::after{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(100deg,transparent 30%,color-mix(in srgb,#f5c542 38%,transparent) 50%,transparent 70%);transform:translateX(-110%);animation:lvsheen 1.1s var(--ease) .1s 2 both}
+.trow.lvwin .verdict{animation:lvpop var(--dur-3) var(--spring) .15s both}
+.trow.lvloss{animation:lvdim var(--dur-3) var(--ease)}
+@keyframes lvsheen{to{transform:translateX(110%)}}
+/* a hot combo (offer at 80%+ of its payout, or a flagged moment; at most two rows at a time): a slow soft sheen while the feed is fresh */
+.trow.lvhot::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:.55;background:linear-gradient(100deg,transparent 35%,color-mix(in srgb,var(--yes) 16%,transparent) 50%,transparent 65%);transform:translateX(-110%)}
+main.lvfresh .trow.lvhot::after{animation:lvsheen 4.2s var(--ease) infinite}
+@media (prefers-reduced-motion:reduce){
+ .livedot::after,.leg .pd::after,.trow.lvwin::after,.trow.lvhot::after,.leg.lvhit::after{animation:none!important;display:none}
+ .leg.lvhit,.leg.lvmiss,.trow.lvloss,.trow.lvwin .verdict,main.arrived .trow[data-key^="c:"] .leg{animation:none!important}
+}
