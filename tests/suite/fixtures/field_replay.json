@@ -1,0 +1,320 @@
+{
+ "home": "HOU",
+ "away": "IND",
+ "steps": [
+  {
+   "t": 0,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 0,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 0,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "IND",
+     "ballYardsToEndzone": 75
+    },
+    "situation": {
+     "down": 2,
+     "distance": 5,
+     "isRedZone": false,
+     "possAbbr": "IND",
+     "lastPlayType": "",
+     "lastPlayText": ""
+    }
+   },
+   "events": [],
+   "glide": null
+  },
+  {
+   "t": 5,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 0,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 0,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "IND",
+     "ballYardsToEndzone": 65
+    },
+    "situation": {
+     "down": 1,
+     "distance": 10,
+     "isRedZone": false,
+     "possAbbr": "IND",
+     "lastPlayType": "",
+     "lastPlayText": ""
+    }
+   },
+   "events": [
+    [
+     "firstdown"
+    ]
+   ],
+   "glide": "slide"
+  },
+  {
+   "t": 10,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 0,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 0,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "IND",
+     "ballYardsToEndzone": 18
+    },
+    "situation": {
+     "down": 1,
+     "distance": 10,
+     "isRedZone": true,
+     "possAbbr": "IND",
+     "lastPlayType": "",
+     "lastPlayText": ""
+    }
+   },
+   "events": [
+    [
+     "redzone"
+    ]
+   ],
+   "glide": "hop"
+  },
+  {
+   "t": 15,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 0,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 0,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "IND",
+     "ballYardsToEndzone": 3
+    },
+    "situation": {
+     "down": 3,
+     "distance": 2,
+     "isRedZone": true,
+     "possAbbr": "IND",
+     "lastPlayType": "",
+     "lastPlayText": ""
+    }
+   },
+   "events": [],
+   "glide": "hop"
+  },
+  {
+   "t": 20,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 0,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 7,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "HOU",
+     "ballYardsToEndzone": 80
+    },
+    "situation": {
+     "down": 1,
+     "distance": 10,
+     "isRedZone": false,
+     "possAbbr": "HOU",
+     "lastPlayType": "Kickoff",
+     "lastPlayText": "IND touchdown"
+    }
+   },
+   "events": [
+    [
+     "td",
+     "away"
+    ]
+   ],
+   "glide": "hop"
+  },
+  {
+   "t": 25,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 0,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 7,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "IND",
+     "ballYardsToEndzone": 60
+    },
+    "situation": {
+     "down": 1,
+     "distance": 10,
+     "isRedZone": false,
+     "possAbbr": "IND",
+     "lastPlayType": "Pass Interception",
+     "lastPlayText": "Interception"
+    }
+   },
+   "events": [
+    [
+     "turnover"
+    ]
+   ],
+   "glide": "hop"
+  },
+  {
+   "t": 30,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 0,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 7,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "HOU",
+     "ballYardsToEndzone": 70
+    },
+    "situation": {
+     "down": 1,
+     "distance": 10,
+     "isRedZone": false,
+     "possAbbr": "HOU",
+     "lastPlayType": "Punt",
+     "lastPlayText": "Punt"
+    }
+   },
+   "events": [
+    [
+     "possession"
+    ]
+   ],
+   "glide": "hop"
+  },
+  {
+   "t": 35,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 3,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 7,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "HOU",
+     "ballYardsToEndzone": 20
+    },
+    "situation": {
+     "down": 4,
+     "distance": 3,
+     "isRedZone": true,
+     "possAbbr": "HOU",
+     "lastPlayType": "Field Goal Good",
+     "lastPlayText": "FG"
+    }
+   },
+   "events": [
+    [
+     "fg",
+     "home"
+    ]
+   ],
+   "glide": "hop"
+  },
+  {
+   "t": 200,
+   "detail": {
+    "board": {
+     "state": "in",
+     "home": {
+      "abbr": "HOU",
+      "score": 3,
+      "color": "03202f"
+     },
+     "away": {
+      "abbr": "IND",
+      "score": 7,
+      "color": "002c5f"
+     }
+    },
+    "drive": {
+     "teamAbbr": "HOU",
+     "ballYardsToEndzone": 50
+    },
+    "situation": {
+     "down": 1,
+     "distance": 10,
+     "isRedZone": false,
+     "possAbbr": "HOU",
+     "lastPlayType": "",
+     "lastPlayText": ""
+    }
+   },
+   "events": [],
+   "glide": null
+  }
+ ]
+}

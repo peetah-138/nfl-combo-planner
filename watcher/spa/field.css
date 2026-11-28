@@ -1,0 +1,56 @@
+/* Field motion (package M1): see field.js. Only transform/opacity animate. Fallback values stand in for the polish tokens. */
+.fld .fball,.fld .fdir{transition:none}
+.fstrip .fld{--fxc:var(--acc,#2a6)}
+/* richer end zones: a stripe texture and a bright goal line, team colour comes from the existing inline background */
+.fstrip .ez{position:relative;overflow:hidden}
+.fstrip .ez::before{content:"";position:absolute;inset:0;background:repeating-linear-gradient(135deg,rgba(255,255,255,.14) 0 6px,rgba(255,255,255,0) 6px 12px);pointer-events:none}
+.fstrip .ez.l::after,.fstrip .ez.r::after{content:"";position:absolute;top:0;bottom:0;width:2px;background:rgba(255,255,255,.7);pointer-events:none}
+.fstrip .ez.l::after{right:0}.fstrip .ez.r::after{left:0}
+.fstrip .grass{position:relative}
+/* drive trail */
+.fld i.fxtrl{position:absolute;top:50%;height:6px;margin-top:-3px;background:var(--c,#fff);opacity:.4;border-radius:3px;transform-origin:0 50%;pointer-events:none}
+.fld i.fxtrl.r{transform-origin:100% 50%}
+/* live dot */
+.fld i.fxdot{position:absolute;top:5px;right:6px;width:7px;height:7px;border-radius:50%;background:var(--live,#e33);pointer-events:none;z-index:3}
+.fstrip.fxstale i.fxdot{background:var(--sub,#999);opacity:.7}
+.fstrip.fxlive i.fxdot{animation:fxdot 1.6s ease-in-out infinite}
+@keyframes fxdot{0%,100%{opacity:1;scale:1}50%{opacity:.45;scale:.8}}
+.fstrip.fxlive .fdir{animation:fxnudge 1.8s ease-in-out infinite}
+@keyframes fxnudge{0%,100%{translate:0 0}50%{translate:calc(var(--fxdir,1)*3px) 0}}
+.fstrip.fxpaused i.fxdot,.fstrip.fxpaused .fdir,.fstrip.fxpaused .fxban,.fstrip.fxpaused .frz{animation-play-state:paused!important}
+/* banner */
+.fld .fxban{position:absolute;left:50%;top:8px;translate:-50% 0;padding:3px 12px;border-radius:14px;background:var(--c,#222);color:#fff;font-weight:800;font-size:13px;letter-spacing:.04em;white-space:nowrap;pointer-events:none;z-index:4;animation:fxban 1.8s var(--ease,cubic-bezier(.2,.8,.2,1)) both;box-shadow:0 2px 10px rgba(0,0,0,.3)}
+.fld .fxban.sm{font-size:11px;padding:2px 9px;animation-duration:1.4s}
+@keyframes fxban{0%{opacity:0;transform:translateY(-8px) scale(.85)}12%{opacity:1;transform:translateY(0) scale(1.06)}20%{transform:scale(1)}80%{opacity:1}100%{opacity:0;transform:translateY(-4px)}}
+.fld i.fxwash{position:absolute;inset:0;background:var(--c);opacity:0;pointer-events:none;animation:fxwash 1.6s ease-out both}
+@keyframes fxwash{0%{opacity:0}15%{opacity:.28}100%{opacity:0}}
+.fld i.fxsweep{position:absolute;top:0;bottom:0;left:0;width:40%;background:linear-gradient(90deg,transparent,var(--c),transparent);opacity:0;pointer-events:none;animation:fxsweep 1s ease-in-out both}
+@keyframes fxsweep{0%{transform:translateX(-100%);opacity:0}30%{opacity:.5}100%{transform:translateX(260%);opacity:0}}
+.ez i.fxezp{position:absolute;inset:0;background:var(--c);opacity:0;pointer-events:none;animation:fxezp .7s ease-in-out 3 both}
+@keyframes fxezp{0%,100%{opacity:0}50%{opacity:.55}}
+/* crowd twinkle */
+.fld .fxcrowd{position:absolute;left:0;right:0;bottom:0;height:8px;pointer-events:none}
+.fld .fxcrowd i{position:absolute;bottom:0;width:4px;height:4px;border-radius:50%;background:var(--c,#fff);opacity:0;animation:fxtw .9s ease-in-out 2 both}
+@keyframes fxtw{0%,100%{opacity:0;transform:translateY(0)}50%{opacity:.9;transform:translateY(-4px)}}
+/* ghost ball and uprights */
+.fld .fball.fxg{pointer-events:none}
+.fld i.fxup{position:absolute;top:18%;bottom:18%;width:12px;border:2px solid #f5d020;border-radius:2px;border-left-color:transparent;pointer-events:none;animation:fxup 1.6s ease-out both}
+@keyframes fxup{0%{opacity:0}15%,70%{opacity:.9}100%{opacity:0}}
+/* turnover ball flash, first-down lock, red zone */
+.fld .fball.fxturn{animation:fxturn .6s ease-out 2}
+@keyframes fxturn{0%,100%{scale:1}50%{scale:1.35}}
+.fld .fdline.fxlock{animation:fxlock .6s var(--spring,cubic-bezier(.3,1.6,.4,1)) .16s both}
+@keyframes fxlock{0%{scale:1 1;opacity:.6}40%{scale:1.8 1.15;opacity:1}100%{scale:1 1;opacity:1}}
+.fld .frz.fxrz{animation:fxrz 2s ease-in-out 3}
+@keyframes fxrz{0%,100%{opacity:1}50%{opacity:.5}}
+.fstrip .rzt.fxpop{animation:fxpop .5s var(--spring,cubic-bezier(.3,1.6,.4,1)) both}
+@keyframes fxpop{0%{transform:scale(.7);opacity:0}100%{transform:scale(1);opacity:1}}
+/* play-by-play scoring rail pulse */
+.pp{position:relative}
+.pp i.fxrail{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--yes,#2a6);opacity:0;pointer-events:none;animation:fxrail 1.5s ease-out both}
+@keyframes fxrail{0%{opacity:0}20%{opacity:1}100%{opacity:0}}
+/* reduced motion: static final state only */
+@media (prefers-reduced-motion:reduce){
+ .fld .fxban,.fld i.fxwash,.fld i.fxsweep,.ez i.fxezp,.fld .fxcrowd,.fld i.fxup,.pp i.fxrail{display:none!important}
+ .fstrip.fxlive i.fxdot,.fstrip.fxlive .fdir,.fld .fball.fxturn,.fld .fdline.fxlock,.fld .frz.fxrz,.fstrip .rzt.fxpop{animation:none!important}
+}
