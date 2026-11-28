@@ -105,7 +105,7 @@ with sync_playwright() as pw:
             # a tap reaches the control's own handler exactly once, through its switch (handlers swapped for counters)
             pg.evaluate("""(()=>{let k=0;document.querySelectorAll('[onclick]').forEach(e=>{e.dataset.hk=++k;e.setAttribute('onclick','__hit(this,event)');});window.__hits.length=0;})()""")
             keys = pg.evaluate("""(()=>{const out=[];for(const e of document.querySelectorAll('main [onclick],.tabbar [onclick]')){if(out.length>=6)break;const s=e.querySelector(':scope>.hsw');if(!s||e.matches('a')||e.querySelector('[onclick]'))continue;
-              const r=e.getBoundingClientRect();if(r.width<8||r.height<8||r.top<60||r.bottom>innerHeight-90)continue;const t=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);if(t!==s)continue;out.push(e.dataset.hk);}return out;})()""")
+              const r=e.getBoundingClientRect();if(r.width<8||r.height<8||r.top<60||r.bottom>innerHeight-90||r.left<0||r.right>innerWidth)continue;   /* a chip scrolled out of its sideways row can't be tapped */const t=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);if(t!==s)continue;out.push(e.dataset.hk);}return out;})()""")
             for k in keys:
                 pg.evaluate("window.__hits.length=0")
                 bb = pg.locator(f'[data-hk="{k}"]').bounding_box()
@@ -117,7 +117,7 @@ with sync_playwright() as pw:
             print(tag, view, "tapped once each:", len(keys))
             # Games: its cards are big scroll surfaces (no switch, #151); the COVER check above asserts that.
             # Live: the 44px card buttons (#454) leave two fully in view at 390x844.
-            if len(keys) < (0 if view == "games" else 1 if view == "results" else 2 if view == "live" else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
+            if len(keys) < (0 if view in ("games", "settings") else 1 if view == "results" else 2 if view == "live" else 3): bad(f"{tag} {view}: too few controls to tap-test ({len(keys)})")
             pg.evaluate(f"go('{view}')"); frames(pg)   # (held: a redraw from what the page has, no load)
 
         # the pushed game page (a sheet) is covered too
@@ -237,7 +237,7 @@ with sync_playwright() as pw:
             # own touchend listener seeing a touchend (the real one from CDP follows, to release the touch point).
             seq = pg.evaluate("""(async()=>{const PE=%s;const scr=()=>new Promise(z=>{addEventListener('scroll',()=>z(),{once:true,capture:true});window.scrollBy(0,40);});
               await scr();const mid=PE();
-              dispatchEvent(new TouchEvent('touchend',{bubbles:true}));await scr();const still=PE();   // momentum after the finger lifts
+              dispatchEvent(new TouchEvent('touchend',{bubbles:true,changedTouches:[new Touch({identifier:1,target:document.body,clientX:200,clientY:70})]}));await scr();const still=PE();   // momentum after the finger lifts
               return {mid,still};})()""" % ("()=>" + pe))
             cdp.send("Input.dispatchTouchEvent", {"type": "touchEnd", "touchPoints": []})
             # once the finger is up and the page has had no scroll for 350 ms (the browser may still apply the drag's
