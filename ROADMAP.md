@@ -262,6 +262,7 @@ references and a frame-by-frame motion brief are in issue #12's comments. Still 
 - **Release 2026.11.27.145:** full-auto soft brake (confidence level, not a stop) (#144, #606); Autopilot registry with shared gate, Undo, freeze and brake hook (#607); exit-knob steps in the Autopilot log (#145, #612, #615); thin leagues borrow group evidence for the buy bar (#611); open-bet limit self-adjusts, never above Pete's number (#614); three brake fixes from the release review (#616); cap message and calmer number rolls (#112, #140, #613); ESPN win-chance recorder and scorecard, record-only (#483, #487); Kalshi weather backtest script, research only (#494, #502).
 - **Release 2026.11.27.146:** Autopilot learns league and bet-type budget shares (#145, step 6) and bet size and cap use (#145, step 7); Autopilot card wording and accessibility polish (#618-#621); cash-out help and Smart Buy bar wording (#431, #283).
 - **Release 2026.11.27.147:** Autopilot follow-ups: loss room at any stake size (#632), tighten-only `_sl_tune` and live-cap share evidence (#633, #592), buy-timing data record (#8); sell guard replay uses live confirm counts (#316); wording nits (#633a); Games and Build phone polish (two rounds).
+- **Release 2026.11.28.148:** Autopilot "Drift since start" and "Back to start" with fail-closed resets (#145); Buy path follow-ups (date on the ESPN match, pace for full-game totals only, alert path runs the Build page's checks) (#482); autopilot invariant simulator (tests only); no-money batch 5 (#650-#652); Games score memory covers every game (#654 follow-up).
 
 ---
 
@@ -280,7 +281,7 @@ Short lines so nothing is lost; the issue has the detail.
 - **Panel and sizing:** both sides of one game / exposure caps (#335), `_size` rounding (#329), combo fees in sizing (#328),
   samey slate analysis (#332), player-prop recon (#323), market-anchored fair held-out check (#345),
   empty `closes`/`live_fairs` tables (#336), Free-lines killer/orders (#344).
-- **Autopilot (#145) next steps:** steps 1 to 7 are done (registry, exit knobs, open-bet limit, bar borrow, league and bet-type budget shares, stake size 50-150% and cap use 50-100%). Step 8, buy timing, waits on 6 to 8 weeks of data from the shares and stake settings before it is worth building. The ESPN win-chance scorecard (#483) needs data before any pricing use (separate, Pete-approved PR).
+- **Autopilot (#145) next steps:** steps 1 to 7 are done, plus Drift since start and Back to start (registry, exit knobs, open-bet limit, bar borrow, league and bet-type budget shares, stake size 50-150% and cap use 50-100%). Step 8, buy timing, waits on 6 to 8 weeks of data from the shares and stake settings before it is worth building. The ESPN win-chance scorecard (#483) needs data before any pricing use (separate, Pete-approved PR).
 - **Self-tuning (#228 and follow-ups):** #258-#268, #285, #284, #299-#302, #309, #315-#316, #260, #265-#267 (#265 shipped in 144, loosening stays tighten-only until Pete sets `lg265_loosen_ok`; #309 nits done); wording cards
   #283, #304, #307, #313. Still open from 144: the old `_sl_tune` mover can loosen `sl_prog`/`sl_drop` with self-tuning off; mkt_learn holdout measure-before-change (#474).
 - **Smaller bugs and polish:** #242, #238, #240, #252, #256, #320, #318, #324, #331, #298, #272-#275, #281, #290, #244, #245,
