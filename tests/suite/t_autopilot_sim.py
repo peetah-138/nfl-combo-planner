@@ -750,6 +750,11 @@ if __name__ == "__main__":
                 DIAG.append({"rows": {k: len(v) for k, v in by.items() if k.startswith("share:@")}, "cap": E.fa_state().get("cap"),
                              "vals": L.get("vals"), "cq": L.get("cq"), "steps": L.get("steps"), "caution": E.fa_state().get("caution"),
                              "now": SIM["t"], "hist": len(E.fa_state().get("history") or [])})
+                pr = E.store_rows_strict("select day, mode, body from panel")
+                DIAG.append({"panel_rows": len(pr), "modes": sorted({x["mode"] for x in pr})[:5],
+                             "items": sum(len(json.loads(x["body"]).get("items", [])) for x in pr),
+                             "settled": sum(1 for x in pr for c in json.loads(x["body"]).get("items", []) if c.get("result")),
+                             "first": E._panel_day(SIM["t"] - E.FAL["days"] * 86400), "days": sorted({x["day"] for x in pr})[:2] + sorted({x["day"] for x in pr})[-2:]})
             except Exception as err:
                 DIAG.append(repr(err))
     for tag, o in (("master_off", {"master_off": True}), ("frozen", {"freeze": True}), ("fa_off", {"fa_off": True})):
