@@ -273,7 +273,7 @@ function potConfirm(q){if(!q||!q.ok)return;const c=x=>'$'+(+x).toFixed(2);S.potq
 async function potGo(b){const s=S.potq;if(!s||s.sending||b.disabled)return;const c=x=>'$'+(+x).toFixed(2),q=s.q;
  if(b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to move ${c(q.amount)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';b.classList.remove('arm');b.textContent=`Move ${c(q.amount)}`;}},4000);return;}
- s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Moving… confirming with Kalshi';
+ s.sending=true;b.classList.remove('arm');fbPend(b,'Moving… confirming with Kalshi');
  let r;try{r=await api('/app/api/act',{a:'pot_move',from:q.from,to:q.to,amount:q.amount.toFixed(2),cid:s.cid});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac during this move, so it may or may not have gone through. Check Settings › Money › Kalshi balance by pot before trying again.'};}
  s.sending=false;const here=S.potq===s&&!!$('#potc')&&$('#modal').classList.contains('on'),free=here||!$('#modal').classList.contains('on');
@@ -282,7 +282,7 @@ async function potGo(b){const s=S.potq;if(!s||s.sending||b.disabled)return;const
   if(free){if(r.ok)okSheet(r.status==='complete'?'Moved':'On its way',c(q.amount),sub);else okSheet('Check Kalshi',null,sub,true);}
   else{hap(r.ok?'success':'error');toast(sub,9000,r.ok?'good':'bad');}
   if(S.view==='settings')setTimeout(()=>load('settings',true),1500);return;}
- if(here){b._old=`Move ${c(q.amount)}`;btnState(b,false,'Didn\'t go through');b.dataset.sure='';const m=$('#potmsg');if(m)m.innerHTML=`<div class="sbw sbx"><i>✕</i><span>${esc(r.msg||'It didn\'t go through. Nothing was moved.')}</span></div>`;S.potq={q,cid:potCid(),sending:false};}
+ if(here){fbIdle(b);b._old=`Move ${c(q.amount)}`;btnState(b,false,'Didn\'t go through');b.dataset.sure='';const m=$('#potmsg');if(m)m.innerHTML=`<div class="sbw sbx"><i>✕</i><span>${esc(r.msg||'It didn\'t go through. Nothing was moved.')}</span></div>`;S.potq={q,cid:potCid(),sending:false};}
  else{hap('error');toast(r.msg||'It didn\'t go through. Nothing was moved.',7000,'bad');}}
 function potClear(b){hap('warning');if(!confirm('Clear this move? Only do this after checking your balance on Kalshi: moves between pots can go again, and the unclear one is never resent.'))return;btnBusy(b);api('/app/api/act',{a:'pot_clear',cid:b.dataset.c}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}
 function clearBlock(b){hap('warning');if(!confirm('Clear this order block? Only do this after checking Kalshi: new orders on this market can go again.'))return;btnBusy(b);api('/app/api/act',{a:'clear_block',key:b.dataset.k}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load('settings'),1200)}).catch(()=>btnState(b,false));}

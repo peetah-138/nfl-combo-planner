@@ -23,10 +23,12 @@
     "smallwins.css",
     "update.css",
     "live.css",
-    "motion4.css"
+    "motion4.css",
+    "press.css"
   ],
   "js": [
     "common.js",
+    "press.js",
     "betlabel.js",
     "stake.js",
     "live.js",

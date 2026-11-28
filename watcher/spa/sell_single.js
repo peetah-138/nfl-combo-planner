@@ -58,7 +58,7 @@ async function ssSell(b){const s=S.ss,q=s&&s.q;if(!q||s.sending||b.disabled)retu
  if(q.x||Date.now()/1000-q.at>=q.secs){ssQuote();return;}
  if(b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to sell for ${m2(q.got)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';ssPaint();}},4000);return;}
- s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Selling… confirming with Kalshi';
+ s.sending=true;b.classList.remove('arm');fbPend(b,'Selling… confirming with Kalshi');
  let r;try{r=await api('/app/api/act',{a:'singlesell',t:q.t,q:q.q,anyway:!ssOk(q)});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while selling, so this may or may not have gone through. Check Live in a minute before trying again.'};}
  s.sending=false;q.used=1;if(S.sellq[q.t]===q)delete S.sellq[q.t];clearInterval(S.ssT);
