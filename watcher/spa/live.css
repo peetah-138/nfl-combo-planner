@@ -1,0 +1,32 @@
+/* Live / Your Combos polish (package A). Display only. Loads last, so these rules sit on top of responsive.css.
+   Local values on purpose: the shared type/spacing tokens belong to the foundation package; swap these for the tokens
+   when they land. Taps are 44px, the card reads worth-now first, then what it paid and pays, and nothing resizes when
+   data arrives (the skeleton is the height of a card, the Ask button keeps its width). */
+.anote{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px;padding:2px 4px 2px 14px;border-radius:12px;background:var(--panel2);color:var(--sub);font-size:13px;line-height:1.35}
+.anote b{color:var(--ink);font-weight:600}
+.anote .btn{flex:none;min-height:44px;min-width:44px;border:0;background:none;box-shadow:none;color:var(--acc);font-weight:600}
+.ss,.lsec .fbtn,.lchips .chip,.sbar .chip,.chgbar .chgsw button,.exp .acts .btn{min-height:44px}
+.chgbar .chgsw button{min-width:44px}
+.lchips{flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding-bottom:2px}
+.lchips::-webkit-scrollbar{display:none}.lchips .chip{flex:none}
+.askb{min-width:150px}
+.bsk{display:inline-block;width:44px;height:10px;border-radius:5px;vertical-align:middle;margin-right:4px;background:linear-gradient(90deg,var(--panel2),var(--hover),var(--panel2));background-size:200% 100%;animation:sk 1.2s infinite}
+.lcsk{height:172px;margin-bottom:10px}
+@media (prefers-reduced-motion:reduce){.bsk,.lcsk{animation:none}}
+.trow .name span.sdt{font-size:11.5px}
+@media (max-width:1360px){
+ /* worth now leads (two columns, big), the chance sits beside it; what it paid and what it pays are the quiet second row */
+ .trow .numwrap{grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 12px;align-items:start}
+ .trow .numwrap>:nth-child(4){grid-column:1/3;grid-row:1}
+ .trow .numwrap>:nth-child(3){grid-column:3;grid-row:1}
+ .trow .numwrap>:nth-child(1){grid-column:1;grid-row:2}
+ .trow .numwrap>:nth-child(2){grid-column:2;grid-row:2}
+ .trow .numwrap>div::before{font-size:11px;color:var(--sub)}
+ .trow .numwrap>div{font-variant-numeric:tabular-nums}
+ .trow .numwrap>:nth-child(1),.trow .numwrap>:nth-child(2){font-size:14px;font-weight:600;color:var(--sub)}
+ .trow .numwrap .offer{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 8px}
+ .trow .numwrap .offer::before{flex:0 0 100%}
+ .trow .numwrap .offer b{font-size:22px;line-height:1.2;letter-spacing:-.01em}
+ .trow .numwrap .offer small{font-size:12px;color:var(--sub)}
+ .trow .numwrap .offer .chg{flex-direction:row;gap:8px;min-width:0;font-size:12.5px}
+}
