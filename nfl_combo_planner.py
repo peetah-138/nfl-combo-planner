@@ -13,7 +13,7 @@ from urllib.parse import quote, unquote
 import requests
 
 SEED = None  # leave as is
-VERSION = "2026.11.27.147"
+VERSION = "2026.11.28.148"
 UPDATE_URL = "https://raw.githubusercontent.com/peetah-138/nfl-combo-planner/main"   # new versions (your GitHub repo)
 
 # Starting values. The settings screen changes these for you and remembers them.
@@ -24113,6 +24113,10 @@ def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
     now = time.time() if now is None else now
     at = c.get("bought_at") or c.get("at")
     live = bool(c.get("live"))
+    try:                                                      # (#640) a buy after the start is live even without the flag
+        live = live or (float(at) > float(c.get("kick")) > 0)
+    except (TypeError, ValueError):
+        pass
     bucket, hours = timing_bucket(c.get("kick"), at, live)
     legs = c.get("legs") or []
     ps = [l.get("p") for l in legs]
@@ -24134,6 +24138,7 @@ def timing_row(mode, day, c, auto_keys=(), closes=None, fees=None, now=None):
             "stake": c.get("stake"), "fees": fees, "result": c.get("result"), "pl": c.get("pl"), "pl_real": c.get("pl_real")}
 
 
+_TIMING_WATCH = ("result", "close", "pl_real", "clv", "pl", "fees", "stake")   # (#640 #649) a change in any of these refreshes the row
 _TIMING_COLS = ("key", "ts", "upd", "mode", "day", "auto", "league", "kind", "live", "kick", "bought_at", "hours", "bucket",
                 "p_build", "p_buy", "close", "clv", "clv_buy", "stake", "fees", "result", "pl", "pl_real")
 
@@ -24146,6 +24151,26 @@ def _timing_trim(now):
     store_x("delete from timing_log where ts < ?", (now - TIMING["keep"],))
     store_x("delete from timing_log where key in (select key from timing_log order by ts desc limit -1 offset ?)",
             (TIMING["max_rows"],))
+
+
+def _timing_stake(c):
+    """A bet's stake as a finite number >= 0, else None (unreadable)."""
+    try:
+        v = float(c.get("stake"))
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v >= 0 else None
+
+
+def _timing_fee_part(fee, stakes, mine):
+    """This bet's part of one ticker's ledger fee when `stakes` (one per real buy of it) share it: by stake, or in equal parts
+    when any stake is unreadable or they all are 0, so the parts always add up to the fee, never more. None when unreadable."""
+    n = len(stakes)
+    if n <= 1:
+        return fee
+    if any(v is None for v in stakes) or sum(stakes) <= 0:
+        return fee / n
+    return fee * mine / sum(stakes) if mine is not None else None
 
 
 def timing_log_pass(now=None, log=console_note):
@@ -24177,15 +24202,37 @@ def timing_log_pass(now=None, log=console_note):
         closes = close_prices(sorted(tks), mid=True) if tks else {}
         led = {r["ticker"]: (r["fees"] or 0) + (r["sell_fees"] or 0) for r in store_rows("select ticker, fees, sell_fees from ledger")} \
             if STORE.get("ledger_ok") else {}
-        have = {r["key"]: (r["result"], r["close"], r["pl_real"], r["clv"]) for r in
-                store_rows("select key, result, close, pl_real, clv from timing_log where ts >= ?", (now - TIMING["keep"],))}
+        # (#640) one ticker bought twice: its ledger fees are split across ALL its real buys still on file (the rows are
+        # kept TIMING["keep"] long, longer than the write window), by stake; an unreadable stake or all-zero stakes: equal parts
+        wts, counted = {}, set()
+
+        def _count(m_, d_, c):
+            tk = _panel_ticker(c) if isinstance(c, dict) else None
+            k_ = (m_, d_, c.get("id")) if tk else None
+            if tk and c.get("id") and c.get("state") == "bought" and k_ not in counted:
+                counted.add(k_)
+                wts.setdefault(tk, []).append(_timing_stake(c))
+        for m_, d_, c in items:
+            if m_.startswith("real"):
+                _count(m_, d_, c)
+        try:
+            for r_ in store_rows("select day, mode, body from panel where mode like 'real%' and day >= ?",
+                                 ((dt.datetime.now(PACIFIC).date() - dt.timedelta(seconds=TIMING["keep"])).isoformat(),)):
+                for c in json.loads(r_["body"]).get("items", []):
+                    _count(r_["mode"], r_["day"], c)
+        except Exception:
+            pass                                          # the recent bets above still count
+        have = {r["key"]: tuple(r[k] for k in _TIMING_WATCH) for r in
+                store_rows("select key, " + ",".join(_TIMING_WATCH) + " from timing_log where ts >= ?", (now - TIMING["keep"],))}
         wrote = 0
         for mode, day, c in items:
             if wrote >= TIMING["batch"]:
                 break
             fee = led.get(_panel_ticker(c)) if mode.startswith("real") else None
+            if fee is not None:
+                fee = _timing_fee_part(fee, wts.get(_panel_ticker(c)) or [], _timing_stake(c))
             row = timing_row(mode, day, c, auto, closes, round(fee, 4) if fee is not None else None, now)
-            if not row or have.get(row["key"]) == (row["result"], row["close"], row["pl_real"], row["clv"]):
+            if not row or have.get(row["key"]) == tuple(row[k] for k in _TIMING_WATCH):
                 continue
             row.update(ts=now, upd=now)
             store_x("insert into timing_log(" + ",".join(_TIMING_COLS) + ") values(" + ",".join("?" * len(_TIMING_COLS)) + ") "
