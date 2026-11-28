@@ -42,9 +42,7 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 .hn.rs span{display:flex;flex-direction:column;gap:1px;min-width:0}.hn.rs i{font-style:normal;font-size:11px;color:var(--mute);font-weight:600}
 .hn.rs b{font-variant-numeric:tabular-nums;font-size:13.5px}.hn.rs .res b{font-size:16px;font-weight:800;letter-spacing:-.02em}
 .hn.rs b.up{color:var(--yes)}.hn.rs b.down{color:var(--no)}
-/* filters: one scrolling row each (not three wrapped rows), 44px targets */
-.hfilters .chips{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:2px 0;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 22px),transparent)}
-.hfilters .chips::-webkit-scrollbar{display:none}
+/* filters: 44px targets (the rows stay wrapped: haptic switches never sit in sideways-scrolling strips) */
 .hfilters .chip{min-height:44px;display:inline-flex;align-items:center}
 .hsort{min-height:44px}
 .plc .rng2 button{min-height:44px;min-width:44px;padding:4px 10px}
