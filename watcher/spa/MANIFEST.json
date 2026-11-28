@@ -22,7 +22,8 @@
     "betlabel.css",
     "smallwins.css",
     "update.css",
-    "live.css"
+    "live.css",
+    "motion4.css"
   ],
   "js": [
     "common.js",
@@ -47,6 +48,7 @@
     "game.js",
     "game_tabs.js",
     "field.js",
+    "motion4.js",
     "moments.js",
     "logaccess.js",
     "overlap.js",

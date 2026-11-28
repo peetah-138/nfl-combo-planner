@@ -1,0 +1,74 @@
+/* Motion package M4: celebrations, pull-to-refresh, boot splash, page transitions. transform/opacity only; tokens --dur-*,
+   --elev-*, --ease/--out/--spring. Wins celebrate, losses stay sober, nothing here implies live data. Last in the css order. */
+
+/* ---- boot splash: a cover painted by <body> on the first frame (so no white flash), lifted by motion4.js. Taps pass
+   through it always, and it lifts itself after 2.4 s even if the script never runs. ---- */
+body::before{content:"";position:fixed;inset:0;z-index:120;pointer-events:none;background:var(--bg);
+ animation:m4cov .35s 2.4s forwards}
+body::after{content:"";position:fixed;left:50%;top:50%;width:64px;height:64px;margin:-32px 0 0 -32px;z-index:121;pointer-events:none;border-radius:var(--r-lg);
+ background:linear-gradient(145deg,#2f8cff,#7a5cff 60%,#c84bff) center/100% 100% no-repeat;box-shadow:var(--elev-2);
+ animation:m4mark .6s var(--spring) both,m4cov .35s 2.4s forwards}
+html.m4go body::before{opacity:0;transition:opacity var(--dur-3) var(--ease)}
+html.m4go body::after{opacity:0;transform:scale(1.5);transition:opacity var(--dur-3) var(--ease),transform var(--dur-3) var(--ease)}
+html.m4gone body::before,html.m4gone body::after{display:none}
+@keyframes m4mark{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+@keyframes m4cov{to{opacity:0;visibility:hidden}}
+/* the app arrives under the lifting cover: header and first cards settle in */
+html.m4go .top{animation:m4rise var(--dur-3) var(--out) both}
+@keyframes m4rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* ---- page transitions: the first six blocks of a tab rise 30 ms apart (tab changes only, never on a refresh) ---- */
+main.enter>*:nth-child(-n+6){animation:m4rise var(--dur-3) var(--out) both}
+main.enter>*:nth-child(2){animation-delay:30ms}main.enter>*:nth-child(3){animation-delay:60ms}main.enter>*:nth-child(4){animation-delay:90ms}
+main.enter>*:nth-child(5){animation-delay:120ms}main.enter>*:nth-child(6){animation-delay:150ms}
+::view-transition-old(root){animation:m4out 90ms var(--ease) both}
+::view-transition-new(root){animation:m4rise var(--dur-2) var(--out) both}
+@keyframes m4out{to{opacity:0}}
+.tabbar button.on,.nav button.on{animation:m4tab var(--dur-3) var(--spring)}
+@keyframes m4tab{from{transform:scale(.9)}to{transform:none}}
+
+/* ---- confetti v2: falls on transform only, three shapes, drifts and spins ---- */
+.confetti.v2 i{top:-14px;border-radius:2px;will-change:transform,opacity;animation:cffall 2s cubic-bezier(.2,.6,.4,1) both}
+.confetti.v2 i.cf1{border-radius:50%}.confetti.v2 i.cf0{border-radius:1px}
+@keyframes cffall{0%{transform:translate3d(0,0,0) rotate(0);opacity:1}85%{opacity:1}100%{transform:translate3d(var(--dx),108vh,0) rotate(var(--rot));opacity:0}}
+
+/* ---- big hit: a gold shimmer sweeps the payout, sparks leave the number, the label rises ---- */
+.bigwin .amt{position:relative;padding:4px 22px;margin:4px -22px;clip-path:inset(0)}   /* the glint stays inside the number's box */
+.bigwin .amt::after{content:"";position:absolute;top:0;bottom:0;left:0;width:36%;pointer-events:none;background:linear-gradient(105deg,transparent,rgba(255,214,102,.38),transparent);
+ opacity:0;transform:translateX(-100%);animation:m4shim 1.1s 1.1s var(--ease) 1 both}
+@keyframes m4shim{0%{opacity:0;transform:translateX(-100%)}20%,80%{opacity:1}100%{opacity:0;transform:translateX(280%)}}
+.bigwin .ey{animation:m4rise var(--dur-3) .2s var(--out) both}
+.bigwin .lb{animation:m4rise var(--dur-3) .5s var(--out) both}.bigwin .mx{animation:m4rise var(--dur-3) .7s var(--spring) both}
+.bigwin .bw{box-shadow:var(--elev-2)}
+.m4sp{position:absolute;left:50%;top:50%;width:0;height:0;pointer-events:none}
+.m4sp i{position:absolute;left:-3px;top:-3px;width:6px;height:6px;border-radius:50%;opacity:0;animation:m4spark .9s var(--out) both}
+@keyframes m4spark{0%{transform:translate3d(0,0,0) scale(.4);opacity:1}100%{transform:translate3d(var(--sx),var(--sy),0) scale(1);opacity:0}}
+
+/* ---- sold at a profit: the check lands with a ring pulse and a glow; sparks leave it ---- */
+.okcard.sold:not(.okloss) .plp{animation:rise .4s .5s both,m4glow 1.6s .9s var(--ease) 1}
+@keyframes m4glow{50%{box-shadow:0 0 0 6px color-mix(in srgb,var(--yes) 22%,transparent)}}
+.okcard.sold:not(.okloss) .amt{animation:rise .4s .45s both,m4glowtx 1.2s .9s var(--ease) 1}
+@keyframes m4glowtx{40%{text-shadow:0 0 22px color-mix(in srgb,var(--yes) 70%,transparent)}}
+/* a loss stays sober: slower, softer, opacity only, no spring and no colour alarm */
+.okcard.okloss circle{animation-duration:.9s}.okcard.okloss path{animation:okc .6s .6s var(--ease) forwards}
+.okcard.okloss h3,.okcard.okloss .amt,.okcard.okloss p,.okcard.okloss .plp,.okcard.okloss .tkt,.okcard.okloss .stamp{animation-name:m4fade;animation-duration:.8s}
+@keyframes m4fade{from{opacity:0}to{opacity:1}}
+
+/* ---- pull to refresh: a halo while it really loads, a pop on the check, a grey dash when it could not reach the Mac ---- */
+#ptr{box-shadow:var(--elev-2)}
+#ptr::before{content:"";position:absolute;inset:-1px;border-radius:50%;border:2px solid var(--acc);opacity:0;pointer-events:none}
+#ptr.go::before{animation:m4halo 1.1s var(--out) infinite}
+@keyframes m4halo{from{transform:scale(1);opacity:.55}to{transform:scale(1.7);opacity:0}}
+#ptr.done:not(.stale)::before{border-color:var(--yes);animation:m4halo .6s var(--out) 1}
+#ptr.done:not(.stale) svg{animation:obump .4s var(--spring)}
+#ptr.stale circle{stroke:var(--mute)!important}#ptr.stale path{opacity:0!important;animation:none}
+#ptr.stale::after{content:"";position:absolute;left:50%;top:50%;width:10px;height:2.5px;margin:-1.25px 0 0 -5px;border-radius:2px;background:var(--mute)}
+
+/* ---- pause everything that loops when the page is hidden; reduced motion gets the final state only ---- */
+html.m4hide .bigwin .ring2,html.m4hide #ptr::before,html.m4hide .confetti.v2 i{animation-play-state:paused}
+@media (prefers-reduced-motion:reduce){
+ body::before,body::after{display:none}html.m4go .top{animation:none}
+ main.enter>*,.tabbar button.on,.nav button.on{animation:none}
+ .confetti.v2,.m4sp{display:none}.bigwin .amt::after{display:none}.bigwin .ey,.bigwin .lb,.bigwin .mx{animation:none}
+ .okcard.sold:not(.okloss) .plp,.okcard.sold:not(.okloss) .amt{animation:none}
+ #ptr::before{display:none}#ptr.done svg{animation:none}}

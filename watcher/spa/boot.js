@@ -23,7 +23,7 @@ async function betFromHash(open){if(!location.hash.startsWith('#b='))return;let 
 ideaFromHash(false);comboFromHash(false);betFromHash(false);
 addEventListener('hashchange',()=>betFromHash(true));
 addEventListener('hashchange',()=>{ideaFromHash(true);comboFromHash(true);});
-chrome();render();load(S.view);connect();loadRecap();
+chrome();render();Promise.resolve(load(S.view)).catch(()=>{}).then(()=>{try{Motion4.ready();}catch(e){}});connect();loadRecap();
 setTimeout(async()=>{try{if(location.protocol!=='https:'||!window.PublicKeyCredential||S.inapp||localStorage.getItem('cw_fid_asked'))return;
  if(!(await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable()))return;await fidLoad();
  if((S.fid.keys||[]).some(k=>k.rp===location.hostname))return;localStorage.setItem('cw_fid_asked','1');

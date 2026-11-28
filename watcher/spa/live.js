@@ -10,7 +10,7 @@ function legCls(l){if(l.res==='yes')return 'won';if(l.res==='no')return 'lost';i
 function legTag(l){const c=legCls(l);const sc=l.state==='live'&&l.sc?` ${l.sc.me}–${l.sc.opp}`:'';
  const pre=c==='won'?'✓ ':c==='lost'?'✕ ':['up','down','live'].includes(c)?'<i class="pd"></i>':'';
  const tip=l.phase==='probably_over'?'Probably finished, waiting on Kalshi':l.phase==='waiting'?'Not started yet':c==='up'?'Winning right now':c==='down'?'Losing right now':c==='live'?'Tied or close':c==='won'?'Won':c==='lost'?'Lost':'Not started';
- return `<span class="leg ${c}" title="${tip}">${pre}${esc(betChip(l))}${sc}</span>`;}
+ return `<span class="leg ${c}" data-lk="${esc(l.ticker||'')}" title="${tip}">${pre}${esc(betChip(l))}${sc}</span>`;}
 function legTags(ls){const o=[...ls].sort((a,b)=>(b.state==='live')-(a.state==='live')||(b.res==='yes')-(a.res==='yes'));
  const max=7;return o.slice(0,max).map(legTag).join('')+(o.length>max?`<span class="leg">+${o.length-max}</span>`:'');}
 const PLACE_END=new Set(['City','Orleans','York','Bay','Angeles','Vegas','Francisco','Diego','Jersey','England','Louis','Antonio','Lake','Jose','Carolina','Florida','Dakota','Mexico','Virginia','Kentucky','Michigan','Illinois','Texas','Tech','State','Coast']);
@@ -64,7 +64,7 @@ function legendFor(pend){const on=new Set();pend.forEach(c=>c.legs.forEach(l=>{c
  const it=[['up','<i class="pd"></i>Winning now'],['down','<i class="pd"></i>Losing now'],['live','<i class="pd"></i>Tied'],['won','✓ Won'],['lost','✕ Lost']].filter(x=>on.has(x[0]));
  return `<div class="legend">${it.map(x=>`<span class="leg ${x[0]}">${x[1]}</span>`).join('')}</div>`;}
 /* while a finger is on the chart the page holds still; the refresh that came in meanwhile paints on release */
-function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPaint();if(S.ideaOpen)ideaSheet();}
+function renderLive(){if(S.scrub){S.liveDirty=true;return;}_renderLive();afterPaint();try{lvFx();}catch(e){}if(S.ideaOpen)ideaSheet();}
 function liveSkel(){return `<div class="kpis hero"><div class="hsk"><i style="height:12px;width:46%"></i><i style="height:42px;width:58%"></i><i style="height:22px;width:40%"></i></div>
  <div class="hsk"><i style="height:50px"></i><i style="height:50px"></i></div></div><div class="hsk" style="padding:4px 0 10px"><i style="height:14px;width:34%"></i></div>`+liveCardSkel(3);}
 function liveCardSkel(n){return Array.from({length:n},()=>'<div class="skel lcsk" aria-hidden="true"></div>').join('');}   /* card-shaped: same height as a real card, so nothing jumps when data lands */
@@ -258,3 +258,45 @@ async function doSell(t){hap();const c=(S.live.combos||[]).find(x=>x.t===t)||{};
  else{hap(r.ok?'success':'error');toast(r.msg||(r.ok?'Done.':'Didn\'t go through.'),5000);}load('live',true);}
 async function hedge(t){const c=(S.live.combos||[]).find(x=>x.t===t);modal(`<h3>Hedge ${esc(c.label)}?</h3><p>Buys the other side of its last game for about ${lm(c.hedge.cost)}, so you collect about ${lm(c.hedge.locked)} whichever team wins.</p><div class="row"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn acc" data-t="${esc(t)}" onclick="var t=this.dataset.t;closeModal();api('/app/api/act',{a:'hedgego',t}).then(r=>{toast(r.msg||'Done.',5000);load('live',true)})">Place hedge</button></div>`);}
 async function act(a,t){const r=await api('/app/api/act',{a,t});if(r.msg)toast(r.msg);load('live',true);}
+
+/* ---- Live motion (package M2). Display only: it reads what the page already drew and adds motion on top; it never changes a
+   number, a price, a bet or a sale, and an error in here is swallowed. Only transform and opacity (see live.css, --dur-* tokens).
+   Honest motion: a leg-hit or win moment fires only between two real consecutive snapshots (not after a gap over 90 s, not
+   when the feed was stale, not while the tab is hidden, never with reduced motion). The live dot pulses only while the feed is
+   fresh and goes grey and still when it is not. Pure logic is first and unit-tested from Node (t_live_motion.py). */
+const LV_GAP_MS=90000,LV_STALE_S=60,LV_HOT=.8,LV_HOT_MAX=2;
+// One flat picture of the Live list: every leg's result and every combo's group, keyed so two pictures can be compared.
+function lvSnap(combos){const legs={},grp={};for(const c of combos||[]){if(!c||!c.t)continue;grp[c.t]=c.group||'';
+ for(const l of c.legs||[])legs[c.t+'|'+(l.ticker||'')]=l.res||'';}return {legs,grp};}
+// May motion run at all? Reduced motion and a hidden tab never; a stale feed never.
+function lvGate(o){return !(o.reduce||o.hidden||o.stale);}
+// What just changed between two consecutive real pictures: legs that turned into a hit or a miss, combos that turned into a win or
+// a loss. Nothing when there is no earlier picture, the gap is long, the earlier one was stale, or motion is gated off.
+function lvDiff(prev,next,c){const o={hits:[],misses:[],won:[],lost:[]};
+ if(!prev||!next||!lvGate(c)||c.prevStale||c.prevAt==null||(c.now-c.prevAt)>LV_GAP_MS||c.now<c.prevAt)return o;
+ for(const k of Object.keys(next.legs)){if(!(k in prev.legs))continue;const a=prev.legs[k],b=next.legs[k];
+  if(a!=='yes'&&b==='yes')o.hits.push(k);else if(a!=='no'&&b==='no')o.misses.push(k);}
+ for(const t of Object.keys(next.grp)){const a=prev.grp[t],b=next.grp[t];if(a!=='pending'||a===b)continue;
+  if(b==='won')o.won.push(t);else if(b==='lost')o.lost.push(t);}
+ return o;}
+// Is this pending combo close to paying out (offer at 80%+ of what it pays) or flagged as a moment? Only real Kalshi offers count.
+function lvHot(c){if(!c||c.group!=='pending')return false;if(c.moment)return true;
+ return !!c.offer_real&&c.pays>0&&c.offer!=null&&c.offer>=LV_HOT*c.pays;}
+// The tickets that get the slow sheen: at most two at once (battery), the closest to paying first.
+function lvHotPick(combos){return (combos||[]).filter(lvHot).sort((a,b)=>(b.offer||0)/(b.pays||1)-(a.offer||0)/(a.pays||1)).slice(0,LV_HOT_MAX).map(c=>c.t);}
+function lvStale(){try{const b=typeof frBuilt==='function'?frBuilt('L'):null;
+ return b==null||b>LV_STALE_S||(typeof netIsDown==='function'&&netIsDown())||(typeof S!=='undefined'&&S.live_ok===false&&!!S.esEver);}catch(e){return true;}}
+const lvReduce=()=>typeof matchMedia==='function'&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+function lvFlag(){try{const m=document.getElementById('main');if(!m)return;const fresh=!lvStale()&&!document.hidden;
+ m.classList.toggle('lvfresh',fresh);m.classList.toggle('lvstale',lvStale());m.classList.toggle('lvhid',!!document.hidden);}catch(e){}}
+function lvFx(){const m=document.getElementById('main');const d=S.live;if(!m||!d||d.error)return;
+ const now=Date.now(),snap=lvSnap(d.combos),prev=S._lvPrev;lvFlag();
+ const stale=lvStale();
+ const o=lvDiff(prev&&prev.snap,snap,{now,prevAt:prev&&prev.at,prevStale:prev&&prev.stale,reduce:lvReduce(),hidden:document.hidden,stale});
+ S._lvPrev={snap,at:now,stale};   // every paint is an observation: the gap is measured from the last time we looked
+ const hot=new Set(lvHotPick(d.combos));
+ m.querySelectorAll('.trow[data-key^="c:"]').forEach(r=>{const t=r.dataset.t;r.classList.toggle('lvhot',hot.has(t));
+  if(o.won.includes(t))r.classList.add('lvwin');else if(o.lost.includes(t))r.classList.add('lvloss');
+  r.querySelectorAll('.leg[data-lk]').forEach(e=>{const k=t+'|'+e.dataset.lk;if(o.hits.includes(k))e.classList.add('lvhit');else if(o.misses.includes(k))e.classList.add('lvmiss');});});
+ if(!lvFx.wired){lvFx.wired=1;document.addEventListener('visibilitychange',lvFlag);setInterval(lvFlag,5000);}}
+if(typeof module!=='undefined'&&module.exports)module.exports={lvSnap,lvGate,lvDiff,lvHot,lvHotPick,LV_GAP_MS,LV_STALE_S};
