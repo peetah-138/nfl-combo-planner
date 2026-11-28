@@ -176,15 +176,15 @@ ok("with 'Let smart sell tune its own numbers' on, smart_tune only counts (self-
 E.KNOB_SWITCH.update(at=1e18, on=False)         # the rest: the switch off, exactly the old weekly tuner
 moved = E.smart_tune(force=True)
 d = E.load_json(E.SMART_FILE, {})
-ok("NBA learns from its own record: one small step earlier (50% → 45%), the fall size left alone",
-   d["nba"]["sl_prog"] == 0.45 and d["nba"]["sl_drop"] == 0.2 and d["nba"]["sl_n"] == 50)
-ok("the reason is written down", "45%" in d["nba"].get("sl_why", "") and any("Stop-loss" in m for m in moved))
+ok("selling earlier would have lost less, but the mover is tighten-only (#592): 50% / 20% stay, the count is kept",
+   d["nba"]["sl_prog"] == 0.5 and d["nba"]["sl_drop"] == 0.2 and d["nba"]["sl_n"] == 50)
+ok("no reason is written and nothing is reported as moved", not d["nba"].get("sl_why") and not any("Stop-loss" in m for m in moved))
 E.SMART_CACHE["at"] = 0
-ok("NBA now uses its own setting", E.stoploss_params([T])["prog"] == 0.45)
+ok("NBA uses its own (unchanged) setting", E.stoploss_params([T])["prog"] == 0.5)
 ok("a league with no data borrows, but never looser than the start",
    E.stoploss_params(["KXNHLGAME-26NOV19SJSVGK-SJS"]) == {"prog": 0.5, "drop": 0.2, "key": "all"})
 s = {r["key"]: r for r in E.smart_summary()}
-ok("Results › Selling shows each league's stop-loss settings", s["nba"]["sl_prog"] == 0.45 and s["nba"]["sl_own"] and s["nba"]["sl_why"])
+ok("Results › Selling shows each league's stop-loss settings", s["nba"]["sl_prog"] == 0.5 and s["nba"]["sl_own"] and not s["nba"]["sl_why"])
 E.save_json(E.SMART_FILE, {"nba": {"sl_prog": 0.45, "sl_drop": 0.2, "sl_n": 10}}); E.SMART_CACHE["at"] = 0
 ok("too few results: the setting isn't used, the start stays", E.stoploss_params([T])["prog"] == 0.5)
 ok("the bounds keep it later than a quarter of the game", E.SL_BOUNDS["prog"][0] > 0.25)
