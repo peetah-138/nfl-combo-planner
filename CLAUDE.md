@@ -1795,7 +1795,7 @@ adds one summary line to the log (`L["drift_m"]` keys it), "Autopilot, month in 
 the saved value (nothing saved = the start; for the open-bet limit, Pete's own number), stamps `since`, holds the setting two
 weeks (`AP_HOLD`, like Undo: a hold blocks only loosening), marks the matching last step judged and the last change undone (so
 Undo and the weekly review cannot put it back), and logs it ("you put X back to its start: a → b. It stays there for 2 weeks").
-Exit knobs: the group's own `lv` value is taken away, the start is in force, a `reset` history entry and a `knob:<group>:<name>`
+Exit knobs: the group's own `lv` value is pinned to the start value on purpose (so smart_tune's looser number cannot show through), a `reset` history entry and a `knob:<group>:<name>`
 hold are written, in the knob file first (like `_ap_undo_knob`).
 
 Safety, all enforced in the engine, not the page:
