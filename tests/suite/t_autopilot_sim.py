@@ -737,7 +737,10 @@ if __name__ == "__main__":
     # for real; run A also presses Undo right after its first loosening, run B starts near the top of the ranges (the 150% / 100% ceilings)
     lrun = []
     for tag, seed, days, o in (("loosen_A", 1, 63, {"loosen": True, "undo_first_loosen": True}),
-                               ("loosen_B", 2, 49, {"loosen": {**LOOSEN_VALS, "stake_mult": 1.45, "cap_use": 0.95}})):
+                               ("loosen_B", 2, 49, {"loosen": {**LOOSEN_VALS, "stake_mult": 1.45, "cap_use": 0.95}}),
+                               # run C: only the bet-size / cap-use / share trio starts tightened, so the bar (which shares a week with
+                               # all three) can't take their slot and the result doesn't depend on who wins the rotation
+                               ("loosen_C", 3, 56, {"loosen": {k: v for k, v in LOOSEN_VALS.items() if k in ("share:@single", "share:@combo", "stake_mult", "cap_use")}})):
         r = Run(seed, "boom", days=days, **o); r.label = tag; r.run(); runs.append(r); lrun.append(r); show(r)
     for tag, o in (("master_off", {"master_off": True}), ("frozen", {"freeze": True}), ("fa_off", {"fa_off": True})):
         r = Run(1, "boom", days=12, loosen=True, **o); r.label = tag + "_loosen"; r.run(); runs.append(r); show(r); untouched(r, tag + "_loosen")
