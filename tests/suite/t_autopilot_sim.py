@@ -76,6 +76,8 @@ def edge(scen, lg, d):
     """How much better (or worse) than its price a bet of this league really does on sim day d."""
     if scen == "winning":
         return FREE[lg] + .08
+    if scen == "boom":
+        return FREE[lg] + .30
     if scen == "losing":
         return -.12 if d >= 18 else FREE[lg]
     if scen == "badweek":
@@ -93,10 +95,11 @@ def pday(t):
 
 # ------------------------------------------------------------------------------------------------ world
 def reset_world():
-    for t in ("panel", "fa_slots", "league_shadow_q", "sb_paper"):
+    for t in ("panel", "fa_slots", "league_shadow_q", "sb_paper", "expo_pos", "expo_pass"):
         E.store_x(f"drop table if exists {t}", ())
     E.STORE["panel_ok"] = False
-    E._panel_table(); E._fa_slot_table(); E._league_shadow_q_table(); E._sb_paper_table()
+    E.EXPO_STATE["db"] = None
+    E._panel_table(); E._fa_slot_table(); E._league_shadow_q_table(); E._sb_paper_table(); E._expo_tables()
     try:
         os.remove(E._fa_path())
     except OSError:
@@ -144,6 +147,43 @@ def seed_evidence(rng, scen, d):
                       "values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (f"sb{d}_{lg}_{j}", t0 + 1200 + j * 60, pday(t0), lg, lg, "single", "live", "cand", "stake", .5, .55, evv, 10.0, 5.0,
                        evv, round(5.0 * (1.0 if won else -1.0), 2), .01, t0 + 1200, f"g{d}{lg}{j}"))
+
+
+# the loosening runs start with every autopilot setting TIGHTENED (so there is room to loosen back), a brake that has been quiet for
+# 40 days, and extra settled evidence in every table the autopilot judges, built so each setting's next step has a real, positive edge.
+LOOSEN_VALS = {**{f"bar:{lg}": 1.0 for lg in LGS}, **{f"sbev:{lg}": 2 for lg in LGS}, "game_share": 0.20, "open_slots": 10,
+               "share:@single": 0.65, "share:@combo": 0.30, "stake_mult": 0.80, "cap_use": 0.65}
+
+
+def seed_loosen(rng, d):
+    """Settled evidence for day d for the bar (league_shadow_q), Smart Buy bar (sb_paper), per-game limit (expo_pos) and open-bet
+    limit (fa_slots) records, all of it clustered just past the current tightened values and winning most of the time."""
+    t0 = clock_of(d, 0)
+    for lg in LGS:
+        for j in range(6):
+            pct = round(rng.uniform(.950, .960), 4)
+            won = rng.random() < .85
+            E.store_x("insert into league_shadow_q(ts, league, sport, n, pct, stake, pays, cut_now, cut_blend, pass_now, pass_blend, outcome, pnl) "
+                      "values(?,?,?,?,?,?,?,?,?,?,?,?,?)", (t0 + 2000 + j * 30, lg, lg, 2, pct, 5.0, 5.0 / .45, 95.0, 95.0, 1, 1,
+                                                            "won" if won else "lost", round(5.0 / .45 - 5.0 if won else -5.0, 2)))
+        for j in range(4):
+            evv = round(rng.uniform(-.35, 0.0), 2)
+            won = rng.random() < .85
+            E.store_x("insert or replace into sb_paper(bet, ts, day, league, sport, kind, source, grade, role, price, fair, ev, pays, stake, plain, outcome, clv, at, game) "
+                      "values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                      (f"sx{d}_{lg}_{j}", t0 + 2400 + j * 30, pday(t0), lg, lg, "single", "live", "cand", "stake", .5, .55, evv, 10.0, 5.0,
+                       evv, round(5.0 if won else -5.0, 2), .01, t0 + 2400, f"gx{d}{lg}{j}"))
+    for j in range(4):
+        won = rng.random() < .85
+        E.store_x("insert or replace into expo_pos(pos, ts, day, league, kind, cost, bank, games, alloc, seed, blocked, net, settled, batch, own) "
+                  "values(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (f"xp{d}_{j}", t0 + 2800 + j * 30, pday(t0), "nba", "single", 5.0, BANK, json.dumps([f"x{d}_{j}"]),
+                   json.dumps({f"x{d}_{j}": round(rng.uniform(61, 89), 2)}), 0, "", 6.0 if won else -5.0, t0 + 3000, 1, 1))
+    for j in range(5):
+        won = rng.random() < .85
+        E.store_x("insert or replace into fa_slots values(?,?,?,?,?,?,?,?,?,?)",
+                  (f"xs{d}_{j}", t0 + 3200 + j * 30, pday(t0), "skip", rng.randint(10, 14), 5.0, 9.0, "[]", "won" if won else "lost",
+                   4.0 if won else -5.0))
 
 
 def make_items(rng, scen, d, win, n, t_lo, t_hi, small=False, late=False):
@@ -247,6 +287,9 @@ class Watch:
         self.steps = self.tight = self.loose = 0
         self.max_level = 0
         self.undone = None
+        self.logs = []                                   # every autopilot card line seen (step / revert / undo), with its evidence
+        self.cautious_at = None                          # the last moment the brake was cautious at a look
+        self.prev_cautious = False
 
     def v(self, msg):
         VIOL.append(f"[{self.label}] day {self.day}: {msg}")
@@ -278,18 +321,23 @@ class Watch:
             if fin(a) and fin(b) and abs(a - b) > 1e-9:
                 r = rec_of(k)
                 looser = E._ap_looser(r, a, b)
-                self.events.append({"t": wall, "key": k, "rec": r, "looser": looser, "a": a, "b": b, "level": self.prev_level, "lvl_after": lvl, "where": where, "day": self.day})
+                self.events.append({"t": wall, "key": k, "rec": r, "looser": looser, "a": a, "b": b, "level": self.prev_level, "lvl_after": lvl, "where": where,
+                                    "day": self.day, "cautious": self.prev_cautious, "cq": self.cautious_at})
                 if looser:
                     self.loose += 1
                 else:
                     self.tight += 1
         self.vals = vals
         self.prev_level = lvl
+        self.prev_cautious = E.ap_brake_cautious(st, wall)
+        if self.prev_cautious or lvl > 0:
+            self.cautious_at = wall
         for e in L.get("log") or []:                     # evidence behind every loosening step
             key = (e.get("at"), e.get("kind"), e.get("key"), e.get("text"))
             if key in self.seen:
                 continue
             self.seen.add(key)
+            self.logs.append(e)
             if e.get("kind") == "step":
                 self.steps += 1
         return st, L
@@ -313,6 +361,56 @@ class Watch:
             wk = [x for x in ev if e["t"] - 7 * DAY < x["t"] <= e["t"] and x["key"] != e["key"]]
             tot[len({x["key"] for x in wk} | {e["key"]})] = tot.get(len({x["key"] for x in wk} | {e["key"]}), 0) + 1
         return tot
+
+
+def step_size_ok(rec, a, b, looser):
+    """The exact size of one automatic step (a setting moves one notch, never more): bet size 5% of the CURRENT size, cap use / share
+    5 points, bar half a point, Smart Buy bar one level, per-game limit 2.5 points, open-bet limit one bet. A loosening that reaches the
+    start (or the range end) lands exactly on it; a share's tighter step may skip up to three notches that change nothing."""
+    f = E.FAL[rec]
+    if rec == "stake":
+        want = round(a * 1.05, 4) if looser else round(a * 0.95, 4)
+        return abs(b - min(max(want, f["lo"]), f["hi"])) < 1e-6
+    if rec == "share" and not looser:
+        return any(abs(b - round(a - n * f["step"], 4)) < 1e-6 for n in (1, 2, 3))
+    sign = E.AP_REG[rec]["sign"]                         # +1: a bigger number is tighter
+    want = a - sign * f["step"] if looser else a + sign * f["step"]
+    if looser and rec != "open" and (want - START[rec]) * sign < 0:
+        want = START[rec]                                # (never past the start; the open-bet limit may, up to Pete's own number)
+    return abs(b - min(max(want, f["lo"]), f["hi"])) < 1e-6
+
+
+def rules_check(r):
+    """The autopilot's own rules, from the saved numbers and card lines the Watch saw: one step per setting per week, exact step sizes,
+    no loosening without a gate-passing line, none while the brake was cautious or within 14 days of it (bet size / cap use), and the
+    open-bet limit never above Pete's number."""
+    w = r.w
+    ev = sorted(w.events, key=lambda e: e["t"])
+    for i, e in enumerate(ev):
+        tag = f"{e['key']} {e['a']}->{e['b']} on day {e['day']}"
+        match = [g for g in w.logs if g.get("key") == e["key"] and 0 <= e["t"] - g["at"] <= DAY and
+                 (g.get("kind") == "undo" or (g.get("ev") and abs(g["ev"].get("from", -9e9) - e["a"]) < 1e-6 and abs(g["ev"].get("to", -9e9) - e["b"]) < 1e-6))]
+        if not match:
+            r.v(f"{tag}: a setting moved with no card line explaining it")
+            continue
+        g = match[-1]
+        kind = g.get("kind")
+        if kind == "step":
+            if not step_size_ok(e["rec"], e["a"], e["b"], e["looser"]):
+                r.v(f"{tag}: not one exact notch")
+            if e["looser"] and not (g["ev"].get("stale") or (g["ev"].get("lb", 0) > 0 and g["ev"].get("hold", 0) > 0 and g["ev"].get("gain", 0) > 0)):
+                r.v(f"{tag}: loosened without gate evidence {g['ev']}")
+        if e["looser"] and kind in ("step", "revert") and (e["cautious"] or e["level"] > 0):
+            r.v(f"{tag}: loosened while the brake was cautious")
+        if e["looser"] and kind == "step" and e["rec"] in E.FAL_RISKY and e["cq"] is not None and e["t"] - e["cq"] < E.FAL_RISK["quiet"]:
+            r.v(f"{tag}: loosened only {(e['t'] - e['cq']) / DAY:.1f} days after the brake was last cautious")
+        if e["rec"] == "open" and e["b"] > MAXOPEN:
+            r.v(f"{tag}: the open-bet limit went above Pete's {MAXOPEN}")
+        for x in ev[:i]:                                 # one step per setting per week (an Undo is Pete's, not a step)
+            if x["rec"] == e["rec"] and e["t"] - x["t"] < 7 * DAY and kind != "undo":
+                gx = [h for h in w.logs if h.get("key") == x["key"] and 0 <= x["t"] - h["at"] <= DAY]
+                if not gx or gx[-1].get("kind") != "undo":
+                    r.v(f"{tag}: {x['key']} had already moved {(e['t'] - x['t']) / DAY:.1f} days earlier (one step per setting per week)")
 
 
 # ------------------------------------------------------------------------------------------------ one pass, checked
@@ -347,6 +445,11 @@ class Run:
         except Exception as err:
             self.v(f"fa_check raised {type(err).__name__}: {err}")
             level = 0
+        m_live, cu_live = E.ap_stake_mult(st0, level), E.ap_cap_use(st0)
+        if not (0.5 - 1e-9 <= m_live <= 1.5 + 1e-9) or (level and m_live > 1.0 + 1e-9):
+            self.v(f"the live bet-size multiple is {m_live} at brake level {level}")
+        if not (0.5 - 1e-9 <= cu_live <= 1.0 + 1e-9):
+            self.v(f"the live cap use is {cu_live}")
         vals0 = (st0.get("lessons") or {}).get("vals") or {}
         cu = vals0.get("cap_use", 1.0) if fin(vals0.get("cap_use", 1.0)) and E.fal_on(st0) else 1.0
         try:
@@ -410,6 +513,13 @@ class Run:
         scen, rng = self.scen, self.rng
         for dd in range(-45 if scen != "empty" else 0, 0):
             seed_evidence(rng, scen, dd)
+            if o.get("loosen"):
+                seed_loosen(rng, dd)
+        if o.get("loosen"):                              # start tightened, with a brake that has been quiet for 40 days
+            lv = o["loosen"] if isinstance(o["loosen"], dict) else LOOSEN_VALS
+            E._fa_update(lambda s: s["lessons"].setdefault("vals", {}).update(lv))
+        self.start_vals = dict((E.fa_state().get("lessons") or {}).get("vals") or {})
+        self.w.vals = dict(self.start_vals)               # (the seeded, tightened numbers are the starting point, not a change)
         if o.get("master_off"):
             E.fa_lessons_set(False)
         if o.get("freeze"):
@@ -424,6 +534,8 @@ class Run:
             SIM["t"] = SIM["wall"] = T
             if d > 0 and scen != "empty":
                 seed_evidence(rng, scen, d - 1)
+                if o.get("loosen"):
+                    seed_loosen(rng, d - 1)
             if o.get("undo_day") == d:
                 self.try_undo()
             paused = o.get("pause_days") is not None and d in o["pause_days"]
@@ -436,6 +548,8 @@ class Run:
                 self.v(f"fal_tick raised {type(err).__name__}: {err}")
             self.w.day = d
             self.w.look("tick")
+            if o.get("undo_first_loosen") and not self.undo2 and any(e["looser"] and e["day"] == d for e in self.w.events):
+                self.undo_now(d)
             put_panel("real", make_items(rng, scen, d, "a", 14 if small else 8, .6, 9, small=small, late=small), "draft")
             self.do_pass("p1", paused=paused)
             SIM["t"] = SIM["wall"] = clock_of(d, 2)
@@ -453,6 +567,27 @@ class Run:
         E.panel_settle()
         self.end_checks()
         return self
+
+    undo2 = None
+
+    def undo_now(self, d):
+        """Pete presses Undo right after the autopilot's first loosening: it must succeed, put the setting back where it was and hold it."""
+        L0 = (E.fa_state().get("lessons") or {})
+        ch = dict(L0.get("change") or {})
+        t = SIM["t"]
+        res = E.ap_undo(t)
+        self.w.look("undo")
+        L1 = (E.fa_state().get("lessons") or {})
+        vals = L1.get("vals") or {}
+        key = ch.get("key")
+        back = vals.get(key, START.get(rec_of(key), None)) if key else None
+        if not res[0] or not ch:
+            self.v(f"Undo of the first loosening failed: {res} (change {ch})")
+        elif abs(back - ch["from"]) > 1e-9:
+            self.v(f"Undo left {key} at {back}, not the previous {ch['from']}")
+        elif abs(float((L1.get("holds") or {}).get(key, 0)) - (t + E.AP_HOLD)) > 1.5:
+            self.v(f"Undo did not hold {key} for two weeks: holds={(L1.get('holds') or {}).get(key)}")
+        self.undo2 = {"t": t, "key": key, "res": res, "from": ch.get("from"), "to": ch.get("to")}
 
     def try_undo(self):
         st = E.fa_state()
@@ -501,8 +636,8 @@ class Run:
         for day, tot in by_day.items():
             if tot > CAP + 0.01:
                 self.v(f"day {day} totals ${tot} over the ${CAP:g} cap")
-        for k, tot in self.w.weekly().items():
-            pass
+        self.w.weekly()
+        rules_check(self)
         self.w.day = self.days
         self.stats["events"] = len(self.w.events)
         self.stats["loose"], self.stats["tight"] = self.w.loose, self.w.tight
@@ -563,6 +698,13 @@ def nothing_moves(r, what):
         VIOL.append(f"[{what}] settings moved or bets appeared: {len(r.w.events)} changes, {r.stats['bought']} bets")
 
 
+def untouched(r, what):
+    """A control run (master switch off, everything frozen, full auto off) that WOULD have loosened: it moved nothing at all."""
+    now_vals = dict((E.fa_state().get("lessons") or {}).get("vals") or {})
+    if r.w.events or now_vals != r.start_vals:
+        VIOL.append(f"[{what}] settings moved: {len(r.w.events)} changes, {r.start_vals} -> {now_vals}")
+
+
 def undo_check(r):
     if not r.undone:
         return
@@ -579,7 +721,7 @@ def undo_check(r):
 if __name__ == "__main__":
     T0 = REAL_TIME()
     runs = []
-    D = int(os.environ.get("D", "50"))
+    D = int(os.environ.get("D", "40"))
     plan = [("normal", 1), ("winning", 1), ("losing", 3), ("badweek", 1), ("small", 2)]
     for scen, seed in plan:
         r = Run(seed, scen, days=D, skew_day=40 if seed == 1 else None, pause_days={20, 21} if seed == 2 else None).run()
@@ -591,6 +733,20 @@ if __name__ == "__main__":
                 VIOL.append("[fa_off] full auto was off and bets were bought")
         if r.w.events:
             VIOL.append(f"[{tag}] {len(r.w.events)} autopilot settings changed")
+    # loosening runs: every setting starts tightened with a quiet brake and winning evidence in every table, so the autopilot loosens
+    # for real; run A also presses Undo right after its first loosening, run B starts near the top of the ranges (the 150% / 100% ceilings)
+    lrun = []
+    for tag, seed, days, o in (("loosen_A", 1, 63, {"loosen": True, "undo_first_loosen": True}),
+                               ("loosen_B", 2, 49, {"loosen": {**LOOSEN_VALS, "stake_mult": 1.45, "cap_use": 0.95}})):
+        r = Run(seed, "boom", days=days, **o); r.label = tag; r.run(); runs.append(r); lrun.append(r); show(r)
+    for tag, o in (("master_off", {"master_off": True}), ("frozen", {"freeze": True}), ("fa_off", {"fa_off": True})):
+        r = Run(1, "boom", days=12, loosen=True, **o); r.label = tag + "_loosen"; r.run(); runs.append(r); show(r); untouched(r, tag + "_loosen")
+        if tag == "fa_off" and r.stats["bought"]:
+            VIOL.append("[fa_off_loosen] full auto was off and bets were bought")
+        if tag != "fa_off" and not r.stats["bought"]:
+            VIOL.append(f"[{tag}_loosen] nothing was bought, so the control proves nothing")
+        if tag == "master_off" and r.stats["grown"]:
+            VIOL.append("[master_off_loosen] bets were bigger than normal with Autopilot off")
     r = Run(6, "losing", days=32, undo_day=26); r.label = "undo"; r.run(); runs.append(r); show(r); undo_check(r)
     r = Run(7, "empty", days=10); r.label = "empty"; r.run(); runs.append(r); show(r)
     corrupt_phase()
@@ -601,6 +757,15 @@ if __name__ == "__main__":
     ok("the soft brake reached a cautious level", any(r.w.max_level >= 1 for r in runs[:5]))
     ok("the daily-loss brake tripped", any(r.stats["brake_days"] for r in runs[:5]))
     ok("the daily cap was the limit at times", any(r.stats["cap_bound"] for r in runs[:5]))
+    loose_recs = {e["rec"] for r in lrun for e in r.w.events if e["looser"]}
+    for rec in E.AP_REG:
+        ok(f"the autopilot loosened its {rec} setting", rec in loose_recs, sorted(loose_recs))
+    ok("a loosening happened early enough for the 12-day controls to prove something",
+       any(e["looser"] and e["day"] <= 10 for e in lrun[0].w.events))
+    ok("Undo restored the previous value and held it two weeks", bool(lrun[0].undo2 and lrun[0].undo2["res"][0]), lrun[0].undo2)
+    hold = lrun[0].undo2 or {}
+    again = [e for e in lrun[0].w.events if e["key"] == hold.get("key") and hold.get("t", 0) < e["t"] < hold.get("t", 0) + E.AP_HOLD]
+    ok("the undone setting did not move again inside its 2-week hold", not again, again[:1])
     for x in VIOL[:40]:
         print("VIOLATION " + x)
     ok("no invariant breach in %d simulated passes" % sum(r.stats["passes"] for r in runs), not VIOL, VIOL[:3])
