@@ -27620,10 +27620,13 @@ def _sl_replay(c, path, prog, drop, cf=None, hair=False, when=None):
 def _cut_guard_ts(c, slp, loss, prog=None, drop=None, cf=None):
     """The times at which the learned loss cut's guards held for this bet (the same as live: under the cut-off and
     every stop-loss guard, confirmed), so the replay that learns the cut only cuts where live would have. With no
-    prog/drop given, the league's current stop-loss settings."""
-    if not loss or not slp or len(slp) < SL_CHECKS:
-        return set()
+    prog/drop given, the league's current stop-loss settings; with no cf (checks, span, gap) given, the confirmation counts
+    live uses for this bet's league (sl_confirm_params, #316), so the replay never cuts where live would still be waiting."""
     tks = [l["ticker"] for l in c["legs"]]
+    if cf is None:
+        cf = sl_confirm_params(tks)
+    if not loss or not slp or len(slp) < cf[0]:
+        return set()
     if prog is None or drop is None:
         pr = stoploss_params(tks)
         prog, drop = pr["prog"], pr["drop"]
