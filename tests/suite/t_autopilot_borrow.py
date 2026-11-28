@@ -22,6 +22,8 @@ E._held_all = lambda: []
 E.panel_record = lambda: {"paper": {"ready": True, "bets": 60, "pl": 40.0, "days": 20, "days_up": 14, "clv": 0.01}, "real": {}}
 ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 NOW = time.time()
+for _r in ("stake", "capuse"):   # step 7 has its own test (t_autopilot_stake)
+    E.AP_REG.pop(_r, None)
 DAY = 86400
 
 
