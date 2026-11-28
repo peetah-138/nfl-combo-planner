@@ -215,7 +215,7 @@ Real money is involved. Pete uses it daily.
   repeated 2026-11-20: "Release on your own"):** that session may release whenever there is enough green in develop,
   without asking each time. All other gates still apply: code review and security review on the release diff, green
   checks, matching versions, screenshots to Pete for visual changes, no new automatic money movement without his opt-in.
-- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.27.146`. Each release bumps N (N keeps
+- **Version numbers** are unchanged: `YYYY.MM.DD.N`, currently `2026.11.27.147`. Each release bumps N (N keeps
   counting up, it isn't reset) in all three places, which must match: `VERSION` in
   `nfl_combo_planner.py`, `WATCHER_VERSION` in `watcher/combo_watcher.py`, and `version.txt`. Only the release PR
   bumps it; feature PRs don't.
@@ -1780,6 +1780,72 @@ cap, the free bankroll, what is left before the daily loss limit, the panel budg
 - Audit of the old no-money backlog: #246, #112 (cap message), #453, #353 (client half), #304, #283 (tint, fold, quiet test
   push) were already shipped in #535 #552 #560 #593 #598, so they were not touched again.
 
+**Release 147: No-money wording nits from release 146 (#633 part a); display and wording only.**
+
+Display and wording only; no buying, selling, sizing, limit, gate or data change.
+
+- `_fal_val_text`: bet size and cap-use steps print whole percents (90%, not 90.3%); the underlying value is unchanged.
+- `_fal_name`: the Mix league's budget share reads "mixed-sports budget share" (was "Mixed budget share").
+- Full-auto card, cap used up: "Today's spending cap is used up: $X of $Y spent." then, when it applies, "Autopilot has cut it to N% of your usual $Z." or "Autopilot only lets it use N% of your usual $Z."
+- Brake step reason: "this setting tightens one step now instead of waiting for its weekly turn" (was "right away").
+- `fullauto.js`: the Freeze button's `x.rec` is escaped in its onclick.
+- `money()` already prints -$3.50 (shipped earlier); an exact test now pins it.
+- #246 and #283 were already shipped (44px buttons, toast role=button, data-num on the panel numbers, split registry intro, Changed row folds "where it stands"); closed with a note.
+- Tests: `tests/suite/t_fullauto.py` (exact strings).
+
+**Release 147: #632 Loss room stops full auto at any stake size.**
+
+- `_full_auto_pass`: after `_fa_sized`, every bet goes through new `_fa_loss_fit(stake, left)`, where `left` is the day's loss room
+  (`day_loss + loss_today - spent`) minus what this pass already took. A bet that fits is unchanged, one that does not is trimmed
+  to the room (to the cent), and a room under the $2 panel minimum (or empty, or not a number) leaves the bet out. So a normal-size
+  $10 bet with $3 of room is bought at $3, with $0 it is not bought, and the room shrinks bet by bet inside one pass.
+  Before, only grown stakes (150% size) were held to the room; `_fa_sized` never goes below the normal stake.
+- Fail closed: a missing, non-numeric or non-finite `day_loss` / `loss_today` / `spent` logs and approves nothing this pass.
+- `money()` (planner, ~line 578) now prints negatives as `-$3.50`, not `$-3.50` (#628 had switched a message to this helper).
+- Copy: "eases off right away" now says it tightens that setting one step right away.
+- Unchanged: $30 cap, $300 bankroll, Pause, the daily-loss brake.
+- Tests: `t_autopilot_stake.py` section 13 (exact values for rooms $3, $0, $1.99, $11, $14, $15, $20, 150% size, unreadable data, money()).
+
+**Release 147: Autopilot follow-ups (#633 money half, #592).**
+
+Fixed (all fail-closed; nothing here adds spending or loosens anything):
+- #592 `_sl_tune` (the legacy stop-loss mover that writes `sl_prog` / `sl_drop` into smart.json) is now tighten-only, like the
+  stepper (#590): it only tries the same value or one step UP (a later "not before" point, a bigger fall), never down, and a value
+  already outside its bounds is never pulled down. Before, it could step 0.50 -> 0.45 / 0.20 -> 0.15 on a good-looking replay.
+- Open-slot evidence (`fa_slot_skips` and its caller) is sized by `_fa_sized` like the live buy pass: autopilot's bet-size multiple,
+  the day's loss room (`_fa_loss_fit`) and the panel budget now count, each as if the bets before were bought. Unreadable numbers
+  log and record nothing.
+- Share evidence (`_share_load`) judges against the live cap (Pete's cap x the brake's cap cut x autopilot's cap use), not his plain
+  cap. The brake level is read from the saved state; an unreadable level reads as the smallest cap (`_fa_level_saved`).
+- A step that tightens because the soft brake stepped in no longer waits a week behind a bar/share/size/cap-use step
+  (`_ap_brake_tighten`). A tightening from a losing month still waits, as before; loosening is unchanged.
+
+Already fixed in #635, skipped: `money()` negatives (`-$3.50`), the "eases off right away" wording.
+Left alone (not money, display only): other copy nits, `fullauto.js` onclick escape (fixed server value). The $30 per-bet bound
+still comes from the daily cap room (`s <= room`), unchanged ($30 cap, $300 bankroll, $20 loss limit, Pause, Pi never trades).
+Not done: an `_sl_tune` value already written below the default in an old smart.json is still served; only new moves are tighten-only.
+Tests: `t_autopilot_633b.py` (exact values; fails without each fix).
+
+**Release 147: Buy-timing data (issue #8, autopilot step 8): record only.**
+
+What was already logged per bet (panel items in the `panel` table, real, paper and lab): kick time, `bought_at`, price at
+build (`legs[].p`), price paid (`paid`/`price`, or `pays` for a combo), `clv` (game-time mid vs the build price, set when the
+game starts, never for live buys), result, `pl` (held to the end, fee in) and `pl_real` (Kalshi's fills). The scoreboard
+already shows ROI and CLV by four hours-before buckets, but only as a transient view. Not logged: a flat row to query,
+full auto vs Pete's bet, fees, CLV against the price actually paid, a retention bound.
+
+Added (no behavior change):
+- `timing_log` table (one row per bought panel bet): hours before start, bucket (`live`, `lt1h`, `1-6h`, `6-24h`, `24h+`),
+  full-auto flag, league, kind, price at build, price at buy, game-time close, CLV on build and on buy, stake, fees (ledger,
+  real bets), result, pl, pl_real. Written by `timing_log_pass`, called at the very end of `panel_settle` (every 5 minutes),
+  never from the buy path. It uses only data already on disk (no Kalshi or other network call). Every failure is swallowed and
+  printed to the console only. Bounded: at most 200 rows written a pass, rows older than 120 days or beyond 20,000 trimmed hourly.
+- `tools/timing_report.py` (read-only, `--db FILE` or `--prod`): net dollars after fees, ROI, CLV and sample size by bucket
+  and by league, real and paper apart, groups under 20 settled bets flagged TOO FEW. Falls back to the saved panel bets when
+  `timing_log` is empty, so it also covers history from before this change (full-auto flag and fees unknown there).
+- Skipped ideas are not duplicated: the gate's skips are already scored with price, kick and result in `exit_shadow`.
+- Tests: `tests/suite/t_timing_log.py` (bucket boundaries to the second, missing data, rows, idempotence, trimming, failures never raise).
+
 ### Selling: smart sell everywhere
 - Smart sell runs on **every bet**: combos, singles, spreads, totals — the app's and ones Pete places on Kalshi
   himself — each with a per-bet switch on Live: "🤖 Smart sell" / "✋ I'll sell it" (`combo_selfsell.json`).
@@ -3123,6 +3189,22 @@ masked, blobs not sent; a bad question is a 400 with a short JSON reason. It nev
 
 Data window hardening: credential-named columns read as NULL (authorizer), rows read one at a time with a byte budget, 64 KB value limit, sql= refused when SQLite limits are unavailable, no printf/format/replace/char/hex/quote; web-push endpoint URLs, topic and endpoint values are masked. The column mask is best-effort (shape-based).
 
+**Release 147: #316 sell follow-up (item 3); items 4-5 and #382 wording checked.**
+
+- **Item 3 (fixed):** `_cut_guard_ts` (the replay that learns the loss cut, used by `smart_tune` and `sim_exit`) now confirms with
+  `sl_confirm_params(tickers)` (the league's live checks / span / gap) when no counts are passed, and its "too few ticks" test
+  uses those checks. Before, it used the starting constants. Learned counts can only be as strict as or stricter than the start
+  (their minimum is the start), so the replay now cuts the same or less often, never more. A caller that passes `cf`
+  (the knob judge) is unchanged.
+- **Item 4 (not done):** a tighten-only relay guard would stop Pete's own Allow from reaching the seller (it only gets settings via the relay). It needs a deliberate 'loosened now' signal from his own save; tracked in a new issue.
+- **Item 5 (skipped, already fixed):** an automatic sale that is not a loss cut passes `_CASH_CTX.cost_floor` to
+  `_accept_with_retries` (profit-taking sales never retry below cost, net of fee); a loss cut keeps 97% of its first offer.
+  Pete's own Cash out tap still retries to 97% of the price he confirmed (his decision, left alone).
+- **#382 wording (skipped, moot):** the "Never sell at a loss" choice was removed (#479); no label or explainer still offers it,
+  and the retry wording (`below_cost`, auto cash-out explainer) already describes the profit/loss-cut rules.
+- Unchanged: $300 bankroll, $30 cap, $20 loss limit, Pause, Pi never trades. Nothing here adds spending or sells more.
+- Tests: `t_sell_followups316.py` (exact guard times under live counts of 3, 4, 5, a 300 s span, 99).
+
 ### Live page
 - **Buy idea cards say which game they are for (GitHub #129, display only).** `live_suggestions` adds, per idea, `league_name`,
   `icon`, `legs_info` (per leg: matchup "Away at Home" / "A vs B" when home and away aren't known, plain pick "wins by 8 or
@@ -3726,6 +3808,40 @@ The Games page has no league filter or tabs, so there was none to keep working.
 How: `api_games` (watcher) adds `start_ts` (epoch seconds from the engine's `start_dt`, the same start the game page uses;
 null when unknown) and sorts by the same rule; `renderGames` (`spa/games.js`) sorts again with `gameOrder`, so the page does
 not depend on the server's order. Test: `tests/suite/test_games_sort.py`.
+
+**Release 147: Games and Build phone polish (display only).**
+
+Gaps found at 390px (before/after shots in `~/dev/wt/screens/polish-games-ui/`):
+
+- Games cards were busy: a big dash where the chance isn't known yet, a loud blue YOURS badge, "$ riding" jammed against the bet chips.
+- The board put two teams side by side, so names were cut ("Bosto...", "Den...") and price and fair chance were tiny.
+- The combo tray was a bright blue bar with a cut-off sentence.
+
+Changed (markup, CSS and labels only; no pricing, buying, selling, sizing or data code):
+
+- Games card: rounder, quieter header, chance shown as one pill (or hidden when unknown), footer "$X riding" on the left and "Open game ›" on the right.
+- Board: one calm card per game, teams stacked with full names, a thin bar under each sized by its fair chance (the number already shown).
+- Combo tray: dark card with "YOUR COMBO" (or "YOUR BET"), a plain headline that wraps instead of cutting, 44px buttons.
+
+Not done: a sideways-scrolling chip row (tried; the haptic-switch rules forbid sideways-scrolling strips of switches, tests test_hsw and test_chips_stay), a Moneyline/Total/Spread chip row (we have no bet-type filter; that is a feature), team marks/records, volume in the footer.
+
+**Release 147: Games and Build phone polish, round two (display only).**
+
+Before/after phone shots (390px, light and dark): `~/dev/wt/screens/polish-games-2/`.
+
+Changed (markup, CSS and one client-side filter; no pricing, buying, selling, sizing, limits, gates or data code):
+
+- **Bet-type chips on Games** (`All`, `Moneyline`, `Total`, `Spread`, each with a count). A sideways row that scrolls inside itself, the selected chip outlined, 44px tall.
+  It only hides cards you already have, by the kind of bet on them. A chip shows only when a card of that kind exists, and the whole row only when there is a choice.
+  The row is added to `HSWX` (sideways strips get no see-through haptic switches, scrolling first, as the game page's tabs do), so `test_hsw` and `test_gtabscroll` keep their meaning; the chips still press and tick through the normal tap feedback. No test needed changing.
+- Games loading state: a heading placeholder and shimmering card placeholders. One 12px gap between cards (was 14px, the Build board used 12px).
+- Build board: each game card's league and start time share one line (was two).
+
+Not done, and what is missing:
+
+- **Team Total chip, and Total/Spread chips on the Build board:** the Build board only carries moneyline sides (`board[].sides`); spread/total prices are not in that payload (`lines` is sent but unused by the page). A real chip row there needs the board to carry those markets: server work, a feature.
+- **Team records (e.g. 3-8):** not in the Games or Build payloads. Records exist only in the game page's ESPN summary (`game_detail`, per game, fetched when a game is opened). Needs the scoreboard feed's `record` carried into `sc` / the board.
+- **Game volume in the card footer:** Kalshi volume is stored per quote row in the engine's database, but not sent to Games or Build. Needs a field added to `api_games` / the board.
 
 #### Polish 143: hedge card words and a shorter Settings page (issues #572, #574)
 
