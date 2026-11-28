@@ -98,6 +98,26 @@ r = E.timing_row("real", "d", dict(single, kick=K, bought_at=K + 600), set(), {"
 ok("bought after the start without the live flag: live, no close or CLV", r["live"] == 1 and r["bucket"] == "live"
    and r["close"] is None and r["clv_buy"] is None, r)
 
+# 3c. fee shares cover every real buy of the ticker on file (rows live 120 days, the write window is 10), and bad stakes fail closed
+import datetime as _dt
+E.store_x("delete from timing_log"); E.store_x("delete from panel")
+E.store_x("update ledger set fees=0.50, sell_fees=0.10 where ticker='KXNBAGAME-A'")
+oldday = (_dt.datetime.now(E.PACIFIC).date() - _dt.timedelta(days=30)).isoformat()
+b_old = dict(a1, id="bo", stake=2.0, kick=past - 30 * 86400, bought_at=past - 30 * 86400 - 2 * H)
+b_new = dict(a1, id="bn", stake=6.0)
+E.store_x("insert into panel values(?,?,?,?,?)", (oldday, "real", now, "approved", json.dumps({"at": now, "items": [b_old]})))
+E.store_x("insert into panel values(?,?,?,?,?)", (day, "real", now, "approved", json.dumps({"at": now, "items": [b_new]})))
+E.timing_log_pass(now)
+ok("an older buy outside the 10-day window still takes its share (6/8 of 0.60 = 0.45)",
+   E.store_rows("select fees from timing_log where key=?", (f"real|{day}|bn",))[0]["fees"] == 0.45)
+for label, st_a, st_b in (("NaN stake", float("nan"), 3.0), ("text stake", "abc", 3.0), ("all stakes 0", 0, 0), ("missing stake", None, 3.0)):
+    E.store_x("delete from timing_log"); E.store_x("delete from panel")
+    x1, x2 = dict(a1, id="x1", stake=st_a), dict(a1, id="x2", stake=st_b)
+    E.store_x("insert into panel values(?,?,?,?,?)", (day, "real", now, "approved", json.dumps({"at": now, "items": [x1, x2]})))
+    n = E.timing_log_pass(now)
+    fe = [r["fees"] for r in E.store_rows("select fees from timing_log order by key")]
+    ok(f"{label}: the pass still writes both rows and the fee is split in equal parts (0.30 + 0.30)", n == 2 and fe == [0.3, 0.3], n, fe)
+
 # 4. bounded storage
 E.store_x("delete from timing_log"); E.store_x("delete from panel")   # (no bought bets left to write)
 for i in range(5):

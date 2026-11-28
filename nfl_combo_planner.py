@@ -24153,6 +24153,26 @@ def _timing_trim(now):
             (TIMING["max_rows"],))
 
 
+def _timing_stake(c):
+    """A bet's stake as a finite number >= 0, else None (unreadable)."""
+    try:
+        v = float(c.get("stake"))
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v >= 0 else None
+
+
+def _timing_fee_part(fee, stakes, mine):
+    """This bet's part of one ticker's ledger fee when `stakes` (one per real buy of it) share it: by stake, or in equal parts
+    when any stake is unreadable or they all are 0, so the parts always add up to the fee, never more. None when unreadable."""
+    n = len(stakes)
+    if n <= 1:
+        return fee
+    if any(v is None for v in stakes) or sum(stakes) <= 0:
+        return fee / n
+    return fee * mine / sum(stakes) if mine is not None else None
+
+
 def timing_log_pass(now=None, log=console_note):
     """Write or refresh the timing rows for the last TIMING["days"] days of panel bets. Returns rows written. Never raises."""
     try:
@@ -24182,10 +24202,26 @@ def timing_log_pass(now=None, log=console_note):
         closes = close_prices(sorted(tks), mid=True) if tks else {}
         led = {r["ticker"]: (r["fees"] or 0) + (r["sell_fees"] or 0) for r in store_rows("select ticker, fees, sell_fees from ledger")} \
             if STORE.get("ledger_ok") else {}
-        shares = {}                                       # (#640) one ticker bought twice: its fees are split by stake, not counted twice
-        for m_, _, c in items:
+        # (#640) one ticker bought twice: its ledger fees are split across ALL its real buys still on file (the rows are
+        # kept TIMING["keep"] long, longer than the write window), by stake; an unreadable stake or all-zero stakes: equal parts
+        wts, counted = {}, set()
+
+        def _count(m_, d_, c):
+            tk = _panel_ticker(c) if isinstance(c, dict) else None
+            k_ = (m_, d_, c.get("id")) if tk else None
+            if tk and c.get("id") and c.get("state") == "bought" and k_ not in counted:
+                counted.add(k_)
+                wts.setdefault(tk, []).append(_timing_stake(c))
+        for m_, d_, c in items:
             if m_.startswith("real"):
-                shares[_panel_ticker(c)] = shares.get(_panel_ticker(c), 0.0) + float(c.get("stake") or 0)
+                _count(m_, d_, c)
+        try:
+            for r_ in store_rows("select day, mode, body from panel where mode like 'real%' and day >= ?",
+                                 ((dt.datetime.now(PACIFIC).date() - dt.timedelta(seconds=TIMING["keep"])).isoformat(),)):
+                for c in json.loads(r_["body"]).get("items", []):
+                    _count(r_["mode"], r_["day"], c)
+        except Exception:
+            pass                                          # the recent bets above still count
         have = {r["key"]: tuple(r[k] for k in _TIMING_WATCH) for r in
                 store_rows("select key, " + ",".join(_TIMING_WATCH) + " from timing_log where ts >= ?", (now - TIMING["keep"],))}
         wrote = 0
@@ -24193,9 +24229,8 @@ def timing_log_pass(now=None, log=console_note):
             if wrote >= TIMING["batch"]:
                 break
             fee = led.get(_panel_ticker(c)) if mode.startswith("real") else None
-            tot = shares.get(_panel_ticker(c)) or 0.0
-            if fee is not None and tot > 0 and float(c.get("stake") or 0) < tot:
-                fee = fee * float(c.get("stake") or 0) / tot
+            if fee is not None:
+                fee = _timing_fee_part(fee, wts.get(_panel_ticker(c)) or [], _timing_stake(c))
             row = timing_row(mode, day, c, auto, closes, round(fee, 4) if fee is not None else None, now)
             if not row or have.get(row["key"]) == tuple(row[k] for k in _TIMING_WATCH):
                 continue
