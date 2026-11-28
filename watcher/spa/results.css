@@ -26,3 +26,25 @@ main.arrived .bars2 .tr2 i{animation:grow .7s var(--out) both}@keyframes grow{fr
 
 /* #290: Smart Buy league lines: calmer second line, and more readable grey than the default muted text */
 .sbl .m,.sbl .sbbar{color:var(--sub)}.sbbar .sbheld{margin-top:2px}
+
+/* Results polish (display only): profit tile first, then four equal tiles; labels never wrap to three lines; 44px taps */
+.kpis.rk{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:14px}
+.kpis.rk .kpi{padding:14px 16px;display:flex;flex-direction:column;gap:2px;min-height:84px}
+.kpis.rk .kpi span{font-size:12px;letter-spacing:.02em}
+.kpis.rk .kpi b{font-size:24px;margin-top:2px;font-variant-numeric:tabular-nums}
+.kpis.rk .kpi.rkh{grid-column:1/-1;min-height:0;padding:18px 18px 16px}
+.kpis.rk .kpi.rkh b{font-size:38px;line-height:1.05;letter-spacing:-.035em}
+.kpis.rk .kpi .rkn{display:block;margin-top:4px;color:var(--sub);font-size:13px;font-weight:500}
+.kpis.rk .kpi.skel{height:84px}.kpis.rk .kpi.skel.rkh{height:112px}
+@media (min-width:900px){.kpis.rk{grid-template-columns:repeat(4,minmax(0,1fr))}}
+/* history rows: result first and boldest, then what was paid and returned, aligned in three columns */
+.hn.rs{display:grid;grid-template-columns:1.1fr 1fr 1fr;gap:8px}
+.hn.rs span{display:flex;flex-direction:column;gap:1px;min-width:0}.hn.rs i{font-style:normal;font-size:11px;color:var(--mute);font-weight:600}
+.hn.rs b{font-variant-numeric:tabular-nums;font-size:13.5px}.hn.rs .res b{font-size:16px;font-weight:800;letter-spacing:-.02em}
+.hn.rs b.up{color:var(--yes)}.hn.rs b.down{color:var(--no)}
+/* filters: 44px targets (the rows stay wrapped: haptic switches never sit in sideways-scrolling strips) */
+.hfilters .chip{min-height:44px;display:inline-flex;align-items:center}
+.hsort{min-height:44px}
+.plc .rng2 button{min-height:44px;min-width:44px;padding:4px 10px}
+.seg.ant button{min-height:44px}
+.kpis.rk .kpi .rkn span{display:inline;font-size:inherit;font-weight:inherit;color:inherit;letter-spacing:0;white-space:normal}

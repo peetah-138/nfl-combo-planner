@@ -461,6 +461,7 @@ def run_warm(pg, label):
     pg.evaluate("go('games')")
     if not until(pg, "document.querySelectorAll('#main .gc').length===4", 8):
         return [label + ": the Games cards didn't draw"]
+    pg.evaluate("S.lastLoad=Date.now()+3600000")   # hold the page's 5 s fallback poll off: its redraw would re-warm mid-test
     pg.wait_for_timeout(1600)
     if sorted(calls) != sorted([TK, "KXNFLGAME-26NOV20DALPHI-DAL"]):
         probs.append(label + ": showing the cards should warm the two LIVE football games only, once each: " + repr(calls))
@@ -471,6 +472,7 @@ def run_warm(pg, label):
     if len(calls) != n:
         probs.append(label + ": a hover, a press and a redraw within a minute must not warm the same game again (%d -> %d)" % (n, len(calls)))
     # a press on a card that was not warmed at render (the page's own cap) warms it; a non-football or pre-game card never does
+    pg.evaluate("S.lastLoad=Date.now()+3600000")
     pg.evaluate("S.warm={};S.warmN=[]")
     pg.hover("#main .gc[data-gk='KXNBAGAME-26NOV20LALBOS-LAL']"); pg.wait_for_timeout(400)
     pg.hover("#main .gc[data-gk='KXNFLGAME-26NOV22KCDEN-KC']"); pg.wait_for_timeout(400)
