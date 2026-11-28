@@ -98,7 +98,7 @@ reset_state()
 p = fresh(6)
 stakes = [c["stake"] for c in p["items"]]
 cap = round(stakes[0] + stakes[1] + 0.5, 2)
-E.fa_set(True, limits={"cap": max(2, cap), "max_open": 30})
+E.fa_set(True, limits={"cap": max(2, cap), "max_open": 30, "day_loss": 100})   # (#632) this scenario tests the cap; the loss room has its own tests
 res = E.full_auto_pass(now=time.time())
 sp = E.panel_get("real")
 live = [c for c in sp["items"] if c["state"] == "scheduled"]
@@ -117,7 +117,7 @@ ok("the card says the cap is used up", v["room"] < 2.0 and any("spending cap is 
 # ---- room under the cap: extras are added through panel_add
 reset_state()
 p = fresh(2)
-E.fa_set(True, limits={"cap": 100, "max_open": 30})
+E.fa_set(True, limits={"cap": 100, "max_open": 30, "day_loss": 100})
 E.full_auto_pass(now=time.time()); E.panel_exec()
 n1 = len(BOUGHT)
 X1 = mk("X1", "KXNBAGAME-X1", .72, .50, now + 9000)
