@@ -89,6 +89,8 @@ def t_line_pass():
         return [{"ticker": tk, "event": ev, "pick": "LLL -3.5", "p": 0.40, "fair": 0.50, "edge": 0.09, "kind": "spread",
                  "book_line": -3.5, "start": state["start"]}]
     for k, v in dict(line_candidates=cands, book_depth=lambda t, max_age=60: {"thin": False, "ask": 0.40, "ask_size": 500},
+                     books_now=lambda ts, budget=None: {t: [] for t in ts}, _manual_base=lambda: 0.0,
+                     _line_rec_one=lambda code, x, base, now, asks: ({"n": 50}, None),   # the Build page's checks pass (own tests)
                      edge_stake=lambda *a: 5.0, _alert=lambda alert, msg, *a: alerts.append(msg)).items():
         setattr(E, k, v)
     E.line_pass("nba", alert="topic", log=lambda *a: None)

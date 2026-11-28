@@ -192,9 +192,11 @@ ok("smart sell single: a 9c gap is too thin, nothing sold", not SENT)
 # spread/total idea loops skip that bet and send no alert (before, only a thin book was skipped)
 _cand = {"ticker": T, "pick": "Knicks", "p": 0.40, "fair": 0.55, "edge": 0.12, "kind": "spread", "book_line": -3.5,
          "event": "EV1", "start": "2099-01-01T00:00:00Z", "opp": "x"}
-_names = ("line_candidates", "single_candidates", "book_depth", "load_book_state", "week_games", "fetch_markets",
+_names = ("books_now", "_line_rec_one", "line_candidates", "single_candidates", "book_depth", "load_book_state", "week_games", "fetch_markets",
           "attach_fair", "maker_pass", "screen_live", "injury_note")
 _saved = {k: getattr(E, k) for k in _names}
+E.books_now = lambda ts, budget=None: {t: [] for t in ts}
+E._line_rec_one = lambda code, x, base, now, asks: ({"n": 50}, None)   # the Build page's own checks pass (tested apart)
 E.line_candidates = lambda code: [dict(_cand)]
 E.single_candidates = lambda games, live_ok=(), min_fair=0.2: [dict(_cand, kind="single")]
 E.load_book_state = lambda snap: {}
