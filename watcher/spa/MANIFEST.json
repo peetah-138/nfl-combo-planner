@@ -24,10 +24,12 @@
     "update.css",
     "live.css",
     "motion4.css",
+    "press.css",
     "motion3.css"
   ],
   "js": [
     "common.js",
+    "press.js",
     "betlabel.js",
     "stake.js",
     "live.js",

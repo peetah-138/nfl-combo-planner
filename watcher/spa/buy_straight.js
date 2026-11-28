@@ -50,7 +50,7 @@ async function sbBuy(b){const s=S.sb,q=s&&s.q;if(!q||s.sending||b.disabled)retur
  if(q.x||Date.now()/1000-q.at>=q.secs){sbQuote();return;}
  if(q.cost>q.arm&&b.dataset.sure!=='1'){b.dataset.sure='1';b.classList.add('arm');b.textContent=`Tap again to buy ${m2(q.cost)}`;hap('warning');
   setTimeout(()=>{if(b.isConnected&&b.dataset.sure==='1'&&!s.sending){b.dataset.sure='';sbPaint();}},4000);return;}
- s.sending=true;b.disabled=true;b.classList.remove('arm');b.innerHTML='<span class="spin" aria-hidden="true"></span> Buying… confirming with Kalshi';
+ s.sending=true;b.classList.remove('arm');fbPend(b,'Buying… confirming with Kalshi');
  let r;try{r=await api('/app/api/act',{a:'singlebuy',t:q.t,q:q.q,anyway:!(q.clears&&!q.blocked),cost:q.cost});}
  catch(e){r={ok:false,check:true,msg:'Lost contact with your Mac while buying, so this may or may not have gone through. Check Live in a minute before trying again.'};}
  s.sending=false;q.used=1;clearInterval(S.sbT);if(r.ok&&S.view==='live')load('live',true).catch(()=>{});
