@@ -1,5 +1,7 @@
 const TOK="__CWTOK__",LOCAL=__CWLOCAL__,PAGE_VER="__CWVER__";
 const $=s=>document.querySelector(s);
+/* Browser refresh pacing (our own server only; a hidden tab never polls). */
+const TICK_GATE_MS=1500,POLL_EVERY_MS=5000,POLL_SSE_SKIP_MS=30000,POLL_NOSSE_SKIP_MS=4000,FG_RELOAD_MIN_MS=5000;
 const apiRaw=(p,b)=>fetch(p,b===undefined?{credentials:'same-origin',headers:{'X-CW':TOK}}:{method:'POST',credentials:'same-origin',headers:{'X-CW':TOK,'Content-Type':'application/json'},body:JSON.stringify(b)}).then(r=>{if(r.status==403){location.href='/';throw 0;}netUp(r.ok||r.status<500);return r.json().then(rsSee);},e=>{netUp(false);throw e;});
 /* Every POST in flight is counted (update.js never reloads under one), and a money result holds a reload for 15 s so its message can be read. */
 const VER_HOLD_ACTS=['buy','go','hedgego','singlebuy','pot_move','panel_approve','panel_add','panel_cancel','panel_restart'];
