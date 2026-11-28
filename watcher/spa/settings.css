@@ -1,7 +1,7 @@
 /* settings */
 .set{display:grid;grid-template-columns:210px minmax(0,820px);gap:32px;justify-content:center}.set>*{min-width:0}
 .sidx{position:sticky;top:86px;align-self:start;display:grid;gap:2px}
-.sidx .sj{display:flex;align-items:center;gap:10px;padding:8px 12px;border:0;background:none;border-radius:9px;color:var(--sub);font:inherit;font-weight:600;font-size:13.5px;text-align:left;cursor:pointer}
+.sidx .sj{min-height:44px;display:flex;align-items:center;gap:10px;padding:8px 12px;border:0;background:none;border-radius:9px;color:var(--sub);font:inherit;font-weight:600;font-size:13.5px;text-align:left;cursor:pointer}
 .sidx .sj:hover{background:var(--panel2);color:var(--ink)}.sidx .sj .js{display:none}.sidx .sv{margin-top:14px;padding:0 12px;color:var(--mute);font-size:12px}
 .shead{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin:2px 0 18px}.shead h1{margin:0;font-size:24px;letter-spacing:-.02em}
 .shead p{margin:4px 0 0;color:var(--mute)}.saved{margin-left:auto;font-size:12.5px;font-weight:700;color:var(--mute);display:flex;align-items:center;gap:7px}
@@ -14,7 +14,7 @@
 .sfold .ic{flex:none;width:22px;text-align:center}.sfold .st{flex:1;min-width:0}
 .sfold .sbadge{flex:none;max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mute);font-size:12.5px;font-weight:600;letter-spacing:0}.sfold .sbadge:empty{display:none}
 .sfold .chev{flex:none;display:inline-block;width:16px;color:var(--mute);font-weight:400;transition:transform .28s var(--spring)}.sfold[aria-expanded=false] .chev{transform:rotate(-90deg)}
-.scard.shut>header p{display:none}.scard{transition:margin-bottom .3s var(--ease)}.scard.shut{margin-bottom:12px}
+.scard.shut>header p{padding-bottom:12px;margin-top:-10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.scard{transition:margin-bottom .3s var(--ease)}.scard.shut{margin-bottom:12px}
 .sj .ji{flex:none}
 .stop{min-width:0}
 .smac{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;margin:0 0 12px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:12px;color:var(--ink);font:inherit;font-size:13.5px;text-align:left;cursor:pointer}
@@ -94,3 +94,7 @@ input.txt{width:100%;background:var(--panel2);border:1px solid var(--line);borde
 .fadrift .fadh{min-height:44px;display:flex;align-items:center}
 .fa .fadr{list-style:none;padding-left:0;color:inherit}.fa .fadr li{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid var(--line)}
 .fa .fadr li>span{flex:1;min-width:0;line-height:1.4}.fa .fadr .btn{min-height:44px;min-width:44px;flex:none}.fadw{color:var(--muted,inherit)}
+
+/* Calmer phone Settings (polish D): the grid's 32px gap was also stacking between the title, Mac line, search and chips once the page went to one column, so it goes; a folded section shows its one-line summary under the title; the Mac line is neutral grey when its status can't be read (not an alarm). Display only. */
+@media (max-width:1100px){.set{gap:0}.shead{margin-bottom:12px}.sidx{margin-bottom:8px}.scard{margin-bottom:12px}.scard.shut{margin-bottom:8px}.sidx .sj{padding:0 14px}}
+.smac .dot.off{background:var(--mute);box-shadow:0 0 0 4px var(--panel2)}

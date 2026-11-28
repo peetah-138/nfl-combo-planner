@@ -104,3 +104,9 @@
 @media (max-width:900px) and (prefers-color-scheme:light){.slipbar{box-shadow:0 14px 36px rgba(16,24,40,.18)}}
 /* Round two (display only): a board card's league and start time share one line. */
 .mrow .when{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px}.mrow .when .wlg{display:inline-flex;align-items:center;gap:4px}
+
+/* One sideways row of 44px chips instead of a wall of wrapped 32px ones (polish D): Build leagues, Settings sports, the Build lines filter.
+   Display only. The right edge fades to show there is more; the padding keeps the last chip clear of the fade. */
+.chips.chrow{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;gap:8px;padding:2px 28px 2px 2px;scrollbar-width:none;-webkit-overflow-scrolling:touch;overscroll-behavior-x:contain;-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 28px),transparent)}
+.chips.chrow::-webkit-scrollbar{display:none}
+.chips.chrow .chip{flex:none;min-height:44px;display:inline-flex;align-items:center;padding:0 16px}
