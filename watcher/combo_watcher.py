@@ -3270,8 +3270,10 @@ def webapp_main():
 
     def paced_fetch_scores(max_age=None, code=None):
         """ESPN scoreboard read with a per-minute ceiling and a per-league back-off after failures (display only; this
-        is the web app's copy of the engine, the watcher's own loop and every trading read use theirs). A failure is
+        is the web app's copy of the engine; a call with an explicit max_age, which every trading guard makes, is passed straight through unpaced). A failure is
         never retried here: the cached copy is served until the paced age allows the next read."""
+        if max_age is not None:    # an explicit age is a trading guard (_game_over, live_side_fair): never pace or stretch it
+            return _orig_fetch_scores(max_age=max_age, code=code)
         c = code or A.LEAGUE["code"]
         got = A.SCORES_BY.get(c) or {"at": 0, "by": {}}
         try:
