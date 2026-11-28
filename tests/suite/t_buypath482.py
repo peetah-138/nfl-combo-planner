@@ -12,11 +12,13 @@ ok = lambda n, c: print(("PASS " if c else "FAIL ") + n)
 # ---- item 6: the date
 chk = E._event_day_ok
 ok("same day passes", chk("KXNCAAMBTOTAL-26NOV27DUKEUNC", "2026-11-27T23:00Z") is True)
-ok("evening game after midnight UTC passes (ticker is the local day)", chk("KXNCAAMBTOTAL-26NOV27DUKEUNC", "2026-11-28T02:30Z") is True)
+ok("7pm ET game (00:00Z next day) passes on its own evening", chk("KXNHLTOTAL-26NOV27ABCDEF", "2026-11-28T00:00Z") is True)
+ok("...but tomorrow night's rematch (26NOV28) is refused", chk("KXNHLTOTAL-26NOV28ABCDEF", "2026-11-28T00:00Z") is False)
+ok("9pm Pacific game (05:00Z) passes on its own evening", chk("KXNBATOTAL-26NOV27ABCDEF", "2026-11-28T05:00Z") is True)
 ok("a rematch two days later is refused", chk("KXNCAAMBTOTAL-26NOV29DUKEUNC", "2026-11-27T23:00Z") is False)
-ok("a ticker dated after the ESPN day is refused", chk("KXNCAAMBTOTAL-26NOV28DUKEUNC", "2026-11-27T23:00Z") is False)
-ok("a ticker dated 2 days before the ESPN day is refused", chk("KXNCAAMBTOTAL-26NOV25DUKEUNC", "2026-11-27T23:00Z") is False)
-ok("unreadable start leaves the old match", chk("KXNCAAMBTOTAL-26NOV29DUKEUNC", None) is True)
+ok("a ticker 2 days before the ESPN day is refused", chk("KXNCAAMBTOTAL-26NOV25DUKEUNC", "2026-11-27T23:00Z") is False)
+ok("unreadable start fails closed", chk("KXNCAAMBTOTAL-26NOV27DUKEUNC", None) is False and chk("KXNCAAMBTOTAL-26NOV27DUKEUNC", "junk") is False)
+ok("unreadable ticker date fails closed", chk("KXNCAAMBTOTAL-DUKEUNC", "2026-11-27T23:00Z") is False)
 
 E.espn_lines = lambda code: {frozenset({"duke blue devils", "unc tar heels"}): {
     "home": "UNC Tar Heels", "away": "Duke Blue Devils", "home_abbr": "UNC", "away_abbr": "DUKE",
@@ -61,3 +63,6 @@ ok("line_pass: ...for no more contracts than fill inside the edge (7, not 47)", 
 def boom(*a): raise RuntimeError("book read failed")
 E._line_rec_one = boom; calls.clear()
 ok("line_pass: an error in the checks fails closed (no idea)", E.line_pass("nba") == [] and not calls)
+for bad in (float("nan"), None, 0):
+    E._line_rec_one = lambda code, x, base, now, asks, _b=bad: ({"n": _b}, None)
+    ok(f"line_pass: a fill count of {bad} means no idea and no crash", E.line_pass("nba") == [] and not calls)

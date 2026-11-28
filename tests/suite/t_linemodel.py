@@ -143,9 +143,9 @@ E.store_x("delete from line_fairs"); E.LINE_STATS["at"] = 0
 # ---- line_candidates: gate off = today's prices byte for byte; both prices logged; gate on = only chances change
 E.espn_lines = lambda code: {
     frozenset({"temple owls", "tulane green wave"}): {"home": "Tulane Green Wave", "away": "Temple Owls", "home_abbr": "TUL", "away_abbr": "TEM",
-                                                      "spread_home": -7.5, "total": 140.5, "start": "2099-01-01T00:00:00Z", "p_hcover": 0.52, "p_over": 0.49},
+                                                      "spread_home": -7.5, "total": 140.5, "start": "2099-01-01T12:00:00Z", "p_hcover": 0.52, "p_over": 0.49},
     frozenset({"brown bears", "yale bulldogs"}): {"home": "Yale Bulldogs", "away": "Brown Bears", "home_abbr": "YALE", "away_abbr": "BRWN",
-                                                  "spread_home": -3.0, "total": 132.0, "start": "2099-01-01T00:00:00Z"}}
+                                                  "spread_home": -3.0, "total": 132.0, "start": "2099-01-01T12:00:00Z"}}
 
 
 def m(ev, tk, sub, strike, p, kind):

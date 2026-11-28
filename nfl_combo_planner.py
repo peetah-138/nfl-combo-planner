@@ -17069,19 +17069,22 @@ _MON = {m: i + 1 for i, m in enumerate("JAN FEB MAR APR MAY JUN JUL AUG SEP OCT 
 
 
 def _event_day_ok(event_ticker, start):
-    """(#482 item 6) False when a Kalshi event's own date (the '26NOV27' in its ticker) is NOT the ESPN game's day, so a
-    rematch of the same two teams on another night is never priced from today's book total. The ticker date is the
-    local game day, ESPN's start is UTC, so the day before the UTC date is also fine (a 9pm Pacific game starts after
-    midnight UTC). Only a clear mismatch says False; a ticker or start that cannot be read leaves the old match."""
+    """(#482 item 6) True only when a Kalshi event's own date (the '26NOV27' in its ticker) is the ESPN game's local day:
+    the date of the start minus 10 hours (ESPN's start is UTC; a 9pm Pacific game starts after midnight UTC but is still
+    that evening's). One day only, so tonight's book total never prices tomorrow night's rematch. Fails closed: a ticker
+    or start that cannot be read is False (the market is skipped)."""
     try:
         m = re.match(r"^(\d{2})([A-Z]{3})(\d{2})", str(event_ticker or "").rsplit("-", 1)[-1])
         if not m or m.group(2) not in _MON or not start:
-            return True
+            return False
         day = dt.date(2000 + int(m.group(1)), _MON[m.group(2)], int(m.group(3)))
-        utc = dt.datetime.fromisoformat(str(start).replace("Z", "+00:00")).astimezone(dt.timezone.utc).date()
+        st = dt.datetime.fromisoformat(str(start).replace("Z", "+00:00"))
+        if st.tzinfo is None:
+            return False
+        local = (st.astimezone(dt.timezone.utc) - dt.timedelta(hours=10)).date()
     except (ValueError, TypeError):
-        return True
-    return day in (utc, utc - dt.timedelta(days=1))
+        return False
+    return day == local
 
 
 def line_candidates(code, everything=False):
@@ -17715,9 +17718,10 @@ def line_pass(code, alert=None, log=print):
             continue                                # thin, or Kalshi's book couldn't be read (429/5xx): no idea
         try:                                        # (#482 item 7) the Build page's own checks: the learned bar at the real
             rec, _ = _line_rec_one(code, x, _manual_base(), now, books_now([x["ticker"]]).get(x["ticker"]))   # book, a route to profit
-        except Exception:                           # and the expected-dollars floor; anything unreadable = no idea
-            rec = None
-        if not rec:
+            fill_n = int(rec["n"]) if rec else 0    # and the expected-dollars floor; anything unreadable (NaN too) = no idea
+        except Exception:
+            rec, fill_n = None, 0
+        if not rec or fill_n < 1:
             continue
         prev = store_rows("select pct, ts from suggestions where legs=? and n=1 order by ts desc limit 1",
                           (json.dumps([x["ticker"]]),))
@@ -17726,7 +17730,7 @@ def line_pass(code, alert=None, log=print):
             continue
         told = bool(prev) and pct - prev[0]["pct"] < 0.03     # (#push-gate) re-stored after 2h: no second push unless better
         stake = edge_stake(1 + (pct - 1) * 0.7, CFG.get("size_min", 3), CFG.get("size_max", 10), x["fair"])
-        n = max(1, min(int(stake / (x["p"] + single_fee(x["p"]))), int(rec["n"])))   # never more than fills inside the edge
+        n = max(1, min(int(stake / (x["p"] + single_fee(x["p"]))), fill_n))   # never more than fills inside the edge
         sid = store_suggestion({"legs": [dict(x, event=x["event"] or "")], "fair": stake / x["fair"]},
                                {"pays": float(n), "stake": round(n * (x["p"] + single_fee(x["p"])), 2)}, pct)
         store_x("update suggestions set note=? where id=?",

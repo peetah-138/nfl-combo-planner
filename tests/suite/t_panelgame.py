@@ -54,7 +54,7 @@ ok("nothing about ids, prices or kickoffs changed", single["id"] == "single:E1-P
 # ---- spreads and totals, straight from line_candidates (ESPN's line + Kalshi's market)
 E.espn_lines = lambda code: {
     frozenset({"temple owls", "tulane green wave"}): {"home": "Tulane Green Wave", "away": "Temple Owls", "home_abbr": "TUL", "away_abbr": "TEM",
-                                                      "spread_home": -7.5, "total": 140, "start": None}}
+                                                      "spread_home": -7.5, "total": 140, "start": "2026-11-19T20:00:00Z"}}
 
 
 def m(tk, sub, strike, p, kind):
