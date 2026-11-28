@@ -41,14 +41,15 @@ def reset():
     E._fa_update(lambda s: s.update(on=True, gate="passed"))
 
 
-def seed(days=20, nba_pls=(3, -5, -5, -5), clv=0.02, nhl_pl=2.0):
-    """Practice panel history: per day 4 NBA combos ($5 each, results nba_pls in order) and 4 NHL singles ($5, +nhl_pl)."""
+def seed(days=20, nba_pls=(4, -7, -7, -7), clv=0.02, stake=7.0, nhl_pl=1.0):
+    """Practice panel history. Per day: 1 NHL single ($2) first, then 4 NBA combos (`stake` each, results nba_pls in order). The
+    day totals $30 at the default stake: exactly the live daily cap, so the replay and the live guard see the same day."""
     for d in range(1, days + 1):
         t0 = NOW - d * DAY
-        items = [{"id": f"n{i}", "kind": "combo", "state": "paper", "legs": [{"ticker": NBA}], "stake": 5.0, "result": "won" if p > 0 else "lost",
-                  "pl": p, "clv": clv, "at": t0 + i * 60} for i, p in enumerate(nba_pls)]
-        items += [{"id": f"h{i}", "kind": "single", "state": "paper", "legs": [{"ticker": NHL}], "stake": 5.0, "result": "won",
-                   "pl": nhl_pl, "clv": 0.01, "at": t0 + 600 + i * 60} for i in range(4)]
+        items = [{"id": "h0", "kind": "single", "state": "paper", "legs": [{"ticker": NHL}], "stake": 2.0, "result": "won",
+                  "pl": nhl_pl, "clv": 0.01, "at": t0}]
+        items += [{"id": f"n{i}", "kind": "combo", "state": "paper", "legs": [{"ticker": NBA}], "stake": stake, "result": "won" if p > 0 else "lost",
+                   "pl": p, "clv": clv, "at": t0 + 600 + i * 60} for i, p in enumerate(nba_pls)]
         E.store_x("insert into panel values(?,?,?,?,?)", (E._panel_day(t0), "paper", t0, "done", json.dumps({"at": t0, "items": items})))
 
 
@@ -89,10 +90,11 @@ ok("the shares are plain 'no learned share': the guard reads nothing", E.FaShare
 reset(); seed()
 ok("tighten: the weekly look takes a step", stepped())
 v = vals()
-ok("tighten: it is the NBA share, below 100%, one 5-pt multiple", "share:nba" in v and 0.05 <= v["share:nba"] < 1.0 and abs(v["share:nba"] * 20 - round(v["share:nba"] * 20)) < 1e-6)
+ok("tighten: a share below 100%, a 5-pt multiple, at most 15 pts in one week", len(v) == 1 and all(0.85 - 1e-9 <= x < 1.0 and abs(x * 20 - round(x * 20)) < 1e-6 for x in v.values()))
 ok("tighten: logged in plain words with the dollars", any("budget share" in e["text"] and "more after fees" in e["text"] for e in lessons()["log"]))
 ok("tighten: shows on the card as learned", any("budget share" in x["name"] for x in E.fal_view(E.fa_state())["learned"]))
-ok("one step a week", not stepped(NOW + DAY) or len(vals()) == 1)
+n_steps = len([e for e in lessons()["log"] if e.get("kind") == "step"]); tick(NOW + DAY)
+ok("one step a week", len([e for e in lessons()["log"] if e.get("kind") == "step"]) == n_steps and len(vals()) == 1)
 ok("Pete's limits are untouched", E.fa_state()["cap"] == 30.0 and E.fa_state()["bank"] == 300.0 and E.fa_state()["day_loss"] == 20.0)
 
 # 3. thin evidence
@@ -100,36 +102,36 @@ reset(); seed(days=5)
 ok("thin evidence: no step", not stepped() and vals() == {})
 
 # 4. winners are not tightened
-reset(); seed(nba_pls=(3, 3, 3, 3))
+reset(); seed(nba_pls=(4, 4, 4, 4))
 ok("a league that keeps winning is not tightened", not stepped() and vals() == {})
 
 # 5. loosen slow, with closing-line value
-reset(); seed(nba_pls=(3, 3, 3, 3)); learned(0.3)
-ok("loosen: blocked bets would have won and CLV is positive: a step back up", stepped() and vals().get("share:nba", 1.0) > 0.3)
-reset(); seed(nba_pls=(3, 3, 3, 3)); learned(0.3, since=NOW - 2 * DAY)
-ok("loosen waits 14 days after the last move", not stepped() and vals() == {"share:nba": 0.3})
-reset(); seed(days=12, nba_pls=(3, 3, 3, 3)); learned(0.3)
-ok("loosen needs twice the sample", not stepped() and vals() == {"share:nba": 0.3})
-reset(); seed(nba_pls=(3, 3, 3, 3), clv=-0.03); learned(0.3)
-ok("loosen refused on negative closing-line value", not stepped() and vals() == {"share:nba": 0.3})
-reset(); seed(nba_pls=(3, 3, 3, 3), clv=None); learned(0.3)
-ok("loosen refused when closing-line value is unreadable", not stepped() and vals() == {"share:nba": 0.3})
+reset(); seed(nba_pls=(4, 4, 4, 4)); learned(0.65)
+ok("loosen: blocked bets would have won and CLV is positive: exactly ONE 5-pt step back up", stepped() and abs(vals().get("share:nba", 1.0) - 0.7) < 1e-9)
+reset(); seed(nba_pls=(4, 4, 4, 4)); learned(0.65, since=NOW - 2 * DAY)
+ok("loosen waits 14 days after the last move", not stepped() and vals() == {"share:nba": 0.65})
+reset(); seed(days=12, nba_pls=(4, 4, 4, 4)); learned(0.65)
+ok("loosen needs twice the sample", not stepped() and vals() == {"share:nba": 0.65})
+reset(); seed(nba_pls=(4, 4, 4, 4), clv=-0.03); learned(0.65)
+ok("loosen refused on negative closing-line value", not stepped() and vals() == {"share:nba": 0.65})
+reset(); seed(nba_pls=(4, 4, 4, 4), clv=None); learned(0.65)
+ok("loosen refused when closing-line value is unreadable", not stepped() and vals() == {"share:nba": 0.65})
 
 # 6. soft brake cautious: no loosening, tightening still fine
-reset(); seed(nba_pls=(3, 3, 3, 3)); learned(0.3); cautious()
-ok("cautious: no loosening", not stepped() and vals() == {"share:nba": 0.3})
+reset(); seed(nba_pls=(4, 4, 4, 4)); learned(0.65); cautious()
+ok("cautious: no loosening", not stepped() and vals() == {"share:nba": 0.65})
 reset(); seed(); cautious()
 ok("cautious: tightening still allowed", stepped() and vals().get("share:nba", 1.0) < 1.0)
-reset(); seed(nba_pls=(3, 3, 3, 3)); learned(0.3); E._fa_update(lambda s: s.update(caution={"level": "x"}))
+reset(); seed(nba_pls=(4, 4, 4, 4)); learned(0.65); E._fa_update(lambda s: s.update(caution={"level": "x"}))
 ok("an unreadable caution level fails closed (no loosening)", not stepped())
 
 # 7. the floor and the feedback loop: a league held at 5% still has its evidence and can step back up
 reset(); seed(); learned(0.05)
 st_=stepped(); ok("floor: never below 5%", vals().get("share:nba") == 0.05)
-reset(); seed(nba_pls=(3, 3, 3, 3)); learned(0.05)
-ok("feedback loop: at the floor the paper evidence still arrives and the share steps back up", stepped() and vals().get("share:nba", 1.0) > 0.05)
+reset(); seed(nba_pls=(4, 4, 4, 4), stake=1.0); learned(0.05)
+ok("feedback loop: at the floor the paper evidence still arrives and the share steps back up, one step", stepped() and abs(vals().get("share:nba", 1.0) - 0.10) < 1e-9)
 by, _ = E._share_load(NOW)
-ok("the evidence is not filtered by the shares (all 4 NBA bets a day are there)", len(by["share:nba"]) == 80 and len(by["share:@combo"]) == 80 and len(by["share:@single"]) == 80)
+ok("the evidence is not filtered by the shares (all 4 NBA bets a day are there)", len(by["share:nba"]) == 80 and len(by["share:@combo"]) == 80 and len(by["share:@single"]) == 20)
 
 # 8. never the same week as the combo bars
 reset(); seed()
@@ -153,9 +155,9 @@ E.store_rows_strict = real
 reset(); seed()
 E._fa_update(lambda s: s.update(lessons={"vals": {"share:nba": 7}}))
 ok("a saved share outside 5-100% is unreadable", E._fal_vals(E.fa_state())[0] is None and not stepped())
-reset(); seed(); learned(0.3)
+reset(); seed(); learned(0.65)
 E.store_x("update panel set body='{bad'")
-ok("a corrupt panel row: no step", not stepped() and vals() == {"share:nba": 0.3})
+ok("a corrupt panel row: no step", not stepped() and vals() == {"share:nba": 0.65})
 
 # 10. master switch, freeze, undo
 reset(); seed(); E._fa_update(lambda s: s.update(fa_lessons=False))
@@ -170,15 +172,16 @@ ok("undo puts it back and holds it", res[0] and k not in vals() and lessons()["h
 ok("the undone share is held (nothing loosens it) and a second undo does nothing", E.ap_undo(NOW + 2)[0] is False)
 
 # 11. a revert after a losing week puts it back
-reset(); seed(); tick(); k = next(iter(vals()))
-t1 = NOW + 8 * DAY
-E.store_x("delete from panel")
-for d in range(1, 4):   # newer bets the share would have blocked WON: the step cost money
-    tt = NOW + 2 * DAY + d * 100
-    items = [{"id": f"n{i}", "kind": "combo", "state": "paper", "legs": [{"ticker": NBA}], "stake": 5.0, "result": "won", "pl": 3.0, "clv": 0.02, "at": tt + i}
-             for i in range(4)]
-    E.store_x("insert or replace into panel values(?,?,?,?,?)", (E._panel_day(tt), "paper", tt, "done", json.dumps({"at": tt, "items": items})))
-ok("steps are judged a week later (no crash on thin data)", tick(t1) in (True, False))
+reset(); seed(); tick(); k = next(iter(vals())); v_before = vals()[k]
+n_old = len([e for e in lessons()["log"] if e.get("kind") == "revert"])
+for d in range(1, 6):   # newer bets the share would have blocked WON: the step cost money
+    tt = NOW + d * DAY
+    items = [{"id": f"w{i}", "kind": "combo", "state": "paper", "legs": [{"ticker": NBA}], "stake": 7.0, "result": "won", "pl": 4.0, "clv": 0.02,
+              "at": tt + 600 + i * 60} for i in range(4)]
+    E.store_x("insert or replace into panel values(?,?,?,?,?)", (E._panel_day(tt), "paper", tt + 600, "done", json.dumps({"at": tt, "items": items})))
+tick(NOW + 8 * DAY)
+ok("a losing step is reverted a week later, in plain words", len([e for e in lessons()["log"] if e.get("kind") == "revert"]) == n_old + 1 and k not in vals())
+ok("the revert is logged with the old value and the dollars", any(e.get("kind") == "revert" and "back" in e["text"] and "lost" in e["text"] for e in lessons()["log"]))
 
 # 12. the buy pass: shares skip, never add; the cap is never exceeded; the floor keeps the first bet
 def mk(t, ev, f, p, k, lg="nba"):
@@ -273,6 +276,73 @@ mv = dict(E._fal_moves("open", mid))
 ok("open limit: tighter is one step down, looser one step up", mv.get("tighter") == mid - ob["step"] and mv.get("looser") == mid + ob["step"])
 ok("open limit: no step past either end", "tighter" not in dict(E._fal_moves("open", ob["lo"])) and "looser" not in dict(E._fal_moves("open", ob["hi"])))
 ok("open limit: Pete's number outside the range is left alone", E._fal_moves("open", ob["hi"] + 100) == [])
+
+# 15. the replay judges the same rule as the live guard: a share of the DAILY CAP, not of the practice panel's bigger day
+reset()
+t0 = NOW - DAY
+big = [{"id": f"b{i}", "kind": "combo", "state": "paper", "legs": [{"ticker": NBA}], "stake": 5.0, "result": "lost", "pl": -5.0, "clv": 0.0,
+        "at": t0 + i * 60} for i in range(20)]          # a $100 practice day against a $30 cap
+E.store_x("insert into panel values(?,?,?,?,?)", (E._panel_day(t0), "paper", t0, "done", json.dumps({"at": t0, "items": big})))
+by, passes = E._share_load(NOW)
+rs = by["share:nba"]
+ok("the replay keeps only what the live daily cap ($30) would have allowed", len(rs) == 6 and all(r["base"] == 30.0 for r in rs))
+ok("a 20% share replays as $6 (first bet only), not $20 of the $100 day", sum(passes(rs, 0.2)) == 1)
+E._fa_update(lambda s: s.update(lessons={"vals": {"share:nba": 0.2}}))
+g = E.FaShareGuard(E.fa_state(), 30.0, E._panel_day(NOW), NOW)
+cb = {"id": "z", "kind": "combo", "legs": [{"ticker": NBA}], "stake": 5.0}
+g.take(cb, 5.0)
+ok("the live guard blocks the second $5 at 20% of $30, the same as the replay", not g.allows(cb, 5.0))
+
+# 16. step sizes: tighten at most 15 pts in a week, loosen exactly one 5-pt step, never below the 5% floor
+rs_ = [{"day": "d", "s": 5.0, "base": 30.0}] * 6
+ok("loosen is exactly one 5-pt step", E._share_step(rs_, E._share_passes, 0.3, "looser") == 0.35 and E._share_step(rs_, E._share_passes, 0.95, "looser") == 1.0)
+t = E._share_step(rs_, E._share_passes, 1.0, "tighter")
+ok("tighten is never more than 15 pts (here no bet changes within 15 pts, so none)", t is None or t >= 0.85 - 1e-9)
+ok("tighten at the floor stays put", E._share_step(rs_, E._share_passes, 0.05, "tighter") is None)
+ok("tighten can't pass the floor", E._share_step(rs_, E._share_passes, 0.10, "tighter") in (None, 0.05))
+
+# 17. a share-held bet is not 'no slot' evidence for the #614 open-bet limit
+def slots_run(share):
+    reset(); E.store_x("delete from fa_slots", ()); E.FA_SLOT_RUN["at"] = 0.0
+    if share:
+        E._fa_update(lambda s: s.update(lessons={"vals": {"share:nba": 0.05}}))
+    cs = [{"id": f"s{i}", "kind": "combo", "stake": 5.0, "pays": 9.0, "legs": [{"ticker": NBA.replace("LALBOS", f"LAL{i}BOS")}]} for i in range(3)]
+    saved = (E.fa_check, E.panel_get, E._fa_candidates)
+    E.fa_check = lambda *a, **k: {"brake": None, "caution": {"changed": False, "level": 0, "events": []}, "blockers": ["x"], "slots_only": True,
+                                  "room": 30.0, "slots": 0, "free": 100.0, "open": 15, "cap": 30.0}
+    E.panel_get = lambda *a, **k: {"at": NOW, "status": "draft"}
+    E._fa_candidates = lambda *a, **k: list(cs)
+    try:
+        E._full_auto_pass(now=NOW, log=lambda *a: None)
+    finally:
+        E.fa_check, E.panel_get, E._fa_candidates = saved
+    return E.store_rows("select open_at from fa_slots where kind='skip'", ())
+
+
+E._fa_slot_table()
+ok("control: with no share every turned-away bet is logged as an open-slot skip", len(slots_run(False)) == 3)
+ok("with a 5% share only the bet the share lets through is logged", len(slots_run(True)) == 1)
+
+# 18. swapped-in bets count toward the share like fa_check counts them
+reset(); E._fa_update(lambda s: s.update(lessons={"vals": {"share:nba": 0.2}}))
+day0 = E._panel_day(NOW)
+orig_b = {"id": "o1", "kind": "combo", "state": "swapped", "bought_at": NOW - 900, "legs": [{"ticker": NBA}], "stake": 10.0}
+swap_b = {"id": "o2", "kind": "combo", "state": "bought", "bought_at": NOW - 600, "swap_of": "o1", "legs": [{"ticker": NBA}], "stake": 10.0}
+E.store_x("insert into panel values(?,?,?,?,?)", (day0, "real", NOW, "done", json.dumps({"at": NOW, "items": [orig_b, swap_b]})))
+E._fa_update(lambda s: s.update(bets={f"{day0}|o1": {"at": NOW}}))
+ok("a bet swapped in for one of ours (new id) counts toward the share", E.FaShareGuard(E.fa_state(), 30.0, day0, NOW).spent["share:nba"] >= 10.0)
+
+# 19. the bar side of 'never the same week': a bar step is refused when a share stepped this week
+reset(); bk = E._fal_key("bar", "nba")
+act = {"do": "step", "rec": "bar", "key": bk, "from": 0.0, "to": E.FAL["bar"]["step"], "dir": "tighter", "lb": 1.0, "borrow": False, "stale": False,
+       "ev": {"band": 30, "gain": 5.0, "hold_n": 5, "hold": 1.0}}
+E._fa_update(lambda s: E._fal_apply(s, {"actions": [dict(act)], "status": {}}, NOW))
+ok("control: a bar step applies when no share stepped this week", bk in vals() or "bar" in str(lessons().get("vals")))
+reset()
+E._fa_update(lambda s: s.update(lessons={"steps": {"share": NOW - 2 * DAY}}))
+E._fa_update(lambda s: E._fal_apply(s, {"actions": [dict(act)], "status": {}}, NOW))
+ok("a bar step is refused in the week after a share step", not any(str(k).startswith("bar") for k in (lessons().get("vals") or {}).get("bar", {}) or {}) and bk not in (lessons().get("vals") or {})
+   and "bar" not in (lessons().get("steps") or {}))
 
 # 14. the card
 reset(); seed(); tick()

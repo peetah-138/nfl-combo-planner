@@ -24622,16 +24622,23 @@ class FaShareGuard:
             _panel_table()
             first = _panel_day(now - 3 * 86400)
             rows = store_rows_strict("select day, body from panel where day>=? and (mode='real' or mode like 'real#%')", (first,))
-            for r in rows:
-                d = r["day"]
-                for c in json.loads(r["body"]).get("items", []):
-                    # every bet bought today counts, open or already settled (a settled bet still used its share of the day)
-                    if d != day or f"{d}|{c.get('id')}" not in st["bets"]:
-                        continue
-                    if not (c.get("state") in PANEL_LIVE or c.get("bought_at") or c.get("result")):
-                        continue
-                    for k in share_keys(c):
-                        self.spent[k] += float(c.get("stake") or 0)
+            items = [(r["day"], c) for r in rows for c in json.loads(r["body"]).get("items", [])]
+            mine, grew = set(), True                         # a bet swapped in for one of ours (new id) is ours too, as in fa_check
+            while grew:
+                grew = False
+                for d, c in items:
+                    k = f"{d}|{c.get('id')}"
+                    if k not in mine and (k in st["bets"] or (c.get("swap_of") and f"{d}|{c['swap_of']}" in mine)):
+                        mine.add(k)
+                        grew = True
+            for d, c in items:
+                # every bet bought today counts, open or already settled (a settled bet still used its share of the day)
+                if d != day or f"{d}|{c.get('id')}" not in mine:
+                    continue
+                if not (c.get("state") in PANEL_LIVE or c.get("bought_at") or c.get("result")):
+                    continue
+                for k in share_keys(c):
+                    self.spent[k] += float(c.get("stake") or 0)
 
     def allows(self, c, s):
         for k in share_keys(c):
@@ -24780,7 +24787,7 @@ FAL_OPEN = {"min_n": 25, "loose_mult": 2, "loose_wait": 14 * 86400, "keep": 90 *
 # (#145 step 6) the budget-share record: judged on the PRACTICE (paper) panel's settled bets, which the shares never filter, so a
 # shrunk league keeps producing the evidence that could win it its share back. min_n bets per key, loosening needs twice that and
 # 14 days since the last move, and the league's closing-line value must be readable and not negative.
-FAL_SHARE = {"min_n": 40, "loose_mult": 2, "loose_wait": 14 * 86400, "clv_n": 10, "kinds": ("@combo", "@single")}
+FAL_SHARE = {"min_n": 40, "loose_mult": 2, "loose_wait": 14 * 86400, "clv_n": 10, "tight_max": 3, "kinds": ("@combo", "@single")}
 FAL_SLOW = {"open": FAL_OPEN, "share": FAL_SHARE}          # records that loosen slowly (the tighter step is always the fast one)
 AP_EXCL = {"bar": ("share",), "share": ("bar",)}           # plan section 3: these two are never moved in the same week
 FAL_RUN = {"at": 0.0}
@@ -25017,9 +25024,10 @@ def share_keys(c):
 
 
 def _share_passes(rs, v):
-    """Replay of one key's bets in order under a share `v`: a bet passes when it is the key's first of its day (a share never
-    starves a league: it always gets its first bet) or when the key's running total that day stays inside v of the day's
-    whole budget. Only the passing bets add to the running total, as in the live filter."""
+    """Replay of one key's bets in order under a share `v`, by the SAME rule as the live FaShareGuard: a bet passes when it is the
+    key's first of its day (a share never starves a league: it always gets its first bet) or when the key's running total that
+    day stays inside v of the daily cap (`base`, the live cap: _share_load already dropped the bets the cap itself would have
+    turned away). Only the passing bets add to the running total, as in the live filter."""
     run, out = defaultdict(float), []
     for r in rs:
         ok = run[r["day"]] <= 1e-9 or run[r["day"]] + r["s"] <= v * r["base"] + 1e-9
@@ -25031,8 +25039,14 @@ def _share_passes(rs, v):
 
 def _share_load(now):
     """({key: [row]}, passes) from the practice (paper) panel's settled bets, which the shares never filter: so a league held to a
-    small share keeps producing its own evidence. A row is {k: when, d: dollars after fees, s: stake, day, base: that day's whole
-    settled stake, clv}. RAISES when the data can't be read (the caller then takes no step)."""
+    small share keeps producing its own evidence. A row is {k: when, d: dollars after fees, s: stake, day, base: the live daily
+    cap, clv}. The practice panel spends more per day than full auto's cap allows, so each day's bets are first fitted into the
+    cap in the order they were bought (a bet that would not fit is dropped, as fa_check's room would have), and a share is judged
+    against that same cap: the replay measures the rule the live guard enforces. RAISES when the data can't be read (the caller
+    then takes no step)."""
+    cap = float(fa_state()["cap"])
+    if not math.isfinite(cap) or cap <= 0:
+        raise ValueError("no readable daily cap")
     _panel_table()
     first = _panel_day(now - FAL["days"] * 86400)
     days = defaultdict(list)
@@ -25047,9 +25061,12 @@ def _share_load(now):
                                    "day": r["day"], "clv": c.get("clv"), "keys": share_keys(c)})
     by = defaultdict(list)
     for day, rows in days.items():
-        base = sum(x["s"] for x in rows)
+        used = 0.0
         for x in sorted(rows, key=lambda x: x["k"]):
-            x["base"] = base
+            if used + x["s"] > cap + 1e-9:
+                continue                                     # the daily cap would have turned this one away anyway
+            used += x["s"]
+            x["base"] = cap
             for key in x["keys"]:
                 by[key].append(x)
     for key in by:
@@ -25058,16 +25075,18 @@ def _share_load(now):
 
 
 def _share_step(rs, passes, cur, dirn):
-    """The next share (in 5-pt steps) from `cur` that changes which of the key's bets pass; looser reaching 100% simply clears the
-    share. None when there is none inside the range (the floor is 5%: it never goes below)."""
-    b, v = FAL["share"], cur
+    """The next share from `cur`. Looser: exactly ONE 5-pt step (slow), reaching 100% clears the share. Tighter: the first of the
+    next three 5-pt values (at most 15 pts in a week) that changes which of the key's bets pass, so a share at 100% can still
+    be tested; None when there is none, and never below the 5% floor."""
+    b = FAL["share"]
+    if dirn == "looser":
+        v = round(cur + b["step"], 4)
+        return b["hi"] if v >= b["hi"] - 1e-9 else v
     here = passes(rs, cur)
-    for _ in range(int(round((b["hi"] - b["lo"]) / b["step"])) + 1):
-        v = round(v + (-b["step"] if dirn == "tighter" else b["step"]), 4)
+    for n in range(1, FAL_SHARE["tight_max"] + 1):
+        v = round(cur - n * b["step"], 4)
         if v < b["lo"] - 1e-9:
             return None
-        if v >= b["hi"] - 1e-9:
-            return b["hi"] if dirn == "looser" else None
         if passes(rs, v) != here:
             return v
     return None
