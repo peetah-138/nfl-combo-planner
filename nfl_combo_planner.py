@@ -25307,7 +25307,8 @@ def fa_lessons_set(on):
     try:
         _fa_update(lambda s: s.update(fa_lessons=bool(on)))
     except Exception as err:
-        return False, "Couldn't save that (" + type(err).__name__ + ")."
+        console_note("autopilot: " + repr(err))          # the detail stays in the server log, not on the card
+        return False, "Couldn't save that just now. Please try again."
     return True, ("Autopilot is ON. While full auto is on, it may take small steps from the paper records."
                   if on else "Autopilot is OFF. Full auto uses its starting numbers, as before.")
 
@@ -25328,7 +25329,8 @@ def ap_undo(now=None):
             if (kx.get("ok") or not ch0) and not (ch0 and float(ch0.get("at") or 0) > kx["at"]):
                 return _ap_undo_knob(kx, now)
     except Exception as err:
-        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+        console_note("autopilot: " + repr(err))          # the detail stays in the server log, not on the card
+        return False, "Couldn't undo that just now. Please try again."
 
     def go(s):
         L = s.get("lessons")
@@ -25358,7 +25360,7 @@ def ap_undo(now=None):
         if isinstance(lr, dict) and lr.get("key") == key:
             lr["judged"] = True                              # no later automatic revert of what Pete already undid
         ch["undone"] = True
-        txt = (f"Autopilot: you undid {_fal_name(key)}: {_fal_val_text(rec, ch['to'])} -> {_fal_val_text(rec, back)}. "
+        txt = (f"Autopilot: you undid {_fal_name(key)}: {_fal_val_text(rec, ch['to'])} → {_fal_val_text(rec, back)}. "
                f"It stays there for 2 weeks.")
         L["log"].append({"at": round(now), "kind": "undo", "key": key, "text": txt})
         del L["log"][:-FAL["log"]]
@@ -25366,7 +25368,8 @@ def ap_undo(now=None):
     try:
         _fa_update(go)
     except Exception as err:
-        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+        console_note("autopilot: " + repr(err))          # the detail stays in the server log, not on the card
+        return False, "Couldn't undo that just now. Please try again."
     return out.get("r") or (False, "Couldn't undo that.")
 
 
@@ -25409,7 +25412,7 @@ def _ap_undo_knob(kx, now):
         if not done.get("ok"):
             return False, "Nothing to undo: that setting is no longer where autopilot left it."
         u = k["unit"]
-        txt = (f"Autopilot: you undid {league_label(g)} {k['label']}: {knob_say(u, to)} -> {knob_say(u, frm)}. "
+        txt = (f"Autopilot: you undid {league_label(g)} {k['label']}: {knob_say(u, to)} → {knob_say(u, frm)}. "
                f"It stays there for 2 weeks.")
 
         def note(s):
@@ -25425,7 +25428,8 @@ def _ap_undo_knob(kx, now):
         _fa_update(note)
         return True, txt
     except Exception as err:
-        return False, "Couldn't undo that (" + type(err).__name__ + ")."
+        console_note("autopilot: " + repr(err))          # the detail stays in the server log, not on the card
+        return False, "Couldn't undo that just now. Please try again."
 
 
 def ap_freeze(key, on):
@@ -25452,7 +25456,8 @@ def ap_freeze(key, on):
     try:
         _fa_update(go)
     except Exception as err:
-        return False, "Couldn't save that (" + type(err).__name__ + ")."
+        console_note("autopilot: " + repr(err))          # the detail stays in the server log, not on the card
+        return False, "Couldn't save that just now. Please try again."
     name = FAL_NAMES.get(key) or ap_knob_name(key) or _fal_name(key)
     return True, f"{name} is {'frozen: autopilot leaves it alone' if on else 'unfrozen'}."
 
@@ -25493,10 +25498,10 @@ def fal_view(st):
                     f"back to {knob_say(kb['unit'], hh['from'])}")
         fz = L.get("frozen") if isinstance(L.get("frozen"), dict) else {}
         kfz = bool(fz.get("knobs")) or any(k.startswith("knob:") and v for k, v in fz.items())
-        recs.append({"rec": "knobs", "name": "Smart sell's numbers (exit knobs)", "n": None, "min": None,
+        recs.append({"rec": "knobs", "name": "Smart sell's sell settings", "n": None, "min": None,
                      "state": "paused" if (st.get("fa_lessons") is False or fz.get("knobs")) else "on",
                      "note": ("frozen one by one" if kfz and not fz.get("knobs") else "") or
-                             "steps come from the weekly stepper's own evidence; this card only shows them and takes them back"})
+                             "changes come from its own weekly check; here you can see them and take them back"})
         frozen = sorted(k for k, v in (L.get("frozen") or {}).items() if v) if isinstance(L.get("frozen"), dict) else []
         holds = []
         for k, t in sorted((L.get("holds") or {}).items()) if isinstance(L.get("holds"), dict) else []:
@@ -25509,8 +25514,9 @@ def fal_view(st):
                 "undo": undo, "frozen": frozen, "holds": holds, "cautious": ap_brake_cautious(st),
                 "recs": recs, "not_wired": [{"name": n, "why": w} for n, w in FAL_NOT_WIRED], "err": err}
     except Exception as err:
+        console_note("autopilot: " + repr(err))          # the detail stays in the server log, not on the card
         return {"switch": True, "active": False, "learned": [], "log": [], "recs": [], "not_wired": [],
-                "err": "Autopilot couldn't be read (" + type(err).__name__ + ")."}
+                "err": "Autopilot couldn't be read just now."}
 
 
 # ---------------------------------------------------------------- the combo lab and the analytics
