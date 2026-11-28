@@ -35,7 +35,7 @@ main{max-width:1520px;margin:0 auto;padding:22px 24px 60px;overflow-x:clip}
 .chips{display:flex;gap:6px;flex-wrap:wrap}.chip{border:1px solid var(--line);background:var(--panel);color:var(--sub);border-radius:var(--r-pill);padding:6px 12px;font-weight:600;font-size:var(--t-sm);white-space:nowrap}
 /* chips look 32px but the tap area is 44px (a ::after reaching up and down, so rows keep their density); .chip.lg is a true
    44px chip; .chips.scroll is one sideways-scrolling row with an edge fade instead of wrapping onto three lines */
-.chip{position:relative}.chip::after{content:"";position:absolute;left:0;right:0;top:50%;height:var(--hit);transform:translateY(-50%)}
+.chip{position:relative}.chip::after{content:"";position:absolute;z-index:-1;left:0;right:0;top:50%;height:var(--hit);transform:translateY(-50%)}   /* behind the haptic switch, so a tap on the chip itself still lands on it */
 .chip.lg{display:inline-flex;align-items:center;min-height:var(--hit);padding:0 var(--s4)}.chip.lg::after{display:none}
 .chips.scroll{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;overscroll-behavior-x:contain;-webkit-overflow-scrolling:touch;
  -webkit-mask-image:linear-gradient(90deg,transparent 0,#000 var(--s4),#000 calc(100% - var(--s5)),transparent);mask-image:linear-gradient(90deg,transparent 0,#000 var(--s4),#000 calc(100% - var(--s5)),transparent)}
