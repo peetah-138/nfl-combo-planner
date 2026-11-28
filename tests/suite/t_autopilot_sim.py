@@ -751,6 +751,12 @@ if __name__ == "__main__":
                              "vals": L.get("vals"), "cq": L.get("cq"), "steps": L.get("steps"), "caution": E.fa_state().get("caution"),
                              "now": SIM["t"], "hist": len(E.fa_state().get("history") or [])})
                 pr = E.store_rows_strict("select day, mode, body from panel")
+                pm = {}
+                for x in pr:
+                    for c in json.loads(x["body"]).get("items", []):
+                        k_ = (x["mode"], bool(c.get("result")), E.panel_pl(c) is not None, float(c.get("stake") or 0))
+                        pm[str(k_)] = pm.get(str(k_), 0) + 1
+                DIAG.append({k_: v_ for k_, v_ in pm.items() if k_.startswith("('paper'")})
                 DIAG.append({"panel_rows": len(pr), "modes": sorted({x["mode"] for x in pr})[:5],
                              "items": sum(len(json.loads(x["body"]).get("items", [])) for x in pr),
                              "settled": sum(1 for x in pr for c in json.loads(x["body"]).get("items", []) if c.get("result")),
