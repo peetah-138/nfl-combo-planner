@@ -25688,6 +25688,15 @@ def _fal_apply(s, plan, now):
         if rec in AP_REG and now - float(L["nochg"].get(rec) or 0) >= 86400:
             say("nochange", rec, f"Autopilot: {FAL_NAMES[rec]}: no change, not enough evidence.")
             L["nochg"][rec] = round(now)
+    mk = dt.datetime.fromtimestamp(now, PACIFIC).strftime("%Y-%m")
+    if L.get("drift_m") != mk:                               # once a calendar month: where everything is against where it started
+        try:
+            items, _why = ap_drift_items(s, now)
+            if items is not None:
+                say("drift", "all", _ap_drift_line(items, now))
+                L["drift_m"] = mk
+        except Exception as err:
+            console_note("autopilot drift: " + repr(err))
     cautious = ap_brake_cautious(s)
     for a in plan.get("actions") or []:
         rec, key = a["rec"], a["key"]
@@ -26011,6 +26020,354 @@ def ap_freeze(key, on):
     return True, f"{name} is {'frozen: autopilot leaves it alone' if on else 'unfrozen'}."
 
 
+# ---------------------------------------------------------------- Autopilot: drift since start and "Back to start" (#145, plan section 5)
+# Many small steps can add up. This shows, for every setting autopilot has moved, where it started, where it is now and
+# one plain line, and lets Pete put one setting (or all of them) back to its start. A reset is Pete's own tap and rides the
+# registry's own machinery: the same file lock and save, the same 2-week hold as Undo (it blocks only loosening), a line in
+# the same log, and Undo of the newest change still works. THE SAFETY RULE: a reset may move a setting toward "start" only
+# if that does not loosen it, unless the brake is calm. "Start" is the LOOSE end for most settings, so most resets loosen:
+# a reset that would loosen is refused while the brake is cautious (ap_brake_cautious, also on any doubt about the saved
+# brake), and for bet size and share of cap used also until the brake has been quiet for two weeks (_ap_quiet, the same
+# rule as an automatic loosening). A refused reset leaves the setting exactly where it is. It is never saved for later.
+# Pete's own limits (bankroll, daily cap, loss limit, Pause, his open-bet number, the streak limit) are never written.
+AP_DRIFT_GROUPS = (("spend", "How much it bets"), ("picky", "How picky it is"), ("sell", "How smart sell sells"))
+AP_DRIFT_REC_GROUP = {"stake": "spend", "capuse": "spend", "share": "spend", "game": "spend", "open": "spend",
+                      "bar": "picky", "sbev": "picky"}
+AP_DRIFT_KEY_MAX = 64
+
+
+class _ApRefuse(Exception):
+    """Raised inside a locked update to stop it before anything is saved."""
+
+
+def _ap_short(rec, v):
+    if rec == "open":
+        return f"{int(v)} open bets"
+    if rec in ("stake", "capuse", "share"):
+        return f"{round(v * 100, 1):g}%"
+    if rec == "game":
+        return f"{round(v * 100, 1):g}% of bankroll"
+    if rec == "bar":
+        return f"+{v:g} point" + ("" if abs(v - 1) < 1e-9 else "s")
+    if rec == "sbev":
+        return _fal_val_text("sbev", v)
+    return f"{v:g}"
+
+
+def _ap_raw_fa():
+    """(raw saved full-auto file, None) or (None, why). The file as it is on disk, with no repairing: a file that exists but
+    can't be read, or whose lessons / caution / brake records are not records, is not trusted. fa_state() would quietly turn
+    a damaged `caution` into 'level 0' (calm), so a reset reads the real thing as well."""
+    p = _fa_path()
+    if not os.path.exists(p):
+        return {}, None
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return None, "the saved full-auto file can't be read"
+    if not isinstance(raw, dict):
+        return None, "the saved full-auto file can't be read"
+    for k in ("lessons", "caution", "brake"):
+        if raw.get(k) is not None and not isinstance(raw.get(k), dict):
+            return None, "the saved " + k + " record can't be read"
+    return raw, None
+
+
+def _ap_raw_knobs():
+    """True when the saved exit-knob file is absent or a readable record (a damaged one is never written over)."""
+    try:
+        if not os.path.exists(KNOBS_FILE):
+            return True
+        with open(KNOBS_FILE, encoding="utf-8") as f:
+            raw = json.load(f)
+        return isinstance(raw, dict) and all(raw.get(k) is None or isinstance(raw.get(k), dict) for k in ("groups", "brake", "settings"))
+    except (OSError, ValueError):
+        return False
+
+
+def ap_drift_items(st, now=None, kst=None):
+    """([item, ...], None) or (None, why): every autopilot-managed setting that is away from its start, in the order the card
+    shows them. Each item: key, rec, group, name, start / cur (numbers), start_text / cur_text, dir ('tighter' or 'looser'),
+    line (the plain one-liner), note, loosens (a reset would loosen it), resettable and why_not (when it has no single start).
+    Reads only; the unreadable-state refusal is a (None, why)."""
+    now = now or time.time()
+    vals, err = _fal_vals(st)
+    if err or vals is None:
+        return None, "Autopilot's saved numbers couldn't be read"
+    L = st.get("lessons") if isinstance(st.get("lessons"), dict) else {}
+    src = L.get("src") if isinstance(L.get("src"), dict) else {}
+    out = []
+
+    def add(rec, key, start, cur, note=""):
+        if abs(cur - start) < 1e-9:
+            return
+        sign = AP_REG[rec]["sign"]
+        tighter = (cur - start) * sign > 0
+        name = _fal_name(key)
+        name = name[:1].upper() + name[1:]
+        out.append({"key": key, "rec": rec, "group": AP_DRIFT_REC_GROUP[rec], "name": name, "start": start, "cur": cur,
+                    "start_text": _ap_short(rec, start), "cur_text": _ap_short(rec, cur),
+                    "dir": "tighter" if tighter else "looser", "loosens": _ap_looser(rec, cur, start),
+                    "line": f"{name}: {_ap_short(rec, start)} → {_ap_short(rec, cur)}, {'tighter' if tighter else 'looser'}",
+                    "note": note, "resettable": True, "why_not": ""})
+    for lg, v in sorted(vals["bar"].items()):
+        add("bar", _fal_key("bar", lg), FAL_START["bar"], v, "borrowed from the other leagues' record" if src.get(_fal_key("bar", lg)) == "borrow" else "")
+    for lg, v in sorted(vals["sbev"].items()):
+        add("sbev", _fal_key("sbev", lg), FAL_START["sbev"], v)
+    add("game", "game_share", FAL_START["game"], vals["game"])
+    base = _ap_open_base(st)
+    if isinstance(L.get("vals"), dict) and "open_slots" in L["vals"]:
+        add("open", "open_slots", base, vals["open"], "your own number stays as you set it")
+    for k, v in sorted(vals["share"].items()):
+        add("share", _fal_key("share", k), FAL_START["share"], v)
+    add("stake", "stake_mult", FAL_START["stake"], vals["stake"])
+    add("capuse", "cap_use", FAL_START["capuse"], vals["capuse"])
+    order = {g: i for i, (g, _) in enumerate(AP_DRIFT_GROUPS)}
+    out.sort(key=lambda x: (order[x["group"]], list(AP_REG).index(x["rec"]), x["key"]))
+    try:                                                     # the exit knobs: a group's own value that differs from the start
+        if not _ap_raw_knobs():
+            return None, "Smart sell's numbers couldn't be read"
+        kst = knob_state() if kst is None else kst
+        for g, e in sorted((kst.get("groups") or {}).items()):
+            lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else {}
+            for name, cur in sorted(lv.items()):
+                k = KNOB_BY.get(name)
+                if not k or isinstance(k["start"], dict) or isinstance(cur, (dict, list)) or not _knob_valid(name, cur):
+                    continue
+                start = k["start"]
+                if cur == start:
+                    continue
+                u = k["unit"]
+                loos = knob_loosens(name, start, cur)        # is the CURRENT value looser than the start?
+                word = "looser" if loos else "tighter" if k.get("stricter") in ("up", "down") else "changed"
+                label = f"{league_label(g)} {k['label']}"
+                out.append({"key": f"knob:{g}:{name}", "rec": "knob", "group": "sell", "name": label, "start": start, "cur": cur,
+                            "start_text": knob_say(u, start), "cur_text": knob_say(u, cur), "dir": word,
+                            "loosens": bool(knob_loosens(name, cur, start)), "g": g, "knob": name,
+                            "line": f"{label}: {knob_say(u, start)} → {knob_say(u, cur)}, {word}", "note": "",
+                            "resettable": True, "why_not": ""})
+    except Exception as err:
+        console_note("autopilot drift: " + repr(err))
+        return None, "Smart sell's numbers couldn't be read"
+    return out, None
+
+
+def _ap_reset_why(item, cautious, quiet):
+    """(allowed, plain reason when not): may a reset move this setting to its start right now? A reset that loosens waits for a calm brake."""
+    if not item["resettable"]:
+        return False, item["why_not"]
+    if not item["loosens"]:
+        return True, ""
+    if cautious:
+        return False, "The brake is being careful, so nothing is loosened right now. Try again once it is back to normal."
+    if item["rec"] in FAL_RISKY and not quiet:
+        return False, "The brake has not been quiet for two weeks yet, so this stays as it is. Try again when it has."
+    return True, ""
+
+
+def ap_drift_view(st, now=None):
+    """What the card shows under 'Drift since start'. Never raises; any doubt = no reset buttons and a plain note."""
+    now = now or time.time()
+    try:
+        items, err = ap_drift_items(st, now)
+        raw, rwhy = _ap_raw_fa()
+        if items is None or raw is None:
+            return {"items": [], "err": "Drift since start couldn't be worked out just now, so nothing can be reset from here.",
+                    "cautious": True, "can_reset": False, "all_n": 0}
+        cautious = bool(ap_brake_cautious(st, now))
+        quiet = bool(_ap_quiet(st, now)[0])
+        fz = (st.get("lessons") or {}).get("frozen") if isinstance(st.get("lessons"), dict) else None
+        fz = fz if isinstance(fz, dict) else {}
+        n = 0
+        for it in items:
+            ok, why = _ap_reset_why(it, cautious, quiet)
+            it["reset_ok"], it["why_not"] = ok, why
+            it["frozen"] = bool(it["rec"] != "knob" and _ap_frozen(st.get("lessons") or {}, it["key"])) or \
+                bool(it["rec"] == "knob" and (fz.get("knobs") or fz.get(f"knob:{it['knob']}")))
+            n += 1 if ok and not it["frozen"] else 0
+        return {"items": items, "err": None, "cautious": cautious, "can_reset": n > 0, "all_n": n,
+                "off": st.get("fa_lessons") is False}
+    except Exception as err:
+        console_note("autopilot drift: " + repr(err))
+        return {"items": [], "err": "Drift since start couldn't be worked out just now, so nothing can be reset from here.",
+                "cautious": True, "can_reset": False, "all_n": 0}
+
+
+def _ap_drift_line(items, now):
+    """The once-a-month summary for the log."""
+    if not items:
+        return "Autopilot, month in review: nothing has moved from where you started."
+    n = len(items)
+    bits = "; ".join(x["line"] for x in items[:4]) + (f"; and {n - 4} more" if n > 4 else "")
+    return (f"Autopilot, month in review: {n} setting{'s are' if n != 1 else ' is'} away from where you started. {bits}. "
+            "Tap Back to start on the card to put one or all of them back.")
+
+
+def ap_reset_act(d):
+    """The /app/api/act entry for 'autopilot_reset': checks the request itself, then does the reset. Everything is worked out
+    here from the saved files; nothing the app sends is believed except which setting and that Pete confirmed. (ok, message)."""
+    try:
+        key = d.get("key") if isinstance(d, dict) else None
+        if not isinstance(key, str) or not key or len(key) > AP_DRIFT_KEY_MAX or d.get("confirm") is not True:
+            return False, "That reset wasn't confirmed, so nothing was changed."
+        return ap_reset(key)
+    except Exception as err:
+        console_note("autopilot reset: " + repr(err))
+        return False, "Couldn't reset that just now. Nothing was changed."
+
+
+def _ap_reset_keyok(key):
+    if key == "all":
+        return True
+    try:
+        if key.startswith("knob:"):
+            p = key.split(":")
+            return len(p) == 3 and bool(p[1]) and p[2] in KNOB_BY
+        _fal_split(key)
+        return True
+    except Exception:
+        return False
+
+
+def ap_reset(key, now=None):
+    """Back to start: put one setting (a key like "bar:nba", "stake_mult", "knob:nba:smart_floor") or "all" back to its start
+    value, hold each one that moved for two weeks (like Undo: it blocks only loosening) and log it. A reset that would loosen
+    waits for a calm brake (see the note above); that setting stays exactly as it is and the message says why. Fails closed:
+    anything unreadable changes nothing. Works with Autopilot off. (ok, message). Never raises."""
+    now = now or time.time()
+    if not isinstance(key, str) or not _ap_reset_keyok(key):
+        return False, "That isn't one of autopilot's settings."
+    whole = key == "all"
+    out = {"done": [], "wait": [], "frozen": [], "knobs": []}
+
+    def go(s):
+        raw, why = _ap_raw_fa()
+        if raw is None:
+            raise _ApRefuse("Autopilot's saved settings couldn't be read, so nothing was changed.")
+        items, err = ap_drift_items(s, now)
+        if items is None:
+            raise _ApRefuse("Autopilot's saved numbers couldn't be read, so nothing was changed.")
+        mine = [x for x in items if whole or x["key"] == key]
+        if not mine:
+            raise _ApRefuse("Nothing to reset: " + ("everything is already at its start." if whole else "that setting is already at its start."))
+        cautious, quiet = bool(ap_brake_cautious(s, now)), bool(_ap_quiet(s, now)[0])
+        L = s.get("lessons")
+        if L is None:
+            L = s["lessons"] = {}
+        for k in ("vals", "since", "last", "holds", "src", "frozen"):
+            if not isinstance(L.get(k), dict):
+                L[k] = {}
+        if not isinstance(L.get("log"), list):
+            L["log"] = []
+        for it in mine:
+            ok, why = _ap_reset_why(it, cautious, quiet)
+            if not ok:
+                out["wait"].append((it, why))
+                continue
+            if whole and ((it["rec"] != "knob" and _ap_frozen(L, it["key"])) or
+                          (it["rec"] == "knob" and (L["frozen"].get("knobs") or L["frozen"].get(f"knob:{it['knob']}")))):
+                out["frozen"].append(it)                       # Reset all leaves what Pete froze alone; his own tap on one setting is honoured
+                continue
+            if it["rec"] == "knob":
+                out["knobs"].append(it)
+                continue
+            rec, k = it["rec"], it["key"]
+            L["vals"].pop(k, None)                           # nothing saved = its start (for the open-bet limit, Pete's own number)
+            L["src"].pop(k, None)
+            L["since"][k] = round(now)                       # only bets after this count toward its next step
+            L["holds"][k] = round(now + AP_HOLD)
+            lr = L["last"].get(rec)
+            if isinstance(lr, dict) and lr.get("key") == k:
+                lr["judged"] = True                          # no later automatic revert of what Pete already put back
+            ch = L.get("change")
+            if isinstance(ch, dict) and ch.get("key") == k:
+                ch["undone"] = True                          # Undo must not re-apply over a reset
+            out["done"].append(it)
+        if not out["done"] and not out["knobs"]:
+            raise _ApRefuse("")                              # all waiting or frozen: nothing to save
+        if out["done"]:
+            L["log"].append({"at": round(now), "kind": "reset", "key": "all" if whole else key,
+                             "text": _ap_reset_text(out["done"])})
+            del L["log"][:-FAL["log"]]
+    try:
+        try:
+            _fa_update(go)
+        except _ApRefuse as r:
+            if str(r) or not (out["wait"] or out["frozen"]):
+                return False, str(r) or "Nothing to reset."
+        if out["knobs"]:
+            _ap_reset_knobs(out, now)
+    except Exception as err:
+        console_note("autopilot reset: " + repr(err))
+        return False, "Couldn't reset that just now. Please try again."
+    return _ap_reset_say(out, whole)
+
+
+def _ap_reset_text(done):
+    if len(done) == 1:
+        x = done[0]
+        return f"Autopilot: you put {x['name']} back to its start: {x['cur_text']} → {x['start_text']}. It stays there for 2 weeks."
+    names = ", ".join(x["name"] for x in done[:4]) + (f" and {len(done) - 4} more" if len(done) > 4 else "")
+    return f"Autopilot: you put {len(done)} settings back to their start ({names}). They stay there for 2 weeks."
+
+
+def _ap_reset_knobs(out, now):
+    """Take the group's own exit-knob values away (smart sell goes back to its start), then hold them in the Autopilot log.
+    Written to the knob file first, like Undo of a knob; a value that moved since the look is left alone."""
+    applied = []
+    if not _ap_raw_knobs():
+        raise OSError("knob file unreadable")
+
+    def go(d):
+        for it in out["knobs"]:
+            e = d["groups"].get(it["g"])
+            name = it["knob"]
+            lv = e.get("lv") if isinstance(e, dict) and isinstance(e.get("lv"), dict) else None
+            if lv is None or lv.get(name) != it["cur"]:
+                continue
+            lat = e["lat"] if isinstance(e.get("lat"), dict) else {}
+            v = e["v"] if isinstance(e.get("v"), dict) else {}
+            lv.pop(name, None)
+            lat.pop(name, None)
+            v[name] = it["start"]
+            if isinstance(e.get("why"), dict):
+                e["why"].pop(name, None)
+            e.update(lat=lat, v=v, lstep_at=now)
+            e["hist"] = (list(e.get("hist") or []) + [{"at": int(now), "knob": name, "from": it["cur"], "to": it["start"],
+                                                       "live": True, "reset": True}])[-12:]
+            applied.append(it)
+    _knob_save(go)
+    out["done"].extend(applied)
+    out["knobs"] = applied
+    if applied:
+        def note(s):
+            L = s.get("lessons")
+            if not isinstance(L, dict):
+                L = s["lessons"] = {}
+            for kk, tp in (("holds", dict), ("log", list)):
+                if not isinstance(L.get(kk), tp):
+                    L[kk] = tp()
+            for it in applied:
+                L["holds"][it["key"]] = round(now + AP_HOLD)
+            L["log"].append({"at": round(now), "kind": "reset", "key": "knobs", "text": _ap_reset_text(applied)})
+            del L["log"][:-FAL["log"]]
+        _fa_update(note)
+
+
+def _ap_reset_say(out, whole):
+    done, wait, frozen = out["done"], out["wait"], out["frozen"]
+    parts = []
+    if done:
+        parts.append(_ap_reset_text(done).replace("Autopilot: you put", "You put").replace("Autopilot: ", "") if len(done) > 1
+                     else _ap_reset_text(done).replace("Autopilot: you put", "Put"))
+    for it, why in wait:
+        parts.append(f"{it['name']} stays at {it['cur_text']}. {why}")
+    if frozen:
+        parts.append("Left alone because you froze them: " + ", ".join(x["name"] for x in frozen) + ".")
+    return bool(done), " ".join(parts) or "Nothing was changed."
+
+
 def fal_view(st):
     """What the full-auto card shows about lessons, from what the last look saved (nothing is computed here). Never raises."""
     try:
@@ -26066,7 +26423,7 @@ def fal_view(st):
             except Exception:
                 pass                                         # a malformed hold is no hold
         return {"switch": st.get("fa_lessons") is not False, "active": fal_on(st), "learned": learned, "log": log,
-                "undo": undo, "frozen": frozen, "holds": holds, "cautious": ap_brake_cautious(st),
+                "undo": undo, "frozen": frozen, "holds": holds, "cautious": ap_brake_cautious(st), "drift": ap_drift_view(st),
                 "recs": recs, "not_wired": [{"name": n, "why": w} for n, w in FAL_NOT_WIRED], "err": err}
     except Exception as err:
         console_note("autopilot: " + repr(err))          # the detail stays in the server log, not on the card

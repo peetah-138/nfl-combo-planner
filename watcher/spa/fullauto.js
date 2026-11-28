@@ -35,8 +35,29 @@ function faLessons(v,on,full){const L=v.lessons;if(!L)return '';
   ${recs?`<details class="m" style="font-size:12px"><summary>What each record says</summary><ul class="fab">${recs}</ul></details>`:''}
   ${L.cautious?`<div class="m" style="font-size:12px">The brake is cautious, so nothing loosens right now.</div>`:''}
   ${(L.holds||[]).length?`<div class="m" style="font-size:12px">Held after your undo: ${(L.holds).map(h=>esc(h.name)).join(', ')}.</div>`:''}
+  ${faDrift(L.drift,full)}
   ${full&&L.undo?`<div class="fabtns"><button class="btn" onclick="faUndo(this)">Undo last change</button> <span class="m" style="font-size:12px">${esc(L.undo)}</span></div>`:''}
   ${full?`<div class="fabtns"><button class="btn" onclick="faLessonsSet(this,${L.switch?'false':'true'})">${L.switch?'Turn Autopilot off':'Turn Autopilot on'}</button></div>`:''}`;}
+/* (#145) "Drift since start": every setting autopilot has moved, start -> now in one plain line, with a Back to start tap per setting
+   and Reset all. A tap opens a confirm sheet (never confirm()); the server decides again and says why in words when it holds one back. */
+const FA_DG=[['spend','How much it bets'],['picky','How picky it is'],['sell','How smart sell sells']];
+function faDrift(D,full){if(!D)return '';S.faDrift=D;
+ const its=D.items||[],ck=its.length?'':'<div class="m" style="font-size:12px">Everything is where you started it.</div>';
+ const grp=FA_DG.map(([g,t])=>{const xs=its.map((x,i)=>[x,i]).filter(([x])=>x.group===g);if(!xs.length)return '';
+  return `<div class="m" style="font-size:12px;margin-top:8px"><b>${esc(t)}</b></div><ul class="fab fadr">${xs.map(([x,i])=>`<li><span>${esc(x.line)}${x.frozen?' (frozen)':''}${x.note?`<br><span class="m">${esc(x.note)}</span>`:''}${full&&x.why_not&&!x.reset_ok?`<br><span class="m fadw">${esc(x.why_not)}</span>`:''}</span>${full&&x.resettable!==false?`<button class="btn ghost" type="button" aria-label="Back to start: ${esc(x.name)}" onclick="faResetAsk(${i})">Back to start</button>`:''}</li>`).join('')}</ul>`;}).join('');
+ return `<details class="m fadrift" style="font-size:12px;margin-top:8px"${its.length?' open':''}><summary><b>Drift since start</b>${its.length?` (${its.length})`:''}</summary>
+  ${D.err?`<div class="sbw sbx"><i>⚠️</i><span style="flex:1">${esc(D.err)}</span></div>`:ck+grp}
+  ${D.cautious&&its.length&&!D.err?'<div class="m" style="font-size:12px">The brake is being careful, so a reset that would loosen something waits.</div>':''}
+  ${full&&D.can_reset?`<div class="fabtns"><button class="btn" type="button" onclick="faResetAsk(-1)">Reset all</button></div>`:''}</details>`;}
+function faResetAsk(i){const D=S.faDrift||{};const its=D.items||[],one=i>=0?its[i]:null;if(i>=0&&!one)return;
+ const all=its.filter(x=>x.reset_ok&&!x.frozen),body=one?`<p style="font-size:14px;line-height:1.45">${esc(one.name)} goes from ${esc(one.cur_text)} back to ${esc(one.start_text)}, where you started it.${one.reset_ok?'':' '+esc(one.why_not||'')}</p>`:
+  `<p style="font-size:14px;line-height:1.45">${all.length} setting${all.length===1?'':'s'} go back to where you started:</p><ul class="fab">${all.map(x=>`<li>${esc(x.name)}: ${esc(x.cur_text)} to ${esc(x.start_text)}</li>`).join('')}</ul>${its.length>all.length?'<p class="m" style="font-size:12.5px">Frozen settings and ones that would loosen while the brake is careful stay as they are.</p>':''}`;
+ S.faResetKey=one?one.key:'all';
+ modal(`<h3>${one?'Put this back to start?':'Put everything back to start?'}</h3>${body}<p class="m" style="font-size:12.5px;line-height:1.4">They stay there for 2 weeks. Your bankroll, daily cap, loss limit and Pause never change.</p>
+  <button class="btn" type="button" style="width:100%;min-height:44px;justify-content:center" onclick="faResetDo(this)"${(one&&!one.reset_ok)||(!one&&!all.length)?' disabled':''}>${one?'Back to start':'Reset all'}</button>
+  <button class="btn ghost" type="button" style="width:100%;min-height:44px;justify-content:center;margin-top:8px" onclick="closeModal()">Cancel</button>`);}
+function faResetDo(b){const key=S.faResetKey;if(!key)return;hap('light');btnBusy(b);
+ return api('/app/api/act',{a:'autopilot_reset',key:key,confirm:true}).then(r=>{closeModal();toast(r.msg,7000);setTimeout(()=>load(S.view),600)}).catch(()=>btnState(b,false));}
 function faUndo(b){hap('light');btnBusy(b);return api('/app/api/act',{a:'autopilot_undo'}).then(r=>{toast(r.msg,5000);btnState(b,!!r.ok);setTimeout(()=>load(S.view),600)}).catch(()=>btnState(b,false));}
 function faFreeze(b,key,on){hap('light');btnBusy(b);return api('/app/api/act',{a:'autopilot_freeze',key:key,on:on}).then(r=>{toast(r.msg,4000);btnState(b,!!r.ok);setTimeout(()=>load(S.view),600)}).catch(()=>btnState(b,false));}
 function faLessonsSet(b,on){hap('light');btnBusy(b);return api('/app/api/act',{a:'full_auto_lessons',on:on}).then(r=>{toast(r.msg,4000);btnState(b,!!r.ok);setTimeout(()=>load(S.view),600)}).catch(()=>btnState(b,false));}

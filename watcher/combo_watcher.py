@@ -4736,6 +4736,10 @@ def webapp_main():
                     ok, msg = A.ap_freeze(str(d.get("key") or ""), d.get("on") is True)
                 log("full auto autopilot", a.split("_")[1], "ok" if ok else "refused", "from the app")
                 return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
+            if a == "autopilot_reset":              # (#145) Back to start: one setting or "all"; its own tap, confirmed, checked again by the engine
+                ok, msg = A.ap_reset_act(d)
+                log("full auto autopilot", "reset", "ok" if ok else "refused", "from the app")
+                return jsonable({"ok": ok, "msg": msg, "full_auto": A.full_auto_view(paused=paused_now(), may_trade=A.can_trade())})
             if a == "skim_moved":
                 amt = A.skim_moved()
                 return {"ok": True, "msg": f"Got it. The app counts your whole Kalshi balance again ({A.money(amt)} was set aside)."}
